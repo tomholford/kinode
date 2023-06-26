@@ -1,0 +1,22 @@
+{
+    "squid": {
+        "name": "squid",
+        "url": "localhost",
+        "port": 9000
+    },
+    "loach": {
+        "name": "loach",
+        "url": "localhost",
+        "port": 9001
+    },
+    "tuna": {
+        "name": "tuna",
+        "url": "localhost",
+        "port": 9002
+    },
+    "dolph": {
+        "name": "dolph",
+        "url": "localhost",
+        "port": 9003
+    }
+}

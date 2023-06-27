@@ -1,12 +1,12 @@
 {
     "squid": {
         "name": "squid",
-        "url": "172.104.10.41",
+        "url": "147.135.114.167",
         "port": 9000
     },
     "loach": {
         "name": "loach",
-        "url": "localhost",
+        "url": "75.197.158.142",
         "port": 9001
     },
     "tuna": {

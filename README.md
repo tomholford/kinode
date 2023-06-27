@@ -2,6 +2,7 @@
 
 setup:
 - look at `blockchain.json` to see what identities are available to you
+- `squid` is running on the uqbar devnet server, `loach` is what i use for local testing
 - pick a name, or add your own
 - run `cargo r <yourname>` to start the server
 

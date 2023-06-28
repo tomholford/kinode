@@ -9,6 +9,7 @@ mod types;
 mod terminal;
 mod websockets;
 mod kernel;
+mod blockchain;
 
 #[tokio::main]
 async fn main() {

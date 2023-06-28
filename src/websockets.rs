@@ -1,4 +1,3 @@
-use log::*;
 use tokio::net::{TcpStream, TcpListener};
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{connect_async, tungstenite::Message, accept_async, tungstenite::Result};
@@ -14,7 +13,7 @@ use crate::types::*;
 pub async fn ws_listener(card_tx: CardSender, print_tx: PrintSender, tcp: TcpListener) {
     while let Ok((stream, _)) = tcp.accept().await {
         let socket_addr = stream.peer_addr().expect("connected streams should have a peer address");
-        info!("Peer address: {}", socket_addr);
+        let _ = print_tx.send(format!("Peer address: {}", socket_addr)).await;
 
         tokio::spawn(handle_connection(stream, card_tx.clone(), print_tx.clone()));
     }

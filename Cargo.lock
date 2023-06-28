@@ -740,6 +740,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs_merkle"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05225752ca6ede4cb1b73aa37ce3904affd042e98f28246f56f438ebfd47a810"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "rustix"
 version = "0.37.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -816,6 +825,17 @@ name = "sha1"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f04293dc80c3993519f2d7f6f511707ee7094fe0c6d3406feb330cdb3540eba3"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479fb9d862239e610720565ca91403019f2f00410f1864c5aa7479b950a76ed8"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -1049,6 +1069,7 @@ dependencies = [
  "async-std",
  "futures",
  "log",
+ "rs_merkle",
  "rustyline-async",
  "serde",
  "serde_json",

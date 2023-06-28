@@ -17,3 +17,4 @@ url = "*"
 async-std = "*"
 rustyline-async = "*"
 log = "*"
+rs_merkle = { version = "1.4", default-features = false }

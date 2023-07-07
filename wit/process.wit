@@ -1,0 +1,6 @@
+package component:microkernel-process
+
+world microkernel-process {
+    import to-event-loop: func(target-server: string, to: string, message-to-loop: string)
+    export from-event-loop: func(our: string, message-from-loop: string)  // TODO: our -> bowl
+}

@@ -1,2 +1,5 @@
 /target
 .vscode
+*.swp
+/http-server/target
+/poast/target

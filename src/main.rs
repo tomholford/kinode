@@ -8,8 +8,12 @@ use crate::types::*;
 mod types;
 mod terminal;
 mod websockets;
-mod kernel;
+mod microkernel;
 mod blockchain;
+
+const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
+const TERMINAL_CHANNEL_CAPACITY: usize = 32;
+const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 
 #[tokio::main]
 async fn main() {
@@ -17,9 +21,11 @@ async fn main() {
     let our_name: String = args[1].clone();
 
     // kernel receives system cards via this channel, all other modules send cards
-    let (card_sender, card_receiver): (CardSender, CardReceiver) = mpsc::channel(32);
+    let (kernel_card_sender, kernel_card_receiver): (CardSender, CardReceiver) = mpsc::channel(EVENT_LOOP_CHANNEL_CAPACITY);
+    // websocket sender receives send cards via this channel, kernel send cards
+    let (wss_card_sender, wss_card_receiver): (CardSender, CardReceiver) = mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
-    let (print_sender, print_receiver): (PrintSender, PrintReceiver) = mpsc::channel(32);
+    let (print_sender, print_receiver): (PrintSender, PrintReceiver) = mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
     // this will be replaced with actual chain reading
     let blockchain = std::fs::File::open("blockchain.json")
@@ -55,15 +61,18 @@ async fn main() {
      *  if any of these modules fail, the program exits with an error.
      */
     let quit: String = tokio::select! {
-        term = terminal::terminal(&our_name, card_sender.clone(), print_receiver) => match term {
+        term = terminal::terminal(&our_name, kernel_card_sender.clone(), print_receiver) => match term {
             Ok(_) => "graceful shutdown".to_string(),
             Err(e) => format!("exiting with error: {:?}", e),
         },
-        _ = kernel::kernel(&our_name, peers.clone(), print_sender.clone(), card_receiver) => {
-            "card sender died".to_string()
+        _ = microkernel::kernel(&our_name, kernel_card_sender.clone(), print_sender.clone(), kernel_card_receiver, wss_card_sender.clone()) => {
+            "microkernel died".to_string()
         },
-        _ = websockets::ws_listener(card_sender.clone(), print_sender.clone(), tcp_listener) => {
-            "websocket server died".to_string()
+        _ = websockets::ws_listener(kernel_card_sender.clone(), print_sender.clone(), tcp_listener) => {
+            "websocket listener died".to_string()
+        },
+        _ = websockets::ws_sender(peers.clone(), print_sender.clone(), wss_card_receiver) => {
+            "websocket sender died".to_string()
         }
     };
 

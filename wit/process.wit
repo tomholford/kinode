@@ -2,5 +2,8 @@ package component:microkernel-process
 
 world microkernel-process {
     import to-event-loop: func(target-server: string, to: string, message-to-loop: string)
+    import modify-state: func(json-pointer: string, new-value: string) -> string
+    import fetch-state: func(json-pointer: string) -> string
+    import set-state: func(json: string) -> string
     export from-event-loop: func(our: string, message-from-loop: string)  // TODO: our -> bowl
 }

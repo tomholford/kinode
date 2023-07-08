@@ -139,6 +139,10 @@ async fn make_process_loop(
                 &component,
                 &linker
             ).await.unwrap();
+            bindings
+                .call_init(&mut store, &our_name)
+                .await
+                .unwrap();
             let mut i = 0;
             loop {
                 let message_from_loop = recv_in_process
@@ -156,7 +160,7 @@ async fn make_process_loop(
                     .await
                     .unwrap();
                 bindings
-                    .call_from_event_loop(&mut store, &our_name, &message_from_loop)
+                    .call_run_write(&mut store, &our_name, &message_from_loop)
                     .await
                     .unwrap();
                 i = i + 1;

@@ -1,12 +1,14 @@
+use anyhow::{anyhow, Result};
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use serde_json::json;
+use std::sync::Arc;
+use futures::lock::Mutex;
 
 use crate::types::*;
 
@@ -17,20 +19,26 @@ bindgen!({
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
 
-struct Process {
+struct ProcessData {
     our_name: String,
     process_name: String,
     file_path: String,  // TODO: for use in restarting erroring process, ala midori
+    state: serde_json::Value,
     send_to_loop: CardSender,
     send_to_process: mpsc::Sender<String>,
     send_to_terminal: PrintSender
 }
+type Process = Arc<Mutex<ProcessData>>;
 struct ProcessAndHandle {
     process: Process,
-    handle: JoinHandle<Result<(), JoinError>>  // TODO: for use in restarting erroring process, ala midori
+    handle: JoinHandle<Result<()>>  // TODO: for use in restarting erroring process, ala midori
 }
 
 type Processes = HashMap<String, ProcessAndHandle>;
+
+fn json_to_string(json: &serde_json::Value) -> String {
+    json.to_string().trim().trim_matches('"').to_string()
+}
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
@@ -39,10 +47,12 @@ impl MicrokernelProcessImports for Process {
         target_server: String,
         to: String,
         data_string: String
-    ) -> Result<(), wasmtime::Error> {
+    ) -> Result<()> {
         let data: serde_json::Value = serde_json::from_str(&data_string).expect(
             format!("given data not JSON string: {}", data_string).as_str()
         );
+
+        let self = self.lock().await;
 
         let message_json = json!({
             "source": self.our_name,
@@ -58,24 +68,65 @@ impl MicrokernelProcessImports for Process {
         self.send_to_loop.send(message).await.expect("to_event_loop: error sending");
         Ok(())
     }
+
+    async fn modify_state(
+        &mut self,
+        json_pointer: String,
+        new_value_string: String
+    ) -> Result<String> {
+        let mut process_data = self.lock().await;
+        let json =
+            process_data.state.pointer_mut(json_pointer.as_str()).ok_or(
+                anyhow!(
+                    format!(
+                        "modify_state: state does not contain {:?}",
+                        json_pointer
+                    )
+                )
+            )?;
+        let new_value = serde_json::from_str(&new_value_string)?;
+        *json = new_value;
+        Ok(new_value_string)
+    }
+
+    async fn fetch_state(&mut self, json_pointer: String) -> Result<String> {
+        let self = self.lock().await;
+        let json =
+            self.state.pointer(json_pointer.as_str()).ok_or(
+                anyhow!(
+                    format!(
+                        "fetch_state: state does not contain {:?}",
+                        json_pointer
+                    )
+                )
+            )?;
+        Ok(json_to_string(json))
+    }
+
+    async fn set_state(&mut self, json_string: String) -> Result<String> {
+        let json = serde_json::from_str(&json_string)?;
+        let mut process_data = self.lock().await;
+        process_data.state = json;
+        Ok(json_string)
+    }
 }
 
-fn make_process_loop(
+async fn make_process_loop(
     process: Process,
     mut recv_in_process: mpsc::Receiver<String>,
     engine: &Engine
-) -> Pin<Box<dyn Future<Output = Result<(), JoinError>> + Send>> {
-    let component = match Component::from_file(&engine, &process.file_path) {
-        Ok(result) => result,
-        Err(error) => panic!("{}", error)
-    };
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    let process_data = process.lock().await;
+    let component = Component::from_file(&engine, &process_data.file_path)
+        .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
     MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
 
-    let our_name = process.our_name.clone();
-    let process_name = process.process_name.clone();
-    let send_to_terminal = process.send_to_terminal.clone();
+    let our_name = process_data.our_name.clone();
+    let process_name = process_data.process_name.clone();
+    let send_to_terminal = process_data.send_to_terminal.clone();
+    std::mem::drop(process_data);  //  unlock
     let mut store = Store::new(
         engine,
         process
@@ -119,7 +170,7 @@ fn make_process_loop(
 }
 
 impl ProcessAndHandle {
-    fn new(
+    async fn new(
         our_name: String,
         process_name: String,
         file_path: &str,
@@ -127,43 +178,32 @@ impl ProcessAndHandle {
         send_to_terminal: PrintSender,
         engine: &Engine,
     ) -> Self {
-
         let (send_to_process, recv_in_process) =
             mpsc::channel::<String>(PROCESS_CHANNEL_CAPACITY);
 
-        let process =  Process {
-                our_name: our_name.clone(),
-                process_name: process_name.clone(),
-                file_path: file_path.to_string(),
-                send_to_loop: send_to_loop.clone(),
-                send_to_process: send_to_process.clone(),
-                send_to_terminal: send_to_terminal.clone()
-            };
-
-        let process_handle = tokio::spawn(
-            make_process_loop(
-                process,
-                recv_in_process,
-                engine
-            )
-        );
-
-        ProcessAndHandle {
-            process: Process {
+        let process = Arc::new(Mutex::new(ProcessData {
                 our_name: our_name,
                 process_name: process_name,
                 file_path: file_path.to_string(),
-                send_to_loop,
-                send_to_process,
-                send_to_terminal: send_to_terminal.clone()
-            },
-            handle: process_handle,
+                state: serde_json::Value::Null,
+                send_to_loop: send_to_loop,
+                send_to_process: send_to_process,
+                send_to_terminal: send_to_terminal
+            }));
+
+        let process_loop =
+            make_process_loop(
+                Arc::clone(&process),
+                recv_in_process,
+                engine
+            ).await;
+        let process_handle = tokio::spawn(process_loop);
+
+        ProcessAndHandle {
+            process: Arc::clone(&process),
+            handle: process_handle
         }
     }
-}
-
-fn json_to_string(json: &serde_json::Value) -> String {
-    json.to_string().trim().trim_matches('"').to_string()
 }
 
 fn make_event_loop(
@@ -172,7 +212,7 @@ fn make_event_loop(
     mut recv_in_loop: CardReceiver,
     send_to_wss: CardSender,
     send_to_terminal: PrintSender
-) -> Pin<Box<dyn Future<Output = Result<(), JoinError>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
             loop {
@@ -202,13 +242,18 @@ fn make_event_loop(
 
                     match processes.get(&to) {
                         Some(value) => {
-                            let _result = value
-                                .process
+                            let process = value.process.lock().await;
+                            let _result = process
                                 .send_to_process
                                 .send(data)
                                 .await;
                             send_to_terminal
-                                .send("event loop: sent to process".to_string())
+                                .send(
+                                    format!(
+                                        "event loop: sent to process; current state: {:?}",
+                                        process.state,
+                                    )
+                                )
                                 .await
                                 .unwrap();
                         }
@@ -257,7 +302,7 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_terminal.clone(),
             &engine
-        )
+        ).await
     );
 
     let process_name = "poast".to_string();
@@ -271,7 +316,7 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_terminal.clone(),
             &engine
-        )
+        ).await
     );
 
     let event_loop_handle = tokio::spawn(

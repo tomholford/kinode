@@ -46,4 +46,10 @@ cargo r tuna
 # Terminal B while A is still running
 cargo r dolph
 !card tuna {"from": "earth", "to": "poast", "data": "hello from dolph terminal"}
+
+# Send a message using hi++ from Terminal B to A:
+!card dolph {"from": "earth", "to": "hi_lus_lus", "data": {"action": "send", "target": "tuna", "contents": "hello from dolph"}}
+
+# Send a message back from A to B using hi++:
+!card tuna {"from": "earth", "to": "hi_lus_lus", "data": {"action": "send", "target": "dolph", "contents": "hello from tuna"}}
 ```

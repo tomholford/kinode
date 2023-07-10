@@ -52,20 +52,20 @@ impl MicrokernelProcessImports for Process {
             format!("given data not JSON string: {}", data_string).as_str()
         );
 
-        let self = self.lock().await;
+        let process_data = self.lock().await;
 
         let message_json = json!({
-            "source": self.our_name,
+            "source": process_data.our_name,
             "target": target_server,
             "payload": {
-                "from": self.process_name,
+                "from": process_data.process_name,
                 "to": to,
                 "data": data
             }
         });
         let message: Card = serde_json::from_value(message_json).unwrap();
 
-        self.send_to_loop.send(message).await.expect("to_event_loop: error sending");
+        process_data.send_to_loop.send(message).await.expect("to_event_loop: error sending");
         Ok(())
     }
 
@@ -90,9 +90,9 @@ impl MicrokernelProcessImports for Process {
     }
 
     async fn fetch_state(&mut self, json_pointer: String) -> Result<String> {
-        let self = self.lock().await;
+        let process_data = self.lock().await;
         let json =
-            self.state.pointer(json_pointer.as_str()).ok_or(
+            process_data.state.pointer(json_pointer.as_str()).ok_or(
                 anyhow!(
                     format!(
                         "fetch_state: state does not contain {:?}",
@@ -108,6 +108,16 @@ impl MicrokernelProcessImports for Process {
         let mut process_data = self.lock().await;
         process_data.state = json;
         Ok(json_string)
+    }
+
+    async fn print_to_terminal(&mut self, message: String) -> Result<()> {
+        let process_data = self.lock().await;
+        process_data
+            .send_to_terminal
+            .send(message)
+            .await
+            .expect("print_to_terminal: error sending");
+        Ok(())
     }
 }
 
@@ -139,6 +149,10 @@ async fn make_process_loop(
                 &component,
                 &linker
             ).await.unwrap();
+            bindings
+                .call_init(&mut store, &our_name)
+                .await
+                .unwrap();
             let mut i = 0;
             loop {
                 let message_from_loop = recv_in_process
@@ -156,7 +170,7 @@ async fn make_process_loop(
                     .await
                     .unwrap();
                 bindings
-                    .call_from_event_loop(&mut store, &our_name, &message_from_loop)
+                    .call_run_write(&mut store, &our_name, &message_from_loop)
                     .await
                     .unwrap();
                 i = i + 1;
@@ -293,6 +307,20 @@ pub async fn kernel(
 
     let process_name = "http_server".to_string();
     let file_path = "./http_server.wasm";
+    processes.insert(
+        process_name.clone(),
+        ProcessAndHandle::new(
+            our_name.to_string(),
+            process_name.clone(),
+            &file_path,
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &engine
+        ).await
+    );
+
+    let process_name = "hi_lus_lus".to_string();
+    let file_path = "./hi_lus_lus.wasm";
     processes.insert(
         process_name.clone(),
         ProcessAndHandle::new(

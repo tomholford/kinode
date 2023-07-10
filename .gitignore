@@ -1,5 +1,6 @@
 /target
 .vscode
 *.swp
+/hi-lus-lus/target
 /http-server/target
 /poast/target

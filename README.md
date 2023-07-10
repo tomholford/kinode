@@ -23,6 +23,9 @@ cd ..
 cd poast
 cargo component build --target wasm32-unknown-unknown
 cd ..
+cd hi-lus-lus
+cargo component build --target wasm32-unknown-unknown
+cd ..
 ```
 
 ### Terminal

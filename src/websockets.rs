@@ -19,9 +19,32 @@ pub async fn ws_listener(card_tx: CardSender, print_tx: PrintSender, tcp: TcpLis
     }
 }
 
+pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: CardReceiver) {
+    while let Some(card) = rx.recv().await {
+        let mut to = peers.write().await;
+        match to.remove(&card.target) {
+            Some(peer) => {
+                match handle_send(&card, &peer.url, &peer.port, peer.connection).await {
+                    Ok(new_conn) => {
+                        let _ = print_tx.send("card sent!".to_string()).await;
+                        to.insert(card.target, Peer {connection: Some(new_conn), ..peer});
+                    }
+                    Err(e) => {
+                        let _ = print_tx.send(format!("error sending card: {}", e)).await;
+                        to.insert(card.target, Peer {connection: None, ..peer});
+                    }
+                }
+            },
+            None => {
+                let _ = print_tx.send("error sending card, no known peer".into()).await;
+            }
+        }
+    }
+}
+
 /// send a card to a peer over websocket.
 /// if we don't have an active connection to peer, try to make one
-pub async fn ws_sender(card: &Card, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
+async fn handle_send(card: &Card, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
     -> Result<Sock, Error> {
     match peer_conn {
         Some(mut socket) => {

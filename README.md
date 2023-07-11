@@ -42,17 +42,22 @@ cd ..
 
 ## Example usage
 ```bash
-# Terminal A
+# Terminal A, add some test apps to process_manager and run a simple test
 cargo r tuna
-!card tuna {"from": "earth", "to": "poast", "data": "hello from tuna terminal"}
+!message tuna process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm"}
+!message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
+!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
+!message tuna poast "poast from tuna terminal"
 
-# Terminal B while A is still running
+# Terminal B while A is still running: run the same poast command remotely, then add hi++ to process_manager
 cargo r dolph
-!card tuna {"from": "earth", "to": "poast", "data": "hello from dolph terminal"}
+!message dolph process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm"}
+!message tuna poast "poast from tuna terminal"
+!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 
 # Send a message using hi++ from Terminal B to A:
-!card dolph {"from": "earth", "to": "hi_lus_lus", "data": {"action": "send", "target": "tuna", "contents": "hello from dolph"}}
+!message dolph hi_lus_lus {"action": "send", "target": "tuna", "contents": "hello from dolph"}
 
 # Send a message back from A to B using hi++:
-!card tuna {"from": "earth", "to": "hi_lus_lus", "data": {"action": "send", "target": "dolph", "contents": "hello from tuna"}}
+!message tuna hi_lus_lus {"action": "send", "target": "dolph", "contents": "hello from tuna"}
 ```

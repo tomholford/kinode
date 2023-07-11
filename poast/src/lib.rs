@@ -7,7 +7,6 @@ impl bindings::MicrokernelProcess for Component {
         bindings::set_state(serde_json::to_string(&json!([])).unwrap().as_str());
     }
 
-    // fn run_write(our: String, message_from_loop: String) {
     fn run_write(message: bindings::WitMessage) {
         let bindings::component::microkernel_process::types::WitPayload::Json(message_from_loop) = message.payload else {
             panic!("foo")

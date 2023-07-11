@@ -8,6 +8,7 @@ use std::pin::Pin;
 use tokio::task::JoinHandle;
 use serde_json::json;
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 
 use crate::types::*;
 use crate::microkernel::component::microkernel_process::types::Host;
@@ -18,15 +19,29 @@ bindgen!({
     async: true,
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
+const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum ProcessManagerCommand {
+    Start(ProcessManagerStart),
+    Stop(String),
+    Restart(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerStart {
+    process_name: String,
+    wasm_bytes_uri: String,
+}
 
 struct ProcessData {
     our_name: String,
     process_name: String,
-    file_uri: String,  // TODO: for use in restarting erroring process, ala midori
-    file_bytes: Vec<u8>,  // TODO: for use in restarting erroring process, ala midori
+    wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+    wasm_bytes: Vec<u8>,     // TODO: for use in restarting erroring process, ala midori
     state: serde_json::Value,
     send_to_loop: MessageSender,
-    // send_to_process: mpsc::Sender<String>,
     send_to_process: MessageSender,
     send_to_terminal: PrintSender
 }
@@ -65,9 +80,6 @@ impl MicrokernelProcessImports for Process {
                 Payload::Bytes(payload_bytes)
             },
         };
-        // let data: serde_json::Value = serde_json::from_str(&data_string).expect(
-        //     format!("given data not JSON string: {}", data_string).as_str()
-        // );
 
         let process_data = self.lock().await;
 
@@ -141,59 +153,67 @@ impl MicrokernelProcessImports for Process {
     }
 }
 
-async fn make_process_loop(
-    process: Process,
-    // mut recv_in_process: mpsc::Receiver<String>,
-    mut recv_in_process: MessageReceiver,
-    engine: &Engine
-) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    println!("mpl: 0");
-    let process_data = process.lock().await;
-    let our_name = process_data.our_name.clone();
-    let process_name = process_data.process_name.clone();
-    let file_uri = process_data.file_uri.clone();
-    let send_to_loop = process_data.send_to_loop.clone();
-    let send_to_terminal = process_data.send_to_terminal.clone();
-    std::mem::drop(process_data);  //  unlock
+async fn init_process(process: Process) {
+    let (our_name, process_name, wasm_bytes_uri, send_to_loop) = {
+        let process_data = process.lock().await;
+        (
+            process_data.our_name.clone(),
+            process_data.process_name.clone(),
+            process_data.wasm_bytes_uri.clone(),
+            process_data.send_to_loop.clone(),
+        )
+    };
 
-    println!("mpl: 1");
     let get_bytes_message = Message {
         source: AppNode {
             server: our_name.clone(),
             app: process_name.clone(),
         },
-        //  TODO: target should be read from process.data.file_uri
+        //  TODO: target should be inferred from process.data.file_uri
         target: AppNode {
             server: our_name.clone(),
             app: "filesystem".to_string(),
         },
         payload: Payload::Json(
             json!({
-                "uri": file_uri,
+                "uri": wasm_bytes_uri,
             })
         ),
     };
-    println!("mpl: 2");
     send_to_loop.send(get_bytes_message).await.unwrap();
-    println!("mpl: 3");
-    let message_from_loop = recv_in_process.recv().await.unwrap();
-    println!("mpl: 4");
-    if "filesystem".to_string() != message_from_loop.target.app {
+}
+
+async fn make_process_loop(
+    process: Process,
+    mut recv_in_process: MessageReceiver,
+    message_from_loop: Message,
+    engine: &Engine
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    let (our_name, process_name, send_to_terminal) = {
+        let process_data = process.lock().await;
+        (
+            process_data.our_name.clone(),
+            process_data.process_name.clone(),
+            process_data.send_to_terminal.clone(),
+        )
+    };
+
+    if "filesystem".to_string() != message_from_loop.source.app {
         panic!(
             "message_process_loop: expected bytes message from filesystem, not {:?}",
-            message_from_loop,
+            message_from_loop.source.app,
         );
     }
-    let Payload::Bytes(file_contents) = message_from_loop.payload else {
+    let Payload::Bytes(wasm_bytes) = message_from_loop.payload else {
         panic!(
             "message_process_loop: expected bytes message from filesystem, not {:?}",
             message_from_loop,
         );
     };
     let mut process_data = process.lock().await;
-    process_data.file_bytes = file_contents.clone();
+    process_data.wasm_bytes = wasm_bytes.clone();
 
-    let component = Component::new(&engine, &file_contents)
+    let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
@@ -213,7 +233,6 @@ async fn make_process_loop(
                 &linker
             ).await.unwrap();
             bindings
-                // .call_init(&mut store, &our_name)
                 .call_init(
                     &mut store,
                     &WitAppNode {
@@ -239,7 +258,7 @@ async fn make_process_loop(
                     .await
                     .unwrap();
                 let wit_payload = match message_from_loop.payload {
-                        Payload::Json(value) => WitPayload::Json(serde_json::to_string(&value).unwrap()),
+                        Payload::Json(value) => WitPayload::Json(json_to_string(&value)),
                         Payload::Bytes(bytes) => WitPayload::Bytes(bytes),
                 };
                 let wit_message = WitMessage {
@@ -252,13 +271,8 @@ async fn make_process_loop(
                         app: message_from_loop.target.app,
                     },
                     payload: &wit_payload,
-                    // payload: match message_from_loop.payload {
-                    //     Payload::Json(value) => &WitPayload::Json(serde_json::to_string(&value).unwrap()),
-                    //     Payload::Bytes(bytes) => &WitPayload::Bytes(bytes),
-                    // }
                 };
                 bindings
-                    // .call_run_write(&mut store, &our_name, &message_from_loop)
                     .call_run_write(
                         &mut store,
                         wit_message,
@@ -279,38 +293,45 @@ impl ProcessAndHandle {
     async fn new(
         our_name: String,
         process_name: String,
-        file_uri: &str,
+        wasm_bytes_uri: &str,
+        send_to_process: MessageSender,
         send_to_loop: MessageSender,
         send_to_terminal: PrintSender,
-        engine: &Engine,
     ) -> Self {
-        let (send_to_process, recv_in_process) =
-            // mpsc::channel::<String>(PROCESS_CHANNEL_CAPACITY);
-            mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
-
         let process = Arc::new(Mutex::new(ProcessData {
                 our_name: our_name,
                 process_name: process_name,
-                file_uri: file_uri.to_string(),
-                file_bytes: Vec::new(),
+                wasm_bytes_uri: wasm_bytes_uri.to_string(),
+                wasm_bytes: Vec::new(),
                 state: serde_json::Value::Null,
                 send_to_loop: send_to_loop,
                 send_to_process: send_to_process,
                 send_to_terminal: send_to_terminal
             }));
 
-        let process_loop =
-            make_process_loop(
-                Arc::clone(&process),
-                recv_in_process,
-                engine
-            ).await;
-        let process_handle = tokio::spawn(process_loop);
+        init_process(Arc::clone(&process)).await;
 
         ProcessAndHandle {
             process: Arc::clone(&process),
-            handle: process_handle
+            handle: tokio::spawn(async {Ok(())}),  //  dummy placeholder
         }
+    }
+
+    async fn start(
+        &mut self,
+        recv_in_process: MessageReceiver,
+        bytes_message: Message,
+        engine: &Engine
+    ) {
+        let process_handle = tokio::spawn(
+            make_process_loop(
+                Arc::clone(&self.process),
+                recv_in_process,
+                bytes_message,
+                engine,
+            ).await
+        );
+        self.handle = process_handle;
     }
 }
 
@@ -320,11 +341,11 @@ fn make_event_loop(
     mut recv_in_loop: MessageReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_terminal: PrintSender
+    send_to_process_manager: MessageSender,
+    send_to_terminal: PrintSender,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
-            println!("event loop: running");
             loop {
                 let next_message = recv_in_loop.recv().await.unwrap();
                 if let Payload::Json(_) = next_message.payload {
@@ -363,21 +384,21 @@ fn make_event_loop(
                             .send(next_message)
                             .await;
                         continue;
+                    } else if "process_manager".to_string() == to {
+                        let _ = send_to_process_manager
+                            .send(next_message)
+                            .await;
+                        continue;
                     }
                     //  pass message to appropriate process
-                    println!("el: 0");
                     let processes_lock = processes.read().await;
-                    println!("el: 1");
                     match processes_lock.get(&to) {
                         Some(value) => {
-                            println!("el: 2");
                             let process = value.process.lock().await;
-                            println!("el: 3");
                             let _result = process
                                 .send_to_process
                                 .send(next_message)
                                 .await;
-                            println!("el: 3");
                             send_to_terminal
                                 .send(
                                     format!(
@@ -408,6 +429,71 @@ fn make_event_loop(
     )
 }
 
+async fn make_process_manager_loop(
+    our_name: String,
+    processes: Processes,
+    send_to_loop: MessageSender,
+    send_to_terminal: PrintSender,
+    mut recv_in_process_manager: MessageReceiver,
+    engine: Engine,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    Box::pin(
+        async move {
+            loop {
+                let next_message = recv_in_process_manager.recv().await.unwrap();
+                //  TODO: validate source/target?
+                let Payload::Json(value) = next_message.payload else {
+                    send_to_terminal
+                        .send(
+                            format!(
+                                "process manager: got non-json payload with source, target: {:?}, {:?}",
+                                next_message.source,
+                                next_message.target,
+                            )
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                };
+                let process_manager_command: ProcessManagerCommand =
+                    serde_json::from_value(value)?;
+                match process_manager_command {
+                    ProcessManagerCommand::Start(start) => {
+                        let (send_to_process, mut recv_in_process) =
+                            mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
+                        {
+                            let mut processes_write = processes.write().await;
+                            processes_write.insert(
+                                start.process_name.clone(),
+                                ProcessAndHandle::new(
+                                    our_name.to_string(),
+                                    start.process_name.clone(),
+                                    &start.wasm_bytes_uri,
+                                    send_to_process,
+                                    send_to_loop.clone(),
+                                    send_to_terminal.clone(),
+                                ).await
+                            );
+                        }
+
+                        let bytes_message = recv_in_process.recv().await.unwrap();
+                        {
+                            let mut processes_write = processes.write().await;
+                            let mut process = processes_write
+                                .get_mut(&start.process_name)
+                                .unwrap();
+                            //  TODO: does this properly update the process within the map?
+                            process.start(recv_in_process, bytes_message, &engine).await;
+                        }
+                    },
+                    ProcessManagerCommand::Stop(process_name) => panic!("todo"),
+                    ProcessManagerCommand::Restart(process_name) => panic!("todo"),
+                }
+            }
+        }
+    )
+}
+
 pub async fn kernel(
     our_name: &str,
     send_to_loop: MessageSender,
@@ -421,9 +507,9 @@ pub async fn kernel(
     config.wasm_component_model(true);
     let engine = Engine::new(&config).unwrap();
 
-    let mut processes: Processes = Arc::new(RwLock::new(HashMap::new()));
-
-    println!("mk: 0");
+    let processes: Processes = Arc::new(RwLock::new(HashMap::new()));
+    let (send_to_process_manager, recv_in_process_manager) =
+        mpsc::channel::<Message>(PROCESS_MANAGER_CHANNEL_CAPACITY);
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
@@ -432,60 +518,24 @@ pub async fn kernel(
             recv_in_loop,
             send_to_wss,
             send_to_fs,
-            send_to_terminal.clone()
+            send_to_process_manager,
+            send_to_terminal.clone(),
         )
     );
 
-    println!("mk: 1");
-
-    let mut processes_lock = processes.write().await;
-    let process_name = "http_server".to_string();
-    let file_uri = "fs://http_server.wasm";
-    processes_lock.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
+    let process_manager_handle = tokio::spawn(
+        make_process_manager_loop(
             our_name.to_string(),
-            process_name.clone(),
-            &file_uri,
+            Arc::clone(&processes),
             send_to_loop.clone(),
             send_to_terminal.clone(),
-            &engine
+            recv_in_process_manager,
+            engine,
         ).await
     );
 
-    println!("mk: 2");
-
-    let process_name = "hi_lus_lus".to_string();
-    let file_uri = "fs://hi_lus_lus.wasm";
-    processes_lock.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_uri,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
+    _ = tokio::join!(
+        event_loop_handle,
+        process_manager_handle,
     );
-
-    println!("mk: 3");
-
-    let process_name = "poast".to_string();
-    let file_uri = "fs://poast.wasm";
-    processes_lock.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_uri,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
-
-    std::mem::drop(processes_lock);
-
-    let _event_loop_result = event_loop_handle.await;
 }

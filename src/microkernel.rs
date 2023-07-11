@@ -1,31 +1,33 @@
 use anyhow::{anyhow, Result};
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex, RwLock};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
 use serde_json::json;
 use std::sync::Arc;
-use futures::lock::Mutex;
 
 use crate::types::*;
+use crate::microkernel::component::microkernel_process::types::Host;
 
 bindgen!({
     path: "wit",
     world: "microkernel-process",
-    async: true
+    async: true,
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
 
 struct ProcessData {
     our_name: String,
     process_name: String,
-    file_path: String,  // TODO: for use in restarting erroring process, ala midori
+    file_uri: String,  // TODO: for use in restarting erroring process, ala midori
+    file_bytes: Vec<u8>,  // TODO: for use in restarting erroring process, ala midori
     state: serde_json::Value,
-    send_to_loop: CardSender,
-    send_to_process: mpsc::Sender<String>,
+    send_to_loop: MessageSender,
+    // send_to_process: mpsc::Sender<String>,
+    send_to_process: MessageSender,
     send_to_terminal: PrintSender
 }
 type Process = Arc<Mutex<ProcessData>>;
@@ -34,36 +36,54 @@ struct ProcessAndHandle {
     handle: JoinHandle<Result<()>>  // TODO: for use in restarting erroring process, ala midori
 }
 
-type Processes = HashMap<String, ProcessAndHandle>;
+type Processes = Arc<RwLock<HashMap<String, ProcessAndHandle>>>;
 
 fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
+}
+
+impl Host for Process {
 }
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
     async fn to_event_loop(
         &mut self,
-        target_server: String,
-        to: String,
-        data_string: String
+        target: WitAppNode,
+        // data_string: String
+        wit_payload: WitPayload,
     ) -> Result<()> {
-        let data: serde_json::Value = serde_json::from_str(&data_string).expect(
-            format!("given data not JSON string: {}", data_string).as_str()
-        );
+        let payload: Payload = match wit_payload {
+            WitPayload::Json(payload_string) => {
+                Payload::Json(
+                    serde_json::from_str(&payload_string).expect(
+                        format!("given data not JSON string: {}", payload_string).as_str()
+                    )
+                )
+            },
+            WitPayload::Bytes(payload_bytes) => {
+                Payload::Bytes(payload_bytes)
+            },
+        };
+        // let data: serde_json::Value = serde_json::from_str(&data_string).expect(
+        //     format!("given data not JSON string: {}", data_string).as_str()
+        // );
 
         let process_data = self.lock().await;
 
         let message_json = json!({
-            "source": process_data.our_name,
-            "target": target_server,
-            "payload": {
-                "from": process_data.process_name,
-                "to": to,
-                "data": data
-            }
+            "source": AppNode {
+                server: process_data.our_name.clone(),
+                app: process_data.process_name.clone(),
+            },
+            "target": AppNode { 
+                server: target.server,
+                app: target.app,
+            },
+            // "payload": Payload::Json(data),
+            "payload": payload,
         });
-        let message: Card = serde_json::from_value(message_json).unwrap();
+        let message: Message = serde_json::from_value(message_json).unwrap();
 
         process_data.send_to_loop.send(message).await.expect("to_event_loop: error sending");
         Ok(())
@@ -123,20 +143,63 @@ impl MicrokernelProcessImports for Process {
 
 async fn make_process_loop(
     process: Process,
-    mut recv_in_process: mpsc::Receiver<String>,
+    // mut recv_in_process: mpsc::Receiver<String>,
+    mut recv_in_process: MessageReceiver,
     engine: &Engine
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    println!("mpl: 0");
     let process_data = process.lock().await;
-    let component = Component::from_file(&engine, &process_data.file_path)
+    let our_name = process_data.our_name.clone();
+    let process_name = process_data.process_name.clone();
+    let file_uri = process_data.file_uri.clone();
+    let send_to_loop = process_data.send_to_loop.clone();
+    let send_to_terminal = process_data.send_to_terminal.clone();
+    std::mem::drop(process_data);  //  unlock
+
+    println!("mpl: 1");
+    let get_bytes_message = Message {
+        source: AppNode {
+            server: our_name.clone(),
+            app: process_name.clone(),
+        },
+        //  TODO: target should be read from process.data.file_uri
+        target: AppNode {
+            server: our_name.clone(),
+            app: "filesystem".to_string(),
+        },
+        payload: Payload::Json(
+            json!({
+                "uri": file_uri,
+            })
+        ),
+    };
+    println!("mpl: 2");
+    send_to_loop.send(get_bytes_message).await.unwrap();
+    println!("mpl: 3");
+    let message_from_loop = recv_in_process.recv().await.unwrap();
+    println!("mpl: 4");
+    if "filesystem".to_string() != message_from_loop.target.app {
+        panic!(
+            "message_process_loop: expected bytes message from filesystem, not {:?}",
+            message_from_loop,
+        );
+    }
+    let Payload::Bytes(file_contents) = message_from_loop.payload else {
+        panic!(
+            "message_process_loop: expected bytes message from filesystem, not {:?}",
+            message_from_loop,
+        );
+    };
+    let mut process_data = process.lock().await;
+    process_data.file_bytes = file_contents.clone();
+
+    let component = Component::new(&engine, &file_contents)
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
     MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
-
-    let our_name = process_data.our_name.clone();
-    let process_name = process_data.process_name.clone();
-    let send_to_terminal = process_data.send_to_terminal.clone();
     std::mem::drop(process_data);  //  unlock
+
     let mut store = Store::new(
         engine,
         process
@@ -150,7 +213,13 @@ async fn make_process_loop(
                 &linker
             ).await.unwrap();
             bindings
-                .call_init(&mut store, &our_name)
+                // .call_init(&mut store, &our_name)
+                .call_init(
+                    &mut store,
+                    &WitAppNode {
+                        server: our_name.clone(),
+                        app: process_name.clone(),
+                    })
                 .await
                 .unwrap();
             let mut i = 0;
@@ -162,15 +231,38 @@ async fn make_process_loop(
                 send_to_terminal
                     .send(
                         format!(
-                            "{}: got message from loop: {}",
+                            "{}: got message from loop: {:?}",
                             process_name,
-                            message_from_loop
+                            message_from_loop,
                         )
                     )
                     .await
                     .unwrap();
+                let wit_payload = match message_from_loop.payload {
+                        Payload::Json(value) => WitPayload::Json(serde_json::to_string(&value).unwrap()),
+                        Payload::Bytes(bytes) => WitPayload::Bytes(bytes),
+                };
+                let wit_message = WitMessage {
+                    source: &WitAppNode {
+                        server: message_from_loop.source.server,
+                        app: message_from_loop.source.app,
+                    },
+                    target: &WitAppNode {
+                        server: message_from_loop.target.server,
+                        app: message_from_loop.target.app,
+                    },
+                    payload: &wit_payload,
+                    // payload: match message_from_loop.payload {
+                    //     Payload::Json(value) => &WitPayload::Json(serde_json::to_string(&value).unwrap()),
+                    //     Payload::Bytes(bytes) => &WitPayload::Bytes(bytes),
+                    // }
+                };
                 bindings
-                    .call_run_write(&mut store, &our_name, &message_from_loop)
+                    // .call_run_write(&mut store, &our_name, &message_from_loop)
+                    .call_run_write(
+                        &mut store,
+                        wit_message,
+                    )
                     .await
                     .unwrap();
                 i = i + 1;
@@ -187,18 +279,20 @@ impl ProcessAndHandle {
     async fn new(
         our_name: String,
         process_name: String,
-        file_path: &str,
-        send_to_loop: CardSender,
+        file_uri: &str,
+        send_to_loop: MessageSender,
         send_to_terminal: PrintSender,
         engine: &Engine,
     ) -> Self {
         let (send_to_process, recv_in_process) =
-            mpsc::channel::<String>(PROCESS_CHANNEL_CAPACITY);
+            // mpsc::channel::<String>(PROCESS_CHANNEL_CAPACITY);
+            mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
 
         let process = Arc::new(Mutex::new(ProcessData {
                 our_name: our_name,
                 process_name: process_name,
-                file_path: file_path.to_string(),
+                file_uri: file_uri.to_string(),
+                file_bytes: Vec::new(),
                 state: serde_json::Value::Null,
                 send_to_loop: send_to_loop,
                 send_to_process: send_to_process,
@@ -223,20 +317,29 @@ impl ProcessAndHandle {
 fn make_event_loop(
     our_name: String,
     processes: Processes,
-    mut recv_in_loop: CardReceiver,
-    send_to_wss: CardSender,
+    mut recv_in_loop: MessageReceiver,
+    send_to_wss: MessageSender,
+    send_to_fs: MessageSender,
     send_to_terminal: PrintSender
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
+            println!("event loop: running");
             loop {
-                let next_card = recv_in_loop.recv().await.unwrap();
-                send_to_terminal
-                    .send(format!("event loop: got: {:?}", next_card))
-                    .await
-                    .unwrap();
-                if our_name != next_card.target {
-                    match send_to_wss.send(next_card).await {
+                let next_message = recv_in_loop.recv().await.unwrap();
+                if let Payload::Json(_) = next_message.payload {
+                    send_to_terminal
+                        .send(format!("event loop: got json message: {:?}", next_message))
+                        .await
+                        .unwrap();
+                } else {
+                    send_to_terminal
+                        .send(format!("event loop: got bytes message source, target: {:?}, {:?}", next_message.source, next_message.target))
+                        .await
+                        .unwrap();
+                }
+                if our_name != next_message.target.server {
+                    match send_to_wss.send(next_message).await {
                         Ok(()) => {
                             send_to_terminal
                                 .send("event loop: sent to wss".to_string())
@@ -251,16 +354,30 @@ fn make_event_loop(
                         }
                     }
                 } else {
-                    let to = json_to_string(&next_card.payload["to"]);
-                    let data = json_to_string(&next_card.payload["data"]);
-
-                    match processes.get(&to) {
+                    let to = next_message.target.app.clone();
+                    if "filesystem".to_string() == to {
+                        //  request bytes from filesystem
+                        //  TODO: generalize this to arbitrary URIs
+                        //        (e.g., fs, http, peer, ...)
+                        let _ = send_to_fs
+                            .send(next_message)
+                            .await;
+                        continue;
+                    }
+                    //  pass message to appropriate process
+                    println!("el: 0");
+                    let processes_lock = processes.read().await;
+                    println!("el: 1");
+                    match processes_lock.get(&to) {
                         Some(value) => {
+                            println!("el: 2");
                             let process = value.process.lock().await;
+                            println!("el: 3");
                             let _result = process
                                 .send_to_process
-                                .send(data)
+                                .send(next_message)
                                 .await;
+                            println!("el: 3");
                             send_to_terminal
                                 .send(
                                     format!(
@@ -277,7 +394,7 @@ fn make_event_loop(
                                     format!(
                                         "event loop: don't have {} amongst registered processes: {:?}",
                                         to,
-                                        processes.keys().collect::<Vec<_>>()
+                                        processes_lock.keys().collect::<Vec<_>>()
                                     )
                                 )
                                 .await
@@ -293,69 +410,82 @@ fn make_event_loop(
 
 pub async fn kernel(
     our_name: &str,
-    send_to_loop: CardSender,
+    send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
-    recv_in_loop: CardReceiver,
-    send_to_wss: CardSender
+    recv_in_loop: MessageReceiver,
+    send_to_wss: MessageSender,
+    send_to_fs: MessageSender,
 ) {
     let mut config = Config::new();
     config.async_support(true);
     config.wasm_component_model(true);
     let engine = Engine::new(&config).unwrap();
 
-    let mut processes: Processes = HashMap::new();
+    let mut processes: Processes = Arc::new(RwLock::new(HashMap::new()));
 
-    let process_name = "http_server".to_string();
-    let file_path = "./http_server.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
-
-    let process_name = "hi_lus_lus".to_string();
-    let file_path = "./hi_lus_lus.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
-
-    let process_name = "poast".to_string();
-    let file_path = "./poast.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
+    println!("mk: 0");
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our_name.to_string(),
-            processes,
+            Arc::clone(&processes),
             recv_in_loop,
             send_to_wss,
+            send_to_fs,
             send_to_terminal.clone()
         )
     );
+
+    println!("mk: 1");
+
+    let mut processes_lock = processes.write().await;
+    let process_name = "http_server".to_string();
+    let file_uri = "fs://http_server.wasm";
+    processes_lock.insert(
+        process_name.clone(),
+        ProcessAndHandle::new(
+            our_name.to_string(),
+            process_name.clone(),
+            &file_uri,
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &engine
+        ).await
+    );
+
+    println!("mk: 2");
+
+    let process_name = "hi_lus_lus".to_string();
+    let file_uri = "fs://hi_lus_lus.wasm";
+    processes_lock.insert(
+        process_name.clone(),
+        ProcessAndHandle::new(
+            our_name.to_string(),
+            process_name.clone(),
+            &file_uri,
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &engine
+        ).await
+    );
+
+    println!("mk: 3");
+
+    let process_name = "poast".to_string();
+    let file_uri = "fs://poast.wasm";
+    processes_lock.insert(
+        process_name.clone(),
+        ProcessAndHandle::new(
+            our_name.to_string(),
+            process_name.clone(),
+            &file_uri,
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &engine
+        ).await
+    );
+
+    std::mem::drop(processes_lock);
 
     let _event_loop_result = event_loop_handle.await;
 }

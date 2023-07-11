@@ -12,15 +12,7 @@ checksum = "630be753d4e58660abd17930c71b647fe46c27ea6b63cc59e1e3851406972e42"
 name = "hi-lus-lus"
 version = "0.1.0"
 dependencies = [
- "hi_lus_lus-bindings",
  "serde_json",
- "wit-bindgen",
-]
-
-[[package]]
-name = "hi_lus_lus-bindings"
-version = "0.1.0"
-dependencies = [
  "wit-bindgen",
 ]
 

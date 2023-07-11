@@ -1,6 +1,7 @@
 use tokio::net::{TcpStream, TcpListener};
 use tokio_tungstenite::tungstenite::Error;
-use tokio_tungstenite::{connect_async, tungstenite::Message, accept_async, tungstenite::Result};
+use tokio_tungstenite::{connect_async, accept_async, tungstenite};
+// use tokio_tungstenite::{connect_async, tungstenite::Message, accept_async, tungstenite::Result};
 use url::Url;
 use futures::prelude::*;
 use std::time::Instant;
@@ -10,45 +11,45 @@ use crate::types::*;
 /*
  *  websockets driver
  */
-pub async fn ws_listener(card_tx: CardSender, print_tx: PrintSender, tcp: TcpListener) {
+pub async fn ws_listener(message_tx: MessageSender, print_tx: PrintSender, tcp: TcpListener) {
     while let Ok((stream, _)) = tcp.accept().await {
         let socket_addr = stream.peer_addr().expect("connected streams should have a peer address");
         let _ = print_tx.send(format!("Peer address: {}", socket_addr)).await;
 
-        tokio::spawn(handle_connection(stream, card_tx.clone(), print_tx.clone()));
+        tokio::spawn(handle_connection(stream, message_tx.clone(), print_tx.clone()));
     }
 }
 
-pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: CardReceiver) {
-    while let Some(card) = rx.recv().await {
+pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: MessageReceiver) {
+    while let Some(message) = rx.recv().await {
         let mut to = peers.write().await;
-        match to.remove(&card.target) {
+        match to.remove(&message.target.server) {
             Some(peer) => {
-                match handle_send(&card, &peer.url, &peer.port, peer.connection).await {
+                match handle_send(&message, &peer.url, &peer.port, peer.connection).await {
                     Ok(new_conn) => {
-                        let _ = print_tx.send("card sent!".to_string()).await;
-                        to.insert(card.target, Peer {connection: Some(new_conn), ..peer});
+                        let _ = print_tx.send("message sent!".to_string()).await;
+                        to.insert(message.target.server, Peer {connection: Some(new_conn), ..peer});
                     }
                     Err(e) => {
-                        let _ = print_tx.send(format!("error sending card: {}", e)).await;
-                        to.insert(card.target, Peer {connection: None, ..peer});
+                        let _ = print_tx.send(format!("error sending message: {}", e)).await;
+                        to.insert(message.target.server, Peer {connection: None, ..peer});
                     }
                 }
             },
             None => {
-                let _ = print_tx.send("error sending card, no known peer".into()).await;
+                let _ = print_tx.send("error sending message, no known peer".into()).await;
             }
         }
     }
 }
 
-/// send a card to a peer over websocket.
+/// send a message to a peer over websocket.
 /// if we don't have an active connection to peer, try to make one
-async fn handle_send(card: &Card, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
-    -> Result<Sock, Error> {
+async fn handle_send(message: &Message, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
+    -> tungstenite::Result<Sock, Error> {
     match peer_conn {
         Some(mut socket) => {
-            match socket.send(Message::text(serde_json::to_string(card).unwrap())).await {
+            match socket.send(tungstenite::Message::text(serde_json::to_string(message).unwrap())).await {
                 Ok(_) => Ok(socket),
                 Err(e) => Err(e)
             }
@@ -56,7 +57,7 @@ async fn handle_send(card: &Card, peer_url: &str, peer_port: &u16, peer_conn: Op
         None => {
             match connect_async(Url::parse(&format!("ws://{}:{}/ws", peer_url, peer_port)).unwrap()).await {
                 Ok((mut socket, _)) => {
-                    socket.send(Message::text(serde_json::to_string(card).unwrap())).await.unwrap();
+                    socket.send(tungstenite::Message::text(serde_json::to_string(message).unwrap())).await.unwrap();
                     Ok(socket)
                 },
                 Err(e) => Err(e)
@@ -65,13 +66,13 @@ async fn handle_send(card: &Card, peer_url: &str, peer_port: &u16, peer_conn: Op
     }
 }
 
-async fn handle_connection(stream: TcpStream, card_tx: CardSender, print_tx: PrintSender) {
+async fn handle_connection(stream: TcpStream, message_tx: MessageSender, print_tx: PrintSender) {
     let mut ws_stream = accept_async(stream).await.expect("Failed to accept");
 
     while let Some(msg) = ws_stream.next().await {
         match msg {
             Ok(msg) => {
-                ingest_peer_msg(card_tx.clone(), print_tx.clone(), msg).await;
+                ingest_peer_msg(message_tx.clone(), print_tx.clone(), msg).await;
             }
             Err(e) => {
                 println!("error while reading from socket: {}", e);
@@ -81,7 +82,7 @@ async fn handle_connection(stream: TcpStream, card_tx: CardSender, print_tx: Pri
     }
 }
 
-async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Message) {
+async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: tungstenite::Message) {
     let message = match msg.into_text() {
         Ok(v) => v,
         Err(_) => return,
@@ -93,7 +94,7 @@ async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Messag
     }
     // deserialize
     let start = Instant::now();
-    let card: Card = match serde_json::from_str(&message) {
+    let message: Message = match serde_json::from_str(&message) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error while parsing message: {}", e);
@@ -102,5 +103,5 @@ async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Messag
     };
     let duration = start.elapsed();
     let _ = print_tx.send(format!("Time taken to deserialize: {:?}", duration)).await;
-    let _ = card_tx.send(card).await;
+    let _ = message_tx.send(message).await;
 }

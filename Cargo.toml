@@ -22,3 +22,7 @@ url = "*"
 uuid = { version = "1.1.2", features = ["serde", "v4"] }
 wasmtime = "10.0.1"
 wasmtime-wasi = "10.0.1"
+cita_trie = "4.0.0"
+ethers = "2.0"
+hasher = "*"
+bincode = "*"

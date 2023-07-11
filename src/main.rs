@@ -10,6 +10,7 @@ mod terminal;
 mod websockets;
 mod microkernel;
 mod blockchain;
+mod engine;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;

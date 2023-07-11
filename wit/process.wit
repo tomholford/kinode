@@ -22,7 +22,6 @@ world microkernel-process {
     use types.{wit-app-node, wit-payload, wit-message}
 
     import to-event-loop: func(target: wit-app-node, payload: wit-payload)
-    // import to-event-loop: func(target: wit-app-node, message-to-loop: string)
     import modify-state: func(json-pointer: string, new-value: string) -> string
     import fetch-state: func(json-pointer: string) -> string
     import set-state: func(json: string) -> string
@@ -30,12 +29,4 @@ world microkernel-process {
     export init: func(source: wit-app-node)
     export run-write: func(message: wit-message)
     export run-read: func(message: wit-message) -> string
-    // import to-event-loop: func(target-server: string, to: string, message-to-loop: string)
-    // import modify-state: func(json-pointer: string, new-value: string) -> string
-    // import fetch-state: func(json-pointer: string) -> string
-    // import set-state: func(json: string) -> string
-    // import print-to-terminal: func(message: string)
-    // export init: func(our: string)                                            // TODO: our -> bowl
-    // export run-write: func(our: string, message-from-loop: string)            // TODO: our -> bowl
-    // export run-read: func(our: string, message-from-loop: string) -> string   // TODO: our -> bowl
 }

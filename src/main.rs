@@ -19,6 +19,9 @@ const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 
 #[tokio::main]
 async fn main() {
+    // For use with https://github.com/tokio-rs/console
+    // console_subscriber::init();
+
     let args: Vec<String> = env::args().collect();
     let our_name: String = args[1].clone();
 

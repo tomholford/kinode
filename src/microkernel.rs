@@ -11,6 +11,7 @@ use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
 use crate::types::*;
+//  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
 
 bindgen!({
@@ -25,14 +26,21 @@ const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
 #[serde(tag = "type")]
 enum ProcessManagerCommand {
     Start(ProcessManagerStart),
-    Stop(String),
-    Restart(String),
+    Stop(ProcessManagerStop),
+    Restart(ProcessManagerRestart),
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessManagerStart {
     process_name: String,
     wasm_bytes_uri: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerStop {
+    process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerRestart {
+    process_name: String,
 }
 
 struct ProcessData {
@@ -318,20 +326,24 @@ impl ProcessAndHandle {
     }
 
     async fn start(
-        &mut self,
+        // &mut self,
+        mut process: Self,
         recv_in_process: MessageReceiver,
         bytes_message: Message,
         engine: &Engine
-    ) {
+    ) -> Self {
         let process_handle = tokio::spawn(
             make_process_loop(
-                Arc::clone(&self.process),
+                // Arc::clone(&self.process),
+                Arc::clone(&process.process),
                 recv_in_process,
                 bytes_message,
                 engine,
             ).await
         );
-        self.handle = process_handle;
+        // self.handle = process_handle;
+        process.handle = process_handle;
+        process
     }
 }
 
@@ -441,6 +453,7 @@ async fn make_process_manager_loop(
         async move {
             loop {
                 let next_message = recv_in_process_manager.recv().await.unwrap();
+                println!("process manager: got {:?}", next_message);
                 //  TODO: validate source/target?
                 let Payload::Json(value) = next_message.payload else {
                     send_to_terminal
@@ -456,9 +469,12 @@ async fn make_process_manager_loop(
                     continue;
                 };
                 let process_manager_command: ProcessManagerCommand =
-                    serde_json::from_value(value)?;
+                    serde_json::from_value(value)
+                    .expect("process manager: could not parse to command");
+                println!("process manager: parsed {:?}", process_manager_command);
                 match process_manager_command {
                     ProcessManagerCommand::Start(start) => {
+                        println!("process manager: start");
                         let (send_to_process, mut recv_in_process) =
                             mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
                         {
@@ -476,18 +492,66 @@ async fn make_process_manager_loop(
                             );
                         }
 
+                        //  Divide operation into two steps to avoid blocking event loop,
+                        //   which needs read access to processes HashMap.
                         let bytes_message = recv_in_process.recv().await.unwrap();
                         {
                             let mut processes_write = processes.write().await;
-                            let mut process = processes_write
-                                .get_mut(&start.process_name)
+                            let process = processes_write
+                                .remove(&start.process_name)
                                 .unwrap();
                             //  TODO: does this properly update the process within the map?
-                            process.start(recv_in_process, bytes_message, &engine).await;
+                            // process.start(recv_in_process, bytes_message, &engine).await;
+                            let process = ProcessAndHandle::start(
+                                process,
+                                recv_in_process,
+                                bytes_message,
+                                &engine
+                            ).await;
+                            processes_write.insert(
+                                start.process_name.clone(),
+                                process,
+                            );
                         }
                     },
-                    ProcessManagerCommand::Stop(process_name) => panic!("todo"),
-                    ProcessManagerCommand::Restart(process_name) => panic!("todo"),
+                    ProcessManagerCommand::Stop(stop) => {
+                        println!("process manager: stop");
+                        let mut processes_write = processes.write().await;
+                        let removed = processes_write
+                            .remove(&stop.process_name)
+                            .unwrap();
+                        removed.handle.abort();
+                        println!("process manager: {:?}", processes_write.keys().collect::<Vec<_>>());
+                    },
+                    ProcessManagerCommand::Restart(restart) => {
+                        println!("process manager: restart");
+                        let mut processes_write = processes.write().await;
+                        let removed = processes_write
+                            .remove(&restart.process_name)
+                            .unwrap();
+                        removed.handle.abort();
+
+                        let removed_process = removed.process.lock().await;
+                        let restart_payload =
+                            serde_json::to_value(
+                                ProcessManagerCommand::Start(ProcessManagerStart {
+                                    process_name: removed_process.process_name.clone(),
+                                    wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
+                                })
+                            ).unwrap();
+                        let restart_message = Message {
+                            source: AppNode {
+                                server: our_name.clone(),
+                                app: "process_manager".to_string(),
+                            },
+                            target: AppNode {
+                                server: removed_process.our_name.clone(),
+                                app: "process_manager".to_string(),
+                            },
+                            payload: Payload::Json(restart_payload),
+                        };
+                        let _ = send_to_loop.send(restart_message).await;
+                    },
                 }
             }
         }

@@ -12,9 +12,9 @@ use crate::types::*;
  */
 pub async fn ws_listener(card_tx: CardSender, print_tx: PrintSender, tcp: TcpListener) {
     while let Ok((stream, _)) = tcp.accept().await {
-        let socket_addr = stream.peer_addr().expect("connected streams should have a peer address");
-        let _ = print_tx.send(format!("Peer address: {}", socket_addr)).await;
-
+        let _socket_addr = stream.peer_addr().expect("connected streams should have a peer address");
+        // let _ = print_tx.send(format!("Peer address: {}", socket_addr)).await;
+        // TODO validate here that the peer is in our PKI, valid, etc etc
         tokio::spawn(handle_connection(stream, card_tx.clone(), print_tx.clone()));
     }
 }
@@ -26,7 +26,6 @@ pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: CardReceiver
             Some(peer) => {
                 match handle_send(&card, &peer.url, &peer.port, peer.connection).await {
                     Ok(new_conn) => {
-                        let _ = print_tx.send("card sent!".to_string()).await;
                         to.insert(card.target, Peer {connection: Some(new_conn), ..peer});
                     }
                     Err(e) => {
@@ -74,7 +73,9 @@ async fn handle_connection(stream: TcpStream, card_tx: CardSender, print_tx: Pri
                 ingest_peer_msg(card_tx.clone(), print_tx.clone(), msg).await;
             }
             Err(e) => {
-                println!("error while reading from socket: {}", e);
+                println!("lost peer: {}", e);
+                // we lost a peer connection. send card to kernel to try and reconnect?
+                let _ = card_tx.send(Card { source: "me".into(), target: "kernel".into(), payload: "lost peer".into()}).await;
                 break;
             }
         }

@@ -3,6 +3,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 use std::env;
 
+use ethers::prelude::*;
+
 use crate::types::*;
 
 mod types;
@@ -27,6 +29,19 @@ async fn main() {
     let (wss_card_sender, wss_card_receiver): (CardSender, CardReceiver) = mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) = mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
+
+    let uqchain = engine::UqChain::new();
+    let my_txn: engine::Transaction = engine::Transaction {
+                                        from: "0x0000000000000000000000000000000000000000000000000000000000001234".parse().unwrap(),
+                                        signature: None,
+                                        to: "0x0000000000000000000000000000000000000000000000000000000000005678".parse().unwrap(),
+                                        town_id: 0,
+                                        calldata: serde_json::to_value("hi").unwrap(),
+                                        nonce: U256::from(1),
+                                        gas_price: U256::from(0),
+                                        gas_limit: U256::from(0),
+                                    };
+    let _ = uqchain.run_batch(vec![my_txn]);
 
     // this will be replaced with actual chain reading
     let blockchain = std::fs::File::open("blockchain.json")

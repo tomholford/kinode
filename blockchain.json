@@ -6,7 +6,7 @@
     },
     "loach": {
         "name": "loach",
-        "url": "75.197.158.142",
+        "url": "localhost",
         "port": 9001
     },
     "tuna": {

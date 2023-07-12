@@ -1980,6 +1980,7 @@ dependencies = [
  "async-std",
  "async-trait",
  "futures",
+ "http",
  "log",
  "rs_merkle",
  "rustyline-async",

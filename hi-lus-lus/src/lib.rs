@@ -3,7 +3,7 @@ use serde_json::json;
 struct Component;
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(_our: String) {
+    fn init(_source: bindings::WitAppNode) {
         bindings::set_state(
             serde_json::to_string(
                 &json!({
@@ -18,7 +18,12 @@ impl bindings::MicrokernelProcess for Component {
         );
     }
 
-    fn run_write(_our: String, message_from_loop_string: String) {
+    fn run_write(message: bindings::WitMessage) {
+        let bindings::component::microkernel_process::types::WitPayload::Json(
+            message_from_loop_string
+        ) = message.payload else {
+            panic!("foo")
+        };
         let message_from_loop: serde_json::Value =
             serde_json::from_str(&message_from_loop_string).unwrap();
         if let serde_json::Value::String(action) = &message_from_loop["action"] {
@@ -63,19 +68,29 @@ impl bindings::MicrokernelProcess for Component {
                     "target": target,
                     "contents": contents
                 });
-                bindings::to_event_loop(target, "hi_lus_lus", &payload.to_string());
+                let wit_payload =
+                    bindings::component::microkernel_process::types::WitPayload::Json(
+                        payload.to_string()
+                    );
+                bindings::to_event_loop(
+                    &bindings::WitAppNode {
+                        server: target.to_string(),
+                        app: "hi_lus_lus".to_string(),
+                    },
+                    &wit_payload
+                );
             }
         } else {
             bindings::print_to_terminal(
                 format!(
                     "hi++: unexpected action: {:?}",
-                    &message_from_loop["action"]
+                    &message_from_loop["action"],
                 ).as_str()
             );
         }
     }
 
-    fn run_read(_our: String, _message_from_loop: String) -> String {
+    fn run_read(_message: bindings::WitMessage) -> String {
         "".to_string()
     }
 }

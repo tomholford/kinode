@@ -8,8 +8,8 @@ pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 
 pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-pub type CardSender = tokio::sync::mpsc::Sender<Card>;
-pub type CardReceiver = tokio::sync::mpsc::Receiver<Card>;
+pub type MessageSender = tokio::sync::mpsc::Sender<Message>;
+pub type MessageReceiver = tokio::sync::mpsc::Receiver<Message>;
 
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
@@ -32,10 +32,22 @@ pub struct Peer {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Card {
-    pub source: String,
-    pub target: String,
-    pub payload: serde_json::Value,
+pub struct AppNode {
+    pub server: String,
+    pub app: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Payload {
+    Json(serde_json::Value),
+    Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Message {
+    pub source: AppNode,
+    pub target: AppNode,
+    pub payload: Payload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,7 +59,7 @@ pub struct ID {
 }
 
 pub enum Command {
-    Card(Card),
+    Message(Message),
     Quit,
     Invalid,
 }

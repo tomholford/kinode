@@ -19,9 +19,7 @@ impl bindings::MicrokernelProcess for Component {
     }
 
     fn run_write(message: bindings::WitMessage) {
-        let bindings::component::microkernel_process::types::WitPayload::Json(
-            message_from_loop_string
-        ) = message.payload else {
+        let Some(message_from_loop_string) = message.payload.json else {
             panic!("foo")
         };
         let message_from_loop: serde_json::Value =
@@ -68,16 +66,16 @@ impl bindings::MicrokernelProcess for Component {
                     "target": target,
                     "contents": contents
                 });
-                let wit_payload =
-                    bindings::component::microkernel_process::types::WitPayload::Json(
-                        payload.to_string()
-                    );
+                let response = bindings::component::microkernel_process::types::WitPayload {
+                    json: Some(payload.to_string()),
+                    bytes: None,
+                };
                 bindings::to_event_loop(
                     &bindings::WitAppNode {
                         server: target.to_string(),
                         app: "hi_lus_lus".to_string(),
                     },
-                    &wit_payload
+                    &response,
                 );
             }
         } else {

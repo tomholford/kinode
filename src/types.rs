@@ -38,9 +38,9 @@ pub struct AppNode {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Payload {
-    Json(serde_json::Value),
-    Bytes(Vec<u8>),
+pub struct Payload {
+    pub json: Option<serde_json::Value>,
+    pub bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,4 +62,17 @@ pub enum Command {
     Message(Message),
     Quit,
     Invalid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileSystemCommand {
+    pub uri_string: String,
+    pub command: FileSystemAction,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemAction {
+    Read,
+    Write,
+    Append,
 }

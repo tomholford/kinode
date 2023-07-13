@@ -6,9 +6,9 @@ interface types {
         app: string,
     }
     
-    variant wit-payload {
-        json(string),
-        bytes(list<u8>),
+    record wit-payload {
+        json: option<string>,
+        bytes: option<list<u8>>,
     }
     
     record wit-message {

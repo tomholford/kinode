@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use ethers::types::H256;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
@@ -221,7 +222,7 @@ impl ProcessAndHandle {
 }
 
 fn make_event_loop(
-    our_name: String,
+    our_address: H256,
     processes: Processes,
     mut recv_in_loop: CardReceiver,
     send_to_wss: CardSender,
@@ -235,7 +236,7 @@ fn make_event_loop(
                     .send(format!("event loop: got: {:?}", next_card))
                     .await
                     .unwrap();
-                if our_name != next_card.target {
+                if our_address != next_card.target {
                     match send_to_wss.send(next_card).await {
                         Ok(()) => {
                             send_to_terminal
@@ -292,7 +293,7 @@ fn make_event_loop(
 }
 
 pub async fn kernel(
-    our_name: &str,
+    our: &Identity,
     send_to_loop: CardSender,
     send_to_terminal: PrintSender,
     recv_in_loop: CardReceiver,
@@ -310,7 +311,7 @@ pub async fn kernel(
     processes.insert(
         process_name.clone(),
         ProcessAndHandle::new(
-            our_name.to_string(),
+            our.name.to_string(),
             process_name.clone(),
             &file_path,
             send_to_loop.clone(),
@@ -324,7 +325,7 @@ pub async fn kernel(
     processes.insert(
         process_name.clone(),
         ProcessAndHandle::new(
-            our_name.to_string(),
+            our.name.to_string(),
             process_name.clone(),
             &file_path,
             send_to_loop.clone(),
@@ -338,7 +339,7 @@ pub async fn kernel(
     processes.insert(
         process_name.clone(),
         ProcessAndHandle::new(
-            our_name.to_string(),
+            our.name.to_string(),
             process_name.clone(),
             &file_path,
             send_to_loop.clone(),
@@ -349,7 +350,7 @@ pub async fn kernel(
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
-            our_name.to_string(),
+            our.address.clone(),
             processes,
             recv_in_loop,
             send_to_wss,

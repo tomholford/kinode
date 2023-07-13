@@ -53,15 +53,15 @@ pub struct Payload {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
-    pub note: Note,
+    pub message_type: MessageType,
     pub wire: Wire,
     pub payload: Payload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Note {
-    Pass,
-    Give,
+pub enum MessageType {
+    Request(bool),
+    Response,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

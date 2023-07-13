@@ -58,7 +58,7 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
             let (target_app, payload) = tail.split_once(" ")?;
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
             Some(Command::Message(Message {
-                note: Note::Pass, // TODO I believe this is correct
+                message_type: MessageType::Request(true),
                 wire: Wire {
                     source_ship: our_name.to_string(),
                     source_app: "terminal".to_string(),

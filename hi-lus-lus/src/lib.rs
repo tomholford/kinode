@@ -24,64 +24,84 @@ impl bindings::MicrokernelProcess for Component {
         };
         let message_from_loop: serde_json::Value =
             serde_json::from_str(&message_from_loop_string).unwrap();
-        let json_pointer = "/messages/sent";
-        let state_string = bindings::fetch_state(json_pointer);
-        let state = serde_json::from_str(&state_string).unwrap();
-        if let serde_json::Value::Array(mut vector) = state {
-            vector.push(serde_json::to_value(&message_from_loop_string).unwrap());
-            bindings::modify_state(
-                json_pointer,
-                serde_json::to_string(&serde_json::Value::Array(vector))
-                    .unwrap()
-                    .as_str()
+        if let serde_json::Value::String(action) = &message_from_loop["action"] {
+            if action == "receive" {
+                let json_pointer = "/messages/received";
+                let state_string = bindings::fetch_state(json_pointer);
+                let state = serde_json::from_str(&state_string).unwrap();
+                if let serde_json::Value::Array(mut vector) = state {
+                    vector.push(serde_json::to_value(&message_from_loop_string).unwrap());
+                    bindings::modify_state(
+                        json_pointer,
+                        serde_json::to_string(&serde_json::Value::Array(vector))
+                            .unwrap()
+                            .as_str()
+                    );
+                }
+                bindings::print_to_terminal(
+                    format!(
+                        "hi++: got message {}",
+                        message_from_loop_string
+                    ).as_str()
+                );
+            } else if action == "send" {
+                let json_pointer = "/messages/sent";
+                let state_string = bindings::fetch_state(json_pointer);
+                let state = serde_json::from_str(&state_string).unwrap();
+                if let serde_json::Value::Array(mut vector) = state {
+                    vector.push(serde_json::to_value(&message_from_loop_string).unwrap());
+                    bindings::modify_state(
+                        json_pointer,
+                        serde_json::to_string(&serde_json::Value::Array(vector))
+                            .unwrap()
+                            .as_str()
+                    );
+                }
+                let serde_json::Value::String(ref target) =
+                    message_from_loop["target"] else { panic!("unexpected target") };
+                let serde_json::Value::String(ref contents) =
+                    message_from_loop["contents"] else { panic!("unexpected contents") };
+                let payload = json!({
+                    "action": "receive",
+                    "target": target,
+                    "contents": contents,
+                });
+                let response = bindings::component::microkernel_process::types::WitPayload {
+                    json: Some(payload.to_string()),
+                    bytes: None,
+                };
+                bindings::to_event_loop(
+                    &target.to_string(),
+                    &"hi_lus_lus".to_string(),
+                    bindings::WitMessageType::Request(false),
+                    &response,
+                );
+            } else {
+                bindings::print_to_terminal(
+                    format!(
+                        "hi++: unexpected action (expected either 'send' or 'receive'): {:?}",
+                        &message_from_loop["action"],
+                    ).as_str()
+                );
+            }
+        } else {
+            bindings::print_to_terminal(
+                format!(
+                    "hi++: unexpected action: {:?}",
+                    &message_from_loop["action"],
+                ).as_str()
             );
         }
-        let serde_json::Value::String(ref target) =
-            message_from_loop["target"] else { panic!("unexpected target") };
-        let serde_json::Value::String(ref contents) =
-            message_from_loop["contents"] else { panic!("unexpected contents") };
-        let payload = json!({
-            "target": target,
-            "contents": contents
-        });
-        let response = bindings::component::microkernel_process::types::WitPayload {
-            json: Some(payload.to_string()),
-            bytes: None,
-        };
-        bindings::to_event_loop(
-            &target.to_string(),
-            &"hi_lus_lus".to_string(),
-            bindings::WitNote::Give,
-            &response
-        );
+
+
     }
 
     fn run_read(_message: bindings::WitMessage) -> String {
         "".to_string()
     }
 
-    fn run_take(message: bindings::WitMessage) {
-        let Some(message_from_loop_string) = message.payload.json else {
-            panic!("foo")
-        };
-        let json_pointer = "/messages/received";
-        let state_string = bindings::fetch_state(json_pointer);
-        let state = serde_json::from_str(&state_string).unwrap();
-        if let serde_json::Value::Array(mut vector) = state {
-            vector.push(serde_json::to_value(&message_from_loop_string).unwrap());
-            bindings::modify_state(
-                json_pointer,
-                serde_json::to_string(&serde_json::Value::Array(vector))
-                    .unwrap()
-                    .as_str()
-            );
-        }
-        bindings::print_to_terminal(
-            format!(
-                "hi++: got message {}",
-                message_from_loop_string
-            ).as_str()
-        );
+    fn handle_response(_message: bindings::WitMessage) {
+        return;
     }
 }
 

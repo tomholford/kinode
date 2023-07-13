@@ -75,7 +75,7 @@ impl MicrokernelProcessImports for Process {
         &mut self,
         target_ship: String,
         target_app: String,
-        note: WitNote,
+        message_type: WitMessageType,
         wit_payload: WitPayload,
     ) -> Result<()> {
         let payload = Payload {
@@ -101,9 +101,11 @@ impl MicrokernelProcessImports for Process {
                 target_ship: target_ship,
                 target_app: target_app,
             },
-            note: match note {
-                WitNote::Pass => { Note::Pass },
-                WitNote::Give => { Note::Give }
+            message_type: match message_type {
+                WitMessageType::Request(is_expecting_response) => {
+                    MessageType::Request(is_expecting_response)
+                },
+                WitMessageType::Response => MessageType::Response,
             },
             payload: payload,
         };
@@ -176,7 +178,7 @@ async fn init_process(process: Process) {
     };
 
     let get_bytes_message = Message {
-        note: Note::Pass,
+        message_type: MessageType::Request(false),
         wire: Wire {
             source_ship: our_name.clone(),
             source_app: process_name.clone(),
@@ -267,12 +269,14 @@ async fn make_process_loop(
                     },
                     bytes: message_from_loop.payload.bytes,
                 };
-                let wit_note = match message_from_loop.note {
-                    Note::Pass => WitNote::Pass,
-                    Note::Give => WitNote::Give,
+                let wit_message_type = match message_from_loop.message_type {
+                    MessageType::Request(is_expecting_response) => {
+                        WitMessageType::Request(is_expecting_response)
+                    },
+                    MessageType::Response => WitMessageType::Response,
                 };
                 let wit_message = WitMessage {
-                    note: wit_note,
+                    message_type: wit_message_type,
                     wire: WitWire {
                         source_ship: &message_from_loop.wire.source_ship,
                         source_app: &message_from_loop.wire.source_app,
@@ -281,18 +285,28 @@ async fn make_process_loop(
                     },
                     payload: &wit_payload,
                 };
-                match wit_note {
-                    WitNote::Pass => {
+                match wit_message_type {
+                    WitMessageType::Request(is_expecting_response) => {
                         bindings.call_run_write(
                             &mut store,
                             wit_message,
                         ).await.unwrap();
+                        //  TODO
+                        // if is_expecting_response {
+                        //     //  TODO: push to message_stack
+                        // } else {
+                        //     bindings.call_run_write(
+                        //         &mut store,
+                        //         wit_message,
+                        //     ).await.unwrap();
+                        // }
                     },
-                    WitNote::Give => {
-                        bindings.call_run_take(
+                    WitMessageType::Response => {
+                        bindings.call_handle_response(
                             &mut store,
                             wit_message,
                         ).await.unwrap();
+                        //  TODO: pop message_stack here or later?
                     },
                 }
                 i = i + 1;
@@ -564,9 +578,8 @@ async fn make_process_manager_loop(
                                     wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
                                 })
                             ).unwrap();
-                        let restart_note = Note::Pass;
                         let restart_message = Message {
-                            note: restart_note,
+                            message_type: MessageType::Request(true),
                             wire: Wire {
                                 source_ship: our_name.clone(),
                                 source_app: "process_manager".to_string(),

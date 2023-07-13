@@ -98,7 +98,7 @@ async fn handle_read(
     };
 
     let response = Message {
-        note: Note::Give,
+        message_type: MessageType::Response,
         wire: Wire {
             source_ship: our_name.clone(),
             source_app: "filesystem".to_string(),

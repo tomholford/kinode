@@ -31,7 +31,7 @@ impl bindings::MicrokernelProcess for Component {
         bindings::to_event_loop(
             &message.wire.source_ship.clone(),
             &"http_server".to_string(),
-            bindings::WitNote::Pass,
+            bindings::WitMessageType::Request(false),
             &response
         );
     }
@@ -40,7 +40,7 @@ impl bindings::MicrokernelProcess for Component {
         "".to_string()
     }
 
-    fn run_take(_message: bindings::WitMessage) {
+    fn handle_response(_message: bindings::WitMessage) {
         bindings::print_to_terminal("in take");
     }
 }

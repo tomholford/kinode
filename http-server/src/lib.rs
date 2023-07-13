@@ -18,6 +18,10 @@ impl bindings::MicrokernelProcess for Component {
     fn run_read(_message: bindings::WitMessage) -> String {
         "".to_string()
     }
+
+    fn run_take(_message: bindings::WitMessage) {
+        bindings::print_to_terminal("in take");
+    }
 }
 
 bindings::export!(Component);

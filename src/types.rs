@@ -51,6 +51,12 @@ pub struct Message {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub enum Note {
+    Pass,
+    Give,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ID {
     node: String,
     app_name: String,

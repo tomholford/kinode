@@ -10,8 +10,14 @@ interface types {
         json(string),
         bytes(list<u8>),
     }
+
+    enum wit-note {
+        pass,
+        give,
+    }
     
     record wit-message {
+        note: wit-note,
         source: wit-app-node,
         target: wit-app-node,
         payload: wit-payload,
@@ -28,5 +34,6 @@ world microkernel-process {
     import print-to-terminal: func(message: string)
     export init: func(source: wit-app-node)
     export run-write: func(message: wit-message)
+    export run-take: func(message: wit-message)
     export run-read: func(message: wit-message) -> string
 }

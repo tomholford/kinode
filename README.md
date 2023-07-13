@@ -56,10 +56,10 @@ cargo r dolph
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
-!message dolph hi_lus_lus {"action": "send", "target": "tuna", "contents": "hello from dolph"}
+!message dolph hi_lus_lus {"target": "tuna", "contents": "hello from dolph"}
 
 # Terminal A: Send a message back from A to B using hi++:
-!message tuna hi_lus_lus {"action": "send", "target": "dolph", "contents": "hello from tuna"}
+!message tuna hi_lus_lus {"target": "dolph", "contents": "hello from tuna"}
 
 # Terminal A: Stopping a process means messages will no longer work:
 !message tuna process_manager {"type": "Stop", "process_name": "poast"}

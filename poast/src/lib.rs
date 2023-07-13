@@ -28,6 +28,7 @@ impl bindings::MicrokernelProcess for Component {
         bindings::to_event_loop(
             &message.wire.source_ship.clone(),
             &"http_server".to_string(),
+            bindings::WitNote::Pass,
             &response
         );
     }

@@ -13,7 +13,6 @@ use serde::{Serialize, Deserialize};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
-use crate::microkernel::component::microkernel_process::types::WitNote;
 
 bindgen!({
     path: "wit",
@@ -75,6 +74,7 @@ impl MicrokernelProcessImports for Process {
         &mut self,
         target_ship: String,
         target_app: String,
+        note: WitNote,
         // data_string: String
         wit_payload: WitPayload,
     ) -> Result<()> {
@@ -93,19 +93,20 @@ impl MicrokernelProcessImports for Process {
 
         let process_data = self.lock().await;
 
-        // TODO this is extremely bad
-        let message_json = json!({
-            "wire": Wire {
+        let message = Message {
+            wire: Wire {
                 source_ship: process_data.our_name.clone(),
                 source_app: process_data.process_name.clone(),
                 target_ship: target_ship,
                 target_app: target_app,
             },
-            "note": Note::Pass, // TODO no idea
+            note: match note {
+                WitNote::Pass => { Note::Pass },
+                WitNote::Give => { Note::Give }
+            },
             // "payload": Payload::Json(data),
-            "payload": payload,
-        });
-        let message: Message = serde_json::from_value(message_json).unwrap();
+            payload: payload,
+        };
 
         process_data.send_to_loop.send(message).await.expect("to_event_loop: error sending");
         Ok(())

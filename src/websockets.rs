@@ -23,16 +23,16 @@ pub async fn ws_listener(message_tx: MessageSender, print_tx: PrintSender, tcp: 
 pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: MessageReceiver) {
     while let Some(message) = rx.recv().await {
         let mut to = peers.write().await;
-        match to.remove(&message.target.server) {
+        match to.remove(&message.wire.target_ship) {
             Some(peer) => {
                 match handle_send(&message, &peer.url, &peer.port, peer.connection).await {
                     Ok(new_conn) => {
                         let _ = print_tx.send("message sent!".to_string()).await;
-                        to.insert(message.target.server, Peer {connection: Some(new_conn), ..peer});
+                        to.insert(message.wire.target_ship, Peer {connection: Some(new_conn), ..peer});
                     }
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending message: {}", e)).await;
-                        to.insert(message.target.server, Peer {connection: None, ..peer});
+                        to.insert(message.wire.target_ship, Peer {connection: None, ..peer});
                     }
                 }
             },

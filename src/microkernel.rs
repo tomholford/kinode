@@ -92,15 +92,15 @@ impl MicrokernelProcessImports for Process {
 
         let process_data = self.lock().await;
 
+        // TODO this is extremely bad
         let message_json = json!({
-            "source": AppNode {
-                server: process_data.our_name.clone(),
-                app: process_data.process_name.clone(),
+            "wire": Wire {
+                source_ship: process_data.our_name.clone(),
+                source_app: process_data.process_name.clone(),
+                target_ship: target.server,
+                target_app: target.app,
             },
-            "target": AppNode { 
-                server: target.server,
-                app: target.app,
-            },
+            "note": Note::Pass, // TODO no idea
             // "payload": Payload::Json(data),
             "payload": payload,
         });
@@ -175,14 +175,12 @@ async fn init_process(process: Process) {
 
     let get_bytes_message = Message {
         note: Note::Pass, // TODO no idea
-        source: AppNode {
-            server: our_name.clone(),
-            app: process_name.clone(),
-        },
-        //  TODO: target should be inferred from process.data.file_uri
-        target: AppNode {
-            server: our_name.clone(),
-            app: "filesystem".to_string(),
+        wire: Wire {
+            source_ship: our_name.clone(),
+            source_app: process_name.clone(),
+            //  TODO: target should be inferred from process.data.file_uri 
+            target_ship: our_name.clone(),
+            target_app: "filesystem".to_string(),
         },
         payload: Payload::Json(
             json!({
@@ -208,10 +206,10 @@ async fn make_process_loop(
         )
     };
 
-    if "filesystem".to_string() != message_from_loop.source.app {
+    if "filesystem".to_string() != message_from_loop.wire.source_app {
         panic!(
             "message_process_loop: expected bytes message from filesystem, not {:?}",
-            message_from_loop.source.app,
+            message_from_loop.wire.source_app,
         );
     }
     let Payload::Bytes(wasm_bytes) = message_from_loop.payload else {
@@ -276,28 +274,34 @@ async fn make_process_loop(
                     Note::Give => WitNote::Give,
                 };
                 let wit_message = WitMessage {
-                    source: &WitAppNode {
-                        server: message_from_loop.source.server,
-                        app: message_from_loop.source.app,
-                    },
-                    target: &WitAppNode {
-                        server: message_from_loop.target.server,
-                        app: message_from_loop.target.app,
-                    },
                     note: wit_note,
+                    wire: WitWire {
+                        source_ship: &message_from_loop.wire.source_ship,
+                        source_app: &message_from_loop.wire.source_app,
+                        target_ship: &message_from_loop.wire.target_ship,
+                        target_app: &message_from_loop.wire.target_app
+                    },
                     payload: &wit_payload,
                 };
-
+                // TODO
+                let wit_wire = WitWire {
+                    source_ship: "", // message_from_loop.wire.source_ship,
+                    source_app: "", //message_from_loop.wire.source_app,
+                    target_ship: "", //message_from_loop.wire.target_ship,
+                    target_app: "", //message_from_loop.wire.target_app,
+                };
                 match wit_note {
                     WitNote::Pass => {
                         bindings.call_run_write(
                             &mut store,
+                            wit_wire, // TODO
                             wit_message,
                         ).await.unwrap();
                     },
                     WitNote::Give => {
                         bindings.call_run_take(
                             &mut store,
+                            wit_wire, // TODO
                             wit_message,
                         ).await.unwrap();
                     },
@@ -382,11 +386,15 @@ fn make_event_loop(
                         .unwrap();
                 } else {
                     send_to_terminal
-                        .send(format!("event loop: got bytes message source, target: {:?}, {:?}", next_message.source, next_message.target))
-                        .await
-                        .unwrap();
+                        .send(format!(
+                            "event loop: got bytes message source, target: {:?} {:?}, {:?} {:?}",
+                            next_message.wire.source_ship,
+                            next_message.wire.source_app,
+                            next_message.wire.target_ship,
+                            next_message.wire.target_app,
+                        )).await.unwrap();
                 }
-                if our_name != next_message.target.server {
+                if our_name != next_message.wire.target_ship {
                     match send_to_wss.send(next_message).await {
                         Ok(()) => {
                             send_to_terminal
@@ -402,7 +410,7 @@ fn make_event_loop(
                         }
                     }
                 } else {
-                    let to = next_message.target.app.clone();
+                    let to = next_message.wire.target_app.clone();
                     if "filesystem".to_string() == to {
                         //  request bytes from filesystem
                         //  TODO: generalize this to arbitrary URIs
@@ -474,9 +482,11 @@ async fn make_process_manager_loop(
                     send_to_terminal
                         .send(
                             format!(
-                                "process manager: got non-json payload with source, target: {:?}, {:?}",
-                                next_message.source,
-                                next_message.target,
+                                "process manager: got non-json payload with source, target: {:?} {:?}, {:?} {:?}",
+                                next_message.wire.source_ship,
+                                next_message.wire.source_app,
+                                next_message.wire.target_ship,
+                                next_message.wire.target_app,
                             )
                         )
                         .await
@@ -557,13 +567,11 @@ async fn make_process_manager_loop(
                         let restart_note = Note::Pass; // TODO this might be wrong? unclear
                         let restart_message = Message {
                             note: restart_note,
-                            source: AppNode {
-                                server: our_name.clone(),
-                                app: "process_manager".to_string(),
-                            },
-                            target: AppNode {
-                                server: removed_process.our_name.clone(),
-                                app: "process_manager".to_string(),
+                            wire: Wire {
+                                source_ship: our_name.clone(),
+                                source_app: "process_manager".to_string(),
+                                target_ship: removed_process.our_name.clone(),
+                                target_app: "process_manager".to_string(),
                             },
                             payload: Payload::Json(restart_payload),
                         };

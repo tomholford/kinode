@@ -59,13 +59,11 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
             Some(Command::Message(Message {
                 note: Note::Pass, // TODO I believe this is correct
-                source: AppNode {
-                    server: our_name.to_string(),
-                    app: "terminal".to_string(),
-                },
-                target: AppNode {
-                    server: target_server.to_string(),
-                    app: target_app.to_string(),
+                wire: Wire {
+                    source_ship: our_name.to_string(),
+                    source_app: "terminal".to_string(),
+                    target_ship: target_server.to_string(),
+                    target_app: target_app.to_string(),
                 },
                 payload: Payload::Json(val),
             }))

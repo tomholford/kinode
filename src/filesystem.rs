@@ -31,7 +31,7 @@ async fn handle_read(
     // if our_name != message.source.server {
     //     panic!("filesystem: request must come from our_name={}, got: {:?}", our_name, message);
     // }
-    if "filesystem".to_string() != message.target.app {
+    if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
     }
     let Payload::Json(value) = message.payload else {
@@ -56,13 +56,11 @@ async fn handle_read(
 
     let response = Message {
         note: Note::Give, // TODO I believe this is correct
-        source: AppNode {
-            server: our_name.clone(),
-            app: "filesystem".to_string(),
-        },
-        target: AppNode {
-            server: our_name.clone(),
-            app: message.source.app,
+        wire: Wire {
+            source_ship: our_name.clone(),
+            source_app: "filesystem".to_string(),
+            target_ship: our_name.clone(),
+            target_app: message.wire.source_app,
         },
         payload: Payload::Bytes(file_contents),
     };

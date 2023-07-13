@@ -38,6 +38,14 @@ pub struct AppNode {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct Wire {
+    pub source_ship: String,
+    pub source_app:  String,
+    pub target_ship: String,
+    pub target_app:  String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Payload {
     Json(serde_json::Value),
     Bytes(Vec<u8>),
@@ -46,8 +54,7 @@ pub enum Payload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
     pub note: Note,
-    pub source: AppNode,
-    pub target: AppNode,
+    pub wire: Wire,
     pub payload: Payload,
 }
 

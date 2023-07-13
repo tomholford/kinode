@@ -65,7 +65,10 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
                     target_ship: target_server.to_string(),
                     target_app: target_app.to_string(),
                 },
-                payload: Payload::Json(val),
+                payload: Payload {
+                    json: Some(val),
+                    bytes: None,
+                },
             }))
         }
         "!quit" => Some(Command::Quit),

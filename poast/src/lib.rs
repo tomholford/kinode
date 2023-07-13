@@ -8,13 +8,16 @@ impl bindings::MicrokernelProcess for Component {
     }
 
     fn run_write(message: bindings::WitMessage) {
-        let bindings::component::microkernel_process::types::WitPayload::Json(message_from_loop) = message.payload else {
+        let Some(message_from_loop) = message.payload.json else {
             panic!("foo")
         };
         let mut response_string = "\"".to_string();
         response_string.push_str(&message_from_loop);
         response_string.push_str(" appended by poast\"");
-        let response = bindings::component::microkernel_process::types::WitPayload::Json(response_string.clone());
+        let response = bindings::component::microkernel_process::types::WitPayload {
+            json: Some(response_string.clone()),
+            bytes: None,
+        };
         let state_string = bindings::fetch_state("");
         let mut state = serde_json::from_str(&state_string).unwrap();
         state = match state {

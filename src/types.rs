@@ -64,12 +64,14 @@ pub enum Command {
     Invalid,
 }
 
-pub struct FileSystemRequest {
-    uri: String,
-    command: FileSystemCommand,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileSystemCommand {
+    pub uri_string: String,
+    pub command: FileSystemAction,
 }
 
-pub enum FileSystemCommand {
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemAction {
     Read,
     Write,
     Append,

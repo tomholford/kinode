@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
@@ -182,9 +182,14 @@ async fn init_process(process: Process) {
             app: "filesystem".to_string(),
         },
         payload: Payload{
-            json: Some(json!({
-                "uri": wasm_bytes_uri,
-            })),
+            json: Some(
+                serde_json::to_value(
+                    FileSystemCommand{
+                        uri_string: wasm_bytes_uri,
+                        command: FileSystemAction::Read,
+                    }
+                ).unwrap()
+            ),
             bytes: None,
         },
     };
@@ -431,6 +436,8 @@ fn make_event_loop(
     )
 }
 
+//  TODO: remove unnecessary println!s;
+//        change necessary to send_to_terminals
 async fn make_process_manager_loop(
     our_name: String,
     processes: Processes,
@@ -441,6 +448,14 @@ async fn make_process_manager_loop(
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
+            let disallowed_process_names = vec![
+                "filesystem".to_string(),
+                "process_manager".to_string(),
+                "terminal".to_string(),
+            ];
+            let disallowed_process_names: HashSet<String> = disallowed_process_names
+                .into_iter()
+                .collect();
             loop {
                 let next_message = recv_in_process_manager.recv().await.unwrap();
                 println!("process manager: got {:?}", next_message);
@@ -465,6 +480,14 @@ async fn make_process_manager_loop(
                 match process_manager_command {
                     ProcessManagerCommand::Start(start) => {
                         println!("process manager: start");
+                        if disallowed_process_names.contains(&start.process_name) {
+                            println!(
+                                "process manager: cannot add process {} with name amongst {:?}",
+                                &start.process_name,
+                                disallowed_process_names.iter().collect::<Vec<_>>(),
+                            );
+                            continue;
+                        }
                         let (send_to_process, mut recv_in_process) =
                             mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
                         {

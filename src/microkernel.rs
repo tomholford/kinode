@@ -222,7 +222,7 @@ impl ProcessAndHandle {
 }
 
 fn make_event_loop(
-    our_address: H256,
+    our_name: String,
     processes: Processes,
     mut recv_in_loop: CardReceiver,
     send_to_wss: CardSender,
@@ -236,7 +236,7 @@ fn make_event_loop(
                     .send(format!("event loop: got: {:?}", next_card))
                     .await
                     .unwrap();
-                if our_address != next_card.target {
+                if our_name != next_card.target {
                     match send_to_wss.send(next_card).await {
                         Ok(()) => {
                             send_to_terminal
@@ -350,7 +350,7 @@ pub async fn kernel(
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
-            our.address.clone(),
+            our.name.clone(),
             processes,
             recv_in_loop,
             send_to_wss,

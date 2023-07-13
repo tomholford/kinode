@@ -34,7 +34,7 @@ async fn handle_read(
     if "filesystem".to_string() != message.target.app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
     }
-    let Payload::Json(value) = message.payload else {
+    let Some(value) = message.payload.json else {
         panic!("filesystem: request must have JSON payload, got: {:?}", message);
     };
     let serde_json::Value::String(ref uri_string) = value["uri"] else {
@@ -63,7 +63,10 @@ async fn handle_read(
             server: our_name.clone(),
             app: message.source.app,
         },
-        payload: Payload::Bytes(file_contents),
+        payload: Payload {
+            json: None,
+            bytes: Some(file_contents),
+        },
     };
 
     let _ = message_tx.send(response).await;

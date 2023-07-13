@@ -73,20 +73,20 @@ impl MicrokernelProcessImports for Process {
     async fn to_event_loop(
         &mut self,
         target: WitAppNode,
-        // data_string: String
         wit_payload: WitPayload,
     ) -> Result<()> {
-        let payload: Payload = match wit_payload {
-            WitPayload::Json(payload_string) => {
-                Payload::Json(
-                    serde_json::from_str(&payload_string).expect(
-                        format!("given data not JSON string: {}", payload_string).as_str()
+        let payload = Payload {
+            json: match wit_payload.json {
+                Some(payload_string) => {
+                    Some(
+                        serde_json::from_str(&payload_string).expect(
+                            format!("given data not JSON string: {}", payload_string).as_str()
+                        )
                     )
-                )
+                },
+                None => None,
             },
-            WitPayload::Bytes(payload_bytes) => {
-                Payload::Bytes(payload_bytes)
-            },
+            bytes: wit_payload.bytes,
         };
 
         let process_data = self.lock().await;
@@ -100,7 +100,6 @@ impl MicrokernelProcessImports for Process {
                 server: target.server,
                 app: target.app,
             },
-            // "payload": Payload::Json(data),
             "payload": payload,
         });
         let message: Message = serde_json::from_value(message_json).unwrap();
@@ -182,11 +181,12 @@ async fn init_process(process: Process) {
             server: our_name.clone(),
             app: "filesystem".to_string(),
         },
-        payload: Payload::Json(
-            json!({
+        payload: Payload{
+            json: Some(json!({
                 "uri": wasm_bytes_uri,
-            })
-        ),
+            })),
+            bytes: None,
+        },
     };
     send_to_loop.send(get_bytes_message).await.unwrap();
 }
@@ -212,9 +212,9 @@ async fn make_process_loop(
             message_from_loop.source.app,
         );
     }
-    let Payload::Bytes(wasm_bytes) = message_from_loop.payload else {
+    let Payload { json: None, bytes: Some(wasm_bytes) } = message_from_loop.payload else {
         panic!(
-            "message_process_loop: expected bytes message from filesystem, not {:?}",
+            "message_process_loop: expected pure bytes message from filesystem, not {:?}",
             message_from_loop,
         );
     };
@@ -255,19 +255,12 @@ async fn make_process_loop(
                     .recv()
                     .await
                     .unwrap();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "{}: got message from loop: {:?}",
-                            process_name,
-                            message_from_loop,
-                        )
-                    )
-                    .await
-                    .unwrap();
-                let wit_payload = match message_from_loop.payload {
-                        Payload::Json(value) => WitPayload::Json(json_to_string(&value)),
-                        Payload::Bytes(bytes) => WitPayload::Bytes(bytes),
+                let wit_payload = WitPayload {
+                    json: match message_from_loop.payload.json {
+                        Some(value) => Some(json_to_string(&value)),
+                        None => None,
+                    },
+                    bytes: message_from_loop.payload.bytes,
                 };
                 let wit_message = WitMessage {
                     source: &WitAppNode {
@@ -326,7 +319,6 @@ impl ProcessAndHandle {
     }
 
     async fn start(
-        // &mut self,
         mut process: Self,
         recv_in_process: MessageReceiver,
         bytes_message: Message,
@@ -334,14 +326,12 @@ impl ProcessAndHandle {
     ) -> Self {
         let process_handle = tokio::spawn(
             make_process_loop(
-                // Arc::clone(&self.process),
                 Arc::clone(&process.process),
                 recv_in_process,
                 bytes_message,
                 engine,
             ).await
         );
-        // self.handle = process_handle;
         process.handle = process_handle;
         process
     }
@@ -360,17 +350,17 @@ fn make_event_loop(
         async move {
             loop {
                 let next_message = recv_in_loop.recv().await.unwrap();
-                if let Payload::Json(_) = next_message.payload {
-                    send_to_terminal
-                        .send(format!("event loop: got json message: {:?}", next_message))
-                        .await
-                        .unwrap();
-                } else {
-                    send_to_terminal
-                        .send(format!("event loop: got bytes message source, target: {:?}, {:?}", next_message.source, next_message.target))
-                        .await
-                        .unwrap();
-                }
+                send_to_terminal
+                    .send(
+                        format!(
+                            "event loop: got json message: source, target, payload.json: {:?}, {:?}, {:?}",
+                            next_message.source,
+                            next_message.target,
+                            next_message.payload.json,
+                        )
+                    )
+                    .await
+                    .unwrap();
                 if our_name != next_message.target.server {
                     match send_to_wss.send(next_message).await {
                         Ok(()) => {
@@ -455,11 +445,11 @@ async fn make_process_manager_loop(
                 let next_message = recv_in_process_manager.recv().await.unwrap();
                 println!("process manager: got {:?}", next_message);
                 //  TODO: validate source/target?
-                let Payload::Json(value) = next_message.payload else {
+                let Some(value) = next_message.payload.json else {
                     send_to_terminal
                         .send(
                             format!(
-                                "process manager: got non-json payload with source, target: {:?}, {:?}",
+                                "process manager: got payload with no json source, target: {:?}, {:?}",
                                 next_message.source,
                                 next_message.target,
                             )
@@ -500,8 +490,6 @@ async fn make_process_manager_loop(
                             let process = processes_write
                                 .remove(&start.process_name)
                                 .unwrap();
-                            //  TODO: does this properly update the process within the map?
-                            // process.start(recv_in_process, bytes_message, &engine).await;
                             let process = ProcessAndHandle::start(
                                 process,
                                 recv_in_process,
@@ -532,7 +520,7 @@ async fn make_process_manager_loop(
                         removed.handle.abort();
 
                         let removed_process = removed.process.lock().await;
-                        let restart_payload =
+                        let restart_payload_json =
                             serde_json::to_value(
                                 ProcessManagerCommand::Start(ProcessManagerStart {
                                     process_name: removed_process.process_name.clone(),
@@ -548,7 +536,10 @@ async fn make_process_manager_loop(
                                 server: removed_process.our_name.clone(),
                                 app: "process_manager".to_string(),
                             },
-                            payload: Payload::Json(restart_payload),
+                            payload: Payload {
+                                json: Some(restart_payload_json),
+                                bytes: None,
+                            },
                         };
                         let _ = send_to_loop.send(restart_message).await;
                     },

@@ -55,7 +55,7 @@ async fn handle_read(
     ).await;
 
     let response = Message {
-        note: Note::Give, // TODO I believe this is correct
+        note: Note::Give,
         wire: Wire {
             source_ship: our_name.clone(),
             source_app: "filesystem".to_string(),

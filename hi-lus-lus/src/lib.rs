@@ -18,7 +18,7 @@ impl bindings::MicrokernelProcess for Component {
         );
     }
 
-    fn run_write(_wire: bindings::WitWire, message: bindings::WitMessage) {
+    fn run_write(message: bindings::WitMessage) {
         let bindings::component::microkernel_process::types::WitPayload::Json(
             message_from_loop_string
         ) = message.payload else { panic!("foo") };
@@ -51,7 +51,7 @@ impl bindings::MicrokernelProcess for Component {
         bindings::to_event_loop(
             &target.to_string(),
             &"hi_lus_lus".to_string(),
-            bindings::WitNote::Give, // TODO maybe give
+            bindings::WitNote::Give,
             &wit_payload
         );
     }
@@ -60,7 +60,7 @@ impl bindings::MicrokernelProcess for Component {
         "".to_string()
     }
 
-    fn run_take(_wire: bindings::WitWire, message: bindings::WitMessage) {
+    fn run_take(message: bindings::WitMessage) {
         let bindings::component::microkernel_process::types::WitPayload::Json(
             message_from_loop_string
         ) = message.payload else { panic!("foo") };

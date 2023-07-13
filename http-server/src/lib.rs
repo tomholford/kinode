@@ -4,7 +4,7 @@ impl bindings::MicrokernelProcess for Component {
     fn init(_source_ship: String, _source_app: String) {
     }
 
-    fn run_write(_wire: bindings::WitWire, message: bindings::WitMessage) {
+    fn run_write(message: bindings::WitMessage) {
         let bindings::component::microkernel_process::types::WitPayload::Json(message_from_loop) = message.payload else {
             panic!("foo")
         };
@@ -19,7 +19,7 @@ impl bindings::MicrokernelProcess for Component {
         "".to_string()
     }
 
-    fn run_take(_wire: bindings::WitWire, _message: bindings::WitMessage) {
+    fn run_take(_message: bindings::WitMessage) {
         bindings::print_to_terminal("in take");
     }
 }

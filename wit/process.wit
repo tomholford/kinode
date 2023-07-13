@@ -34,7 +34,7 @@ world microkernel-process {
     import set-state: func(json: string) -> string
     import print-to-terminal: func(message: string)
     export init: func(source-ship: string, source-app: string)
-    export run-write: func(wire: wit-wire, message: wit-message)
-    export run-take: func(wire: wit-wire, message: wit-message)
+    export run-write: func(message: wit-message)
+    export run-take: func(message: wit-message)
     export run-read: func(message: wit-message) -> string
 }

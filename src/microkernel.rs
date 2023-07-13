@@ -13,6 +13,7 @@ use serde::{Serialize, Deserialize};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
+use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
     path: "wit",
@@ -176,7 +177,7 @@ async fn init_process(process: Process) {
     };
 
     let get_bytes_message = Message {
-        note: Note::Pass, // TODO no idea
+        note: Note::Pass,
         wire: Wire {
             source_ship: our_name.clone(),
             source_app: process_name.clone(),
@@ -282,25 +283,16 @@ async fn make_process_loop(
                     },
                     payload: &wit_payload,
                 };
-                // TODO
-                let wit_wire = WitWire {
-                    source_ship: "", // message_from_loop.wire.source_ship,
-                    source_app: "", //message_from_loop.wire.source_app,
-                    target_ship: "", //message_from_loop.wire.target_ship,
-                    target_app: "", //message_from_loop.wire.target_app,
-                };
                 match wit_note {
                     WitNote::Pass => {
                         bindings.call_run_write(
                             &mut store,
-                            wit_wire, // TODO
                             wit_message,
                         ).await.unwrap();
                     },
                     WitNote::Give => {
                         bindings.call_run_take(
                             &mut store,
-                            wit_wire, // TODO
                             wit_message,
                         ).await.unwrap();
                     },
@@ -563,7 +555,7 @@ async fn make_process_manager_loop(
                                     wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
                                 })
                             ).unwrap();
-                        let restart_note = Note::Pass; // TODO this might be wrong? unclear
+                        let restart_note = Note::Pass;
                         let restart_message = Message {
                             note: restart_note,
                             wire: Wire {

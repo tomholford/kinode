@@ -73,7 +73,8 @@ impl Host for Process {
 impl MicrokernelProcessImports for Process {
     async fn to_event_loop(
         &mut self,
-        target: WitAppNode,
+        target_ship: String,
+        target_app: String,
         // data_string: String
         wit_payload: WitPayload,
     ) -> Result<()> {
@@ -97,8 +98,8 @@ impl MicrokernelProcessImports for Process {
             "wire": Wire {
                 source_ship: process_data.our_name.clone(),
                 source_app: process_data.process_name.clone(),
-                target_ship: target.server,
-                target_app: target.app,
+                target_ship: target_ship,
+                target_app: target_app,
             },
             "note": Note::Pass, // TODO no idea
             // "payload": Payload::Json(data),
@@ -243,12 +244,9 @@ async fn make_process_loop(
             bindings
                 .call_init(
                     &mut store,
-                    &WitAppNode {
-                        server: our_name.clone(),
-                        app: process_name.clone(),
-                    })
-                .await
-                .unwrap();
+                    &our_name.clone(),
+                    &process_name.clone(),
+                ).await.unwrap();
             let mut i = 0;
             loop {
                 let message_from_loop = recv_in_process

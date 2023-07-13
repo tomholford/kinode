@@ -7,11 +7,6 @@ interface types {
         target-ship: string,
         target-app:  string,
     }
-
-    record wit-app-node {
-        server: string,
-        app: string,
-    }
     
     variant wit-payload {
         json(string),
@@ -31,14 +26,14 @@ interface types {
 }
 
 world microkernel-process {
-    use types.{wit-app-node, wit-wire, wit-payload, wit-message}
+    use types.{wit-wire, wit-payload, wit-message}
 
-    import to-event-loop: func(target: wit-app-node, payload: wit-payload)
+    import to-event-loop: func(target-ship: string, target-app: string, payload: wit-payload)
     import modify-state: func(json-pointer: string, new-value: string) -> string
     import fetch-state: func(json-pointer: string) -> string
     import set-state: func(json: string) -> string
     import print-to-terminal: func(message: string)
-    export init: func(source: wit-app-node)
+    export init: func(source-ship: string, source-app: string)
     export run-write: func(wire: wit-wire, message: wit-message)
     export run-take: func(wire: wit-wire, message: wit-message)
     export run-read: func(message: wit-message) -> string

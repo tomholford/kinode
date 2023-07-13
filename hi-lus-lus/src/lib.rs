@@ -3,7 +3,7 @@ use serde_json::json;
 struct Component;
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(_source: bindings::WitAppNode) {
+    fn init(_source_ship: String, _source_app: String) {
         bindings::set_state(
             serde_json::to_string(
                 &json!({
@@ -18,7 +18,7 @@ impl bindings::MicrokernelProcess for Component {
         );
     }
 
-    fn run_write(message: bindings::WitMessage) {
+    fn run_write(_wire: bindings::WitWire, message: bindings::WitMessage) {
         let bindings::component::microkernel_process::types::WitPayload::Json(
             message_from_loop_string
         ) = message.payload else {
@@ -73,10 +73,8 @@ impl bindings::MicrokernelProcess for Component {
                         payload.to_string()
                     );
                 bindings::to_event_loop(
-                    &bindings::WitAppNode {
-                        server: target.to_string(),
-                        app: "hi_lus_lus".to_string(),
-                    },
+                    &target.to_string(),
+                    &"hi_lus_lus".to_string(),
                     &wit_payload
                 );
             }
@@ -94,7 +92,7 @@ impl bindings::MicrokernelProcess for Component {
         "".to_string()
     }
 
-    fn run_take(_message: bindings::WitMessage) {
+    fn run_take(_wire: bindings::WitWire, _message: bindings::WitMessage) {
         bindings::print_to_terminal("in take");
     }
 }

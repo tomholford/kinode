@@ -55,6 +55,7 @@ async fn handle_read(
     ).await;
 
     let response = Message {
+        note: Note::Give, // TODO I believe this is correct
         source: AppNode {
             server: our_name.clone(),
             app: "filesystem".to_string(),

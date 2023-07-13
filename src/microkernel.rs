@@ -13,6 +13,7 @@ use serde::{Serialize, Deserialize};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
+use crate::microkernel::component::microkernel_process::types::WitNote;
 
 bindgen!({
     path: "wit",
@@ -173,6 +174,7 @@ async fn init_process(process: Process) {
     };
 
     let get_bytes_message = Message {
+        note: Note::Pass, // TODO no idea
         source: AppNode {
             server: our_name.clone(),
             app: process_name.clone(),
@@ -269,6 +271,10 @@ async fn make_process_loop(
                         Payload::Json(value) => WitPayload::Json(json_to_string(&value)),
                         Payload::Bytes(bytes) => WitPayload::Bytes(bytes),
                 };
+                let wit_note = match message_from_loop.note {
+                    Note::Pass => WitNote::Pass,
+                    Note::Give => WitNote::Give,
+                };
                 let wit_message = WitMessage {
                     source: &WitAppNode {
                         server: message_from_loop.source.server,
@@ -278,15 +284,24 @@ async fn make_process_loop(
                         server: message_from_loop.target.server,
                         app: message_from_loop.target.app,
                     },
+                    note: wit_note,
                     payload: &wit_payload,
                 };
-                bindings
-                    .call_run_write(
-                        &mut store,
-                        wit_message,
-                    )
-                    .await
-                    .unwrap();
+
+                match wit_note {
+                    WitNote::Pass => {
+                        bindings.call_run_write(
+                            &mut store,
+                            wit_message,
+                        ).await.unwrap();
+                    },
+                    WitNote::Give => {
+                        bindings.call_run_take(
+                            &mut store,
+                            wit_message,
+                        ).await.unwrap();
+                    },
+                }
                 i = i + 1;
                 send_to_terminal
                     .send(format!("{}: ran process step {}", process_name, i))
@@ -539,7 +554,9 @@ async fn make_process_manager_loop(
                                     wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
                                 })
                             ).unwrap();
+                        let restart_note = Note::Pass; // TODO this might be wrong? unclear
                         let restart_message = Message {
+                            note: restart_note,
                             source: AppNode {
                                 server: our_name.clone(),
                                 app: "process_manager".to_string(),

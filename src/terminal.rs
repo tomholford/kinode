@@ -58,6 +58,7 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
             let (target_app, payload) = tail.split_once(" ")?;
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
             Some(Command::Message(Message {
+                note: Note::Pass, // TODO I believe this is correct
                 source: AppNode {
                     server: our_name.to_string(),
                     app: "terminal".to_string(),

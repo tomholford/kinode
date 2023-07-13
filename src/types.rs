@@ -45,6 +45,7 @@ pub enum Payload {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
+    pub note: Note,
     pub source: AppNode,
     pub target: AppNode,
     pub payload: Payload,

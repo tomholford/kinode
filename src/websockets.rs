@@ -2,7 +2,7 @@ use futures::prelude::*;
 use futures::stream::{SplitSink, SplitStream};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+// use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Error;
@@ -260,15 +260,21 @@ async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Messag
     // let _ = print_tx
     //     .send(format!("Time taken to deserialize: {:?}", duration))
     //     .await;
-    // let _ = card_tx.send(card).await;
-    let _ = print_tx
-        .send(format!(
-            "\x1b[3;32m {}: {:?} \x1b[0m",
-            card.source,
-            match card.payload {
-                serde_json::Value::String(s) => s,
-                _ => card.payload.to_string(),
-            }
-        ))
-        .await;
+
+    // if payload is just a string, print it as a "message"
+    // otherwise forward to kernel for processing
+    match card.payload {
+        serde_json::Value::String(s) => {
+            let _ = print_tx
+                .send(format!(
+                    "\x1b[3;32m {}: {:?} \x1b[0m",
+                    card.source,
+                    s
+                ))
+                .await;
+        },
+        _ => {
+            let _ = card_tx.send(card).await;
+        },
+    }
 }

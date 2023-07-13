@@ -378,7 +378,7 @@ fn make_event_loop(
                     )
                     .await
                     .unwrap();
-                if our_name != next_message.target.server {
+                if our_name != next_message.wire.target_ship {
                     match send_to_wss.send(next_message).await {
                         Ok(()) => {
                             send_to_terminal

@@ -19,9 +19,9 @@ impl bindings::MicrokernelProcess for Component {
     }
 
     fn run_write(message: bindings::WitMessage) {
-        let bindings::component::microkernel_process::types::WitPayload::Json(
-            message_from_loop_string
-        ) = message.payload else { panic!("foo") };
+        let Some(message_from_loop_string) = message.payload.json else {
+            panic!("foo")
+        };
         let message_from_loop: serde_json::Value =
             serde_json::from_str(&message_from_loop_string).unwrap();
         let json_pointer = "/messages/sent";
@@ -44,15 +44,15 @@ impl bindings::MicrokernelProcess for Component {
             "target": target,
             "contents": contents
         });
-        let wit_payload =
-            bindings::component::microkernel_process::types::WitPayload::Json(
-                payload.to_string()
-            );
+        let response = bindings::component::microkernel_process::types::WitPayload {
+            json: Some(payload.to_string()),
+            bytes: None,
+        };
         bindings::to_event_loop(
             &target.to_string(),
             &"hi_lus_lus".to_string(),
             bindings::WitNote::Give,
-            &wit_payload
+            &response
         );
     }
 
@@ -61,9 +61,9 @@ impl bindings::MicrokernelProcess for Component {
     }
 
     fn run_take(message: bindings::WitMessage) {
-        let bindings::component::microkernel_process::types::WitPayload::Json(
-            message_from_loop_string
-        ) = message.payload else { panic!("foo") };
+        let Some(message_from_loop_string) = message.payload.json else {
+            panic!("foo")
+        };
         let json_pointer = "/messages/received";
         let state_string = bindings::fetch_state(json_pointer);
         let state = serde_json::from_str(&state_string).unwrap();

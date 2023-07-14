@@ -24,12 +24,12 @@ const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum ProcessManagerCommand {
-    Start(ProcessManagerStart),
+    Start(ProcessStart),
     Stop(ProcessManagerStop),
     Restart(ProcessManagerRestart),
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct ProcessManagerStart {
+struct ProcessStart {
     process_name: String,
     wasm_bytes_uri: String,
     is_long_running_process: bool,
@@ -46,14 +46,8 @@ struct ProcessManagerRestart {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum KernelRequest {
-    StartProcess(KernelStartProcess),
+    StartProcess(ProcessStart),
     StopProcess(KernelStopProcess),
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct KernelStartProcess {
-    process_name: String,
-    wasm_bytes_uri: String,
-    is_long_running_process: bool,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct KernelStopProcess {
@@ -487,10 +481,11 @@ fn make_event_loop(
                                 .unwrap();
                             continue;
                         };
-                        let kernel_command: KernelRequest =
+                        let kernel_request: KernelRequest =
                             serde_json::from_value(value)
                             .expect("kernel: could not parse to command");
-                        match kernel_command {
+                        println!("kernel: parsed kernel_request: {:?}", kernel_request);
+                        match kernel_request {
                             KernelRequest::StartProcess(cmd) => {
                                 let Some(wasm_bytes) = next_message.payload.bytes else {
                                     send_to_terminal
@@ -670,7 +665,7 @@ async fn make_process_manager_loop(
                     continue;
                 };
                 match message.message_type {
-                    MessageType::Request(_is_expecting_response) => {
+                    MessageType::Request(is_expecting_response) => {
                         let process_manager_command: ProcessManagerCommand =
                             serde_json::from_value(value)
                             .expect("process manager: could not parse to command");
@@ -707,6 +702,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
+                                if !is_expecting_response {
+                                    message_stack.pop();
+                                }
                                 message_stack.push(get_bytes_message);
                                 send_to_loop.send(message_stack).await.unwrap();
                             },
@@ -735,6 +733,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
+                                if !is_expecting_response {
+                                    message_stack.pop();
+                                }
                                 message_stack.push(kernel_stop_process_message);
                                 send_to_loop.send(message_stack).await.unwrap();
 
@@ -762,6 +763,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
+                                if !is_expecting_response {
+                                    message_stack.pop();
+                                }
                                 message_stack.push(kernel_stop_process_message);
                                 send_to_loop.send(message_stack).await.unwrap();
                             },
@@ -794,7 +798,7 @@ async fn make_process_manager_loop(
                                 };
 
                                 let json_payload = serde_json::to_value(
-                                    KernelRequest::StartProcess(KernelStartProcess {
+                                    KernelRequest::StartProcess(ProcessStart {
                                         process_name: start.process_name.clone(),
                                         wasm_bytes_uri: start.wasm_bytes_uri.clone(),
                                         is_long_running_process: start
@@ -815,6 +819,8 @@ async fn make_process_manager_loop(
                                         bytes: Some(wasm_bytes),
                                     },
                                 };
+                                message_stack.pop();
+                                message_stack.pop();
                                 message_stack.push(kernel_start_process_message);
                                 send_to_loop.send(message_stack).await.unwrap();
                             },
@@ -829,9 +835,10 @@ async fn make_process_manager_loop(
                                             metadata.process_name.clone(),
                                             metadata,
                                         );
+                                        //  TODO: response?
                                         continue;
                                     },
-                                    Ok(KernelResponse::StopProcess(stop)) => {
+                                    Ok(KernelResponse::StopProcess(_stop)) => {
                                         //  if in response to a Restart, send new Start
                                         let restart_message = message_stack[stack_len - 3]
                                             .clone();
@@ -852,7 +859,7 @@ async fn make_process_manager_loop(
                                             .unwrap();
 
                                         let json_payload = serde_json::to_value(
-                                            KernelRequest::StartProcess(KernelStartProcess {
+                                            ProcessManagerCommand::Start(ProcessStart {
                                                 process_name: removed.process_name,
                                                 wasm_bytes_uri: removed.wasm_bytes_uri,
                                                 is_long_running_process: removed
@@ -865,19 +872,21 @@ async fn make_process_manager_loop(
                                                 source_ship: our_name.clone(),
                                                 source_app: "process_manager".to_string(),
                                                 target_ship: our_name.clone(),
-                                                target_app: "kernel".to_string(),
+                                                target_app: "process_manager".to_string(),
                                             },
                                             payload: Payload {
                                                 json: Some(json_payload),
                                                 bytes: None,
                                             },
                                         };
+                                        message_stack.pop();
+                                        message_stack.pop();
                                         message_stack.push(kernel_start_process_message);
                                         send_to_loop.send(message_stack).await.unwrap();
                                         continue;
                                     },
                                     Err(e) => {
-                                        println!("process_manager: kernel response unexpected case; stack: {:?}", message_stack);
+                                        println!("process_manager: kernel response unexpected case; error: {} stack: {:?}", e, message_stack);
                                         continue;
                                     },
                                 }

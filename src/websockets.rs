@@ -1,9 +1,3 @@
-//  imports needed?
-use tokio::net::{TcpStream, TcpListener};
-use tokio_tungstenite::tungstenite::Error;
-use tokio_tungstenite::{connect_async, accept_async, tungstenite};
-// use tokio_tungstenite::{connect_async, tungstenite::Message, accept_async, tungstenite::Result};
-use url::Url;
 use futures::prelude::*;
 use futures::stream::{SplitSink, SplitStream};
 use std::collections::HashMap;
@@ -11,8 +5,8 @@ use std::sync::Arc;
 // use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_tungstenite::tungstenite::Error;
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message, tungstenite::Result};  // tungstenite::Message overloads our Message, so refer to it as tungstenite::Message in code
+use tokio_tungstenite::tungstenite;
+use tokio_tungstenite::{accept_async, connect_async, tungstenite::Result};  // tungstenite::Message overloads our Message, so refer to it as tungstenite::Message in code
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
 
@@ -24,7 +18,7 @@ pub struct Peer {
     pub address: H256,
     pub ws_url: String,
     pub ws_port: u16,
-    pub ws_write_stream: SplitSink<Sock, Message>,
+    pub ws_write_stream: SplitSink<Sock, tungstenite::Message>,
 }
 
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
@@ -91,13 +85,13 @@ async fn handle_connection(
     peers: Peers,
     message_tx: MessageSender,
     print_tx: PrintSender,
-) -> Result<(), Error> {
+) -> Result<(), tungstenite::Error> {
     let ws_stream = accept_async(MaybeTlsStream::Plain(stream)).await?;
     // place the connection, split in two, inside peer mapping
     let (write_stream, mut read_stream) = ws_stream.split();
 
     // take first message on stream and use it to identify peer
-    let handshake_msg = read_stream.next().await.ok_or(Error::ConnectionClosed)??;
+    let handshake_msg = read_stream.next().await.ok_or(tungstenite::Error::ConnectionClosed)??;
     // XX verify with a signature or whatever
     let id: Identity = serde_json::from_str(&handshake_msg.to_string()).unwrap();
 
@@ -148,39 +142,40 @@ pub async fn ws_sender(
     our: &Identity,
     pki: &OnchainPKI,
     peers: Peers,
-    mut card_rx: CardReceiver,
-    card_tx: CardSender,  // to change: card -> message
+    mut card_rx: MessageReceiver,
+    card_tx: MessageSender,  // to change: card -> message
     print_tx: PrintSender,
 ) {
-    while let Some(card) = card_rx.recv().await {
+    while let Some(message) = card_rx.recv().await {
         let mut edit = peers.write().await;
-        match edit.remove(&card.target) {
+        let target = &message.target.server;
+        match edit.remove(target) {
             Some(mut peer) => {
                 // let _ = print_tx.send(format!("sending card to existing peer {}", &card.target)).await;
                 // use existing write stream to send message
                 match peer
                     .ws_write_stream
-                    .send(Message::text(serde_json::to_string(&card).unwrap()))
+                    .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
                     .await
                 {
                     Ok(_) => {
                         let _ = print_tx
-                            .send(format!("sent card to {}", &card.target))
+                            .send(format!("sent card to {}", target))
                             .await;
-                        edit.insert(card.target, peer);
+                        edit.insert(message.target.server, peer);
                     }
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending card: {}", e)).await;
-                        edit.remove(&card.target);
+                        edit.remove(target);
                     }
                 }
             }
             None => {
                 // try to open a new connection
                 let _ = print_tx
-                    .send(format!("trying to open new conn to {}", &card.target))
+                    .send(format!("trying to open new conn to {}", target))
                     .await;
-                let id = pki.get(&card.target).unwrap();
+                let id = pki.get(target).unwrap();
 
                 match connect_async(
                     Url::parse(&format!("ws://{}:{}/ws", id.ws_url, id.ws_port)).unwrap(),
@@ -193,17 +188,17 @@ pub async fn ws_sender(
                             .await;
                         // send handshake message with our Identity
                         let _ = socket
-                            .send(Message::text(serde_json::to_string(our).unwrap()))
+                            .send(tungstenite::Message::text(serde_json::to_string(our).unwrap()))
                             .await;
                         // then send actual message
                         let _ = socket
-                            .send(Message::text(serde_json::to_string(&card).unwrap()))
+                            .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
                             .await;
                         // then store connection in our peer map
                         // Convert MaybeTlsStream to TcpStream
                         let (write_stream, read_stream) = socket.split();
                         edit.insert(
-                            card.target,
+                            message.target.server,
                             Peer {
                                 address: id.address.clone(),
                                 ws_url: id.ws_url.clone(),
@@ -233,10 +228,10 @@ async fn make_reader(
     who: String,
     peers: Peers,
     read_stream: SplitStream<Sock>,
-    card_tx: CardSender,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    let _closed = active_reader(read_stream, card_tx.clone(), print_tx.clone()).await;
+    let _closed = active_reader(read_stream, message_tx.clone(), print_tx.clone()).await;
 
     // remove peer, connection was closed!
     peers.write().await.remove(&who);
@@ -269,30 +264,18 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
 
     // if payload is just a string, print it as a "message"
     // otherwise forward to kernel for processing
-
-    //  TODO: print message if only content of payload is string in json;
-    //        else send on message_tx
-    //      aborted attempt:
-    // match message.payload {
-    //     Payload {
-    //         json: Some(v),
-    //         bytes: None,
-    //     } =>
-    //     serde_json::Value::String(s) => {}
-    // }
-    //    old:
-    // match card.payload {
-    //     serde_json::Value::String(s) => {
-    //         let _ = print_tx
-    //             .send(format!(
-    //                 "\x1b[3;32m {}: {:?} \x1b[0m",
-    //                 card.source,
-    //                 s
-    //             ))
-    //             .await;
-    //     },
-    //     _ => {
-    //         let _ = card_tx.send(card).await;
-    //     },
+    match (&message.payload.json, &message.payload.bytes) {
+        (Some(serde_json::Value::String(s)), None) => {
+            let _ = print_tx
+                .send(format!(
+                    "\x1b[3;32m {}: {:?} \x1b[0m",
+                    message.source.server,
+                    s
+                ))
+                .await;
+        },
+        _ => {
+            let _ = message_tx.send(message).await;
+        },
     }
 }

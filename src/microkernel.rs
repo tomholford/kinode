@@ -97,7 +97,7 @@ impl MicrokernelProcessImports for Process {
                 server: process_data.our_name.clone(),
                 app: process_data.process_name.clone(),
             },
-            "target": AppNode { 
+            "target": AppNode {
                 server: target.server,
                 app: target.app,
             },
@@ -604,7 +604,7 @@ pub async fn kernel(
 
     let process_manager_handle = tokio::spawn(
         make_process_manager_loop(
-            our_name.to_string(),
+            our.name.to_string(),
             Arc::clone(&processes),
             send_to_loop.clone(),
             send_to_terminal.clone(),

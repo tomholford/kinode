@@ -68,31 +68,8 @@ async fn main() {
         .expect("couldn't read from the chain lolz");
     let json: serde_json::Value = serde_json::from_reader(blockchain)
         .expect("blockchain.json should be proper JSON");
-    let pki = serde_json::from_value::<BlockchainPKI>(json)
+    let pki = serde_json::from_value::<OnchainPKI>(json)
         .expect("should be a list of peers");
-    let mut peermap = HashMap::new();
-    for (name, id) in pki {
-        peermap.insert(
-            name.clone(),
-            Peer {
-                name: id.name,
-                url: id.url,
-                port: id.port,
-                connection: None,
-            },
-        );
-    }
-
-    let our_port: u16 = peermap
-        .get(&our_name)
-        .expect("must use a name in blockchain.json")
-        .port;
-
-    let peers: Peers = Arc::new(RwLock::new(peermap));
-
-    let tcp_listener = TcpListener::bind(format!("0.0.0.0:{}", our_port))
-        .await
-        .expect("Can't listen");
 
     /*  we are currently running 4 I/O modules:
      *      terminal,
@@ -126,9 +103,9 @@ async fn main() {
         _ = websockets::websockets(
             &our,
             &pki,
-            wss_card_receiver,
-            kernel_card_sender,
-            print_sender,
+            wss_message_receiver,
+            kernel_message_sender.clone(),
+            print_sender.clone(),
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,

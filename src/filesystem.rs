@@ -6,16 +6,16 @@ use crate::types::*;
 
 pub async fn fs_sender(
     our_name: &str,
-    message_tx: MessageSender,
+    send_to_loop: MessageSender,
     print_tx: PrintSender,
-    mut rx: MessageReceiver
+    mut recv_in_fs: MessageReceiver
 ) {
-    while let Some(message) = rx.recv().await {
+    while let Some(message) = recv_in_fs.recv().await {
         tokio::spawn(
             handle_read(
                 our_name.to_string(),
                 message,
-                message_tx.clone(),
+                send_to_loop.clone(),
                 print_tx.clone()
             )
         );
@@ -25,17 +25,20 @@ pub async fn fs_sender(
 //  TODO: error handling: should probably send error messages to caller
 async fn handle_read(
     our_name: String,
-    message: Message,
-    to_event_loop: MessageSender,
+    mut messages: MessageStack,
+    send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) -> Result<(), Error> {
+    let Some(message) = messages.pop() else {
+        panic!("filesystem: filesystem must receive non-empty MessageStack, got: {:?}", messages);
+    };
     // if our_name != message.source.server {
     //     panic!("filesystem: request must come from our_name={}, got: {:?}", our_name, message);
     // }
     if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
     }
-    let Some(value) = message.payload.json else {
+    let Some(value) = message.payload.json.clone() else {
         panic!("filesystem: request must have JSON payload, got: {:?}", message);
     };
 
@@ -62,7 +65,7 @@ async fn handle_read(
             }
         },
         FileSystemAction::Write => {
-            let Some(payload_bytes) = message.payload.bytes else {
+            let Some(payload_bytes) = message.payload.bytes.clone() else {
                 panic!("filesystem: received Write without any bytes to append");  //  TODO: change to an error response once responses are real
             };
 
@@ -74,7 +77,7 @@ async fn handle_read(
             }
         },
         FileSystemAction::Append => {
-            let Some(mut payload_bytes) = message.payload.bytes else {
+            let Some(mut payload_bytes) = message.payload.bytes.clone() else {
                 panic!("filesystem: received Append without any bytes to append");  //  TODO: change to an error response once responses are real
             };
             let mut file_contents = fs::read(uri.host().unwrap()).await?;
@@ -103,12 +106,15 @@ async fn handle_read(
             source_ship: our_name.clone(),
             source_app: "filesystem".to_string(),
             target_ship: our_name.clone(),
-            target_app: message.wire.source_app,
+            target_app: message.wire.source_app.clone(),
         },
         payload: response_payload,
     };
 
-    let _ = to_event_loop.send(response).await;
+    messages.push(message);
+    messages.push(response);
+
+    let _ = send_to_loop.send(messages).await;
 
     Ok(())
 }

@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-use serde_json::json;
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
@@ -71,48 +70,50 @@ impl Host for Process {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
-    async fn to_event_loop(
-        &mut self,
-        target_ship: String,
-        target_app: String,
-        message_type: WitMessageType,
-        wit_payload: WitPayload,
-    ) -> Result<()> {
-        let payload = Payload {
-            json: match wit_payload.json {
-                Some(payload_string) => {
-                    Some(
-                        serde_json::from_str(&payload_string).expect(
-                            format!("given data not JSON string: {}", payload_string).as_str()
-                        )
-                    )
-                },
-                None => None,
-            },
-            bytes: wit_payload.bytes,
-        };
+    // async fn to_event_loop(
+    //     &mut self,
+    //     target_ship: String,
+    //     target_app: String,
+    //     message_type: WitMessageType,
+    //     wit_payload: WitPayload,
+    //     messages: MessageStack,
+    // ) -> Result<()> {
+    //     let payload = Payload {
+    //         json: match wit_payload.json {
+    //             Some(payload_string) => {
+    //                 Some(
+    //                     serde_json::from_str(&payload_string).expect(
+    //                         format!("given data not JSON string: {}", payload_string).as_str()
+    //                     )
+    //                 )
+    //             },
+    //             None => None,
+    //         },
+    //         bytes: wit_payload.bytes,
+    //     };
 
-        let process_data = self.lock().await;
+    //     let process_data = self.lock().await;
 
-        let message = Message {
-            wire: Wire {
-                source_ship: process_data.our_name.clone(),
-                source_app: process_data.process_name.clone(),
-                target_ship: target_ship,
-                target_app: target_app,
-            },
-            message_type: match message_type {
-                WitMessageType::Request(is_expecting_response) => {
-                    MessageType::Request(is_expecting_response)
-                },
-                WitMessageType::Response => MessageType::Response,
-            },
-            payload: payload,
-        };
+    //     let message = Message {
+    //         wire: Wire {
+    //             source_ship: process_data.our_name.clone(),
+    //             source_app: process_data.process_name.clone(),
+    //             target_ship: target_ship,
+    //             target_app: target_app,
+    //         },
+    //         message_type: match message_type {
+    //             WitMessageType::Request(is_expecting_response) => {
+    //                 MessageType::Request(is_expecting_response)
+    //             },
+    //             WitMessageType::Response => MessageType::Response,
+    //         },
+    //         payload: payload,
+    //     };
+    //     messages.push(message);
 
-        process_data.send_to_loop.send(message).await.expect("to_event_loop: error sending");
-        Ok(())
-    }
+    //     process_data.send_to_loop.send(messages).await.expect("to_event_loop: error sending");
+    //     Ok(())
+    // }
 
     async fn modify_state(
         &mut self,
@@ -198,23 +199,86 @@ async fn init_process(process: Process) {
             bytes: None,
         },
     };
-    send_to_loop.send(get_bytes_message).await.unwrap();
+    //  This is a fake solution, but this will be ripped out soon anyways
+    let mut message_stack: Vec<Message> = Vec::new();
+    message_stack.push(get_bytes_message);
+    send_to_loop.send(message_stack).await.unwrap();
 }
+
+async fn convert_message_stack_to_wit_message_stack(message_stack: &Vec<Message>) -> Vec<WitMessage> {
+    message_stack.iter().map(|m: &Message| {
+        let wit_payload = WitPayload {
+            json: match m.payload.json.clone() {
+                Some(value) => Some(json_to_string(&value)),
+                None => None,
+            },
+            bytes: m.payload.bytes.clone(),
+        };
+        let wit_message_type = match m.message_type {
+            MessageType::Request(is_expecting_response) => {
+                WitMessageType::Request(is_expecting_response)
+            },
+            MessageType::Response => WitMessageType::Response,
+        };
+        WitMessage {
+            message_type: wit_message_type,
+            wire: WitWire {
+                source_ship: m.wire.source_ship.clone(),
+                source_app: m.wire.source_app.clone(),
+                target_ship: m.wire.target_ship.clone(),
+                target_app: m.wire.target_app.clone(),
+            },
+            payload: wit_payload,
+        }
+    }).collect()
+}
+
+// async fn convert_wit_message_stack_to_message_stack(wit_message_stack: &Vec<WitMessage>) -> Vec<Message> {
+//     wit_message_stack.iter().map(|m: &WitMessage| {
+//         let payload = Payload {
+//             json: match m.payload.json.clone() {
+//                 Some(value) => Some(serde_json::from_str(&value)),
+//                 None => None,
+//             },
+//             bytes: m.payload.bytes.clone(),
+//         };
+//         let message_type = match m.message_type {
+//             WitMessageType::Request(is_expecting_response) => {
+//                 MessageType::Request(is_expecting_response)
+//             },
+//             WitMessageType::Response => MessageType::Response,
+//         };
+//         Message {
+//             message_type: message_type,
+//             wire: Wire {
+//                 source_ship: &m.wire.source_ship,
+//                 source_app: &m.wire.source_app,
+//                 target_ship: &m.wire.target_ship,
+//                 target_app: &m.wire.target_app
+//             },
+//             payload: &payload,
+//         }
+//     });
+// }
 
 async fn make_process_loop(
     process: Process,
     mut recv_in_process: MessageReceiver,
-    message_from_loop: Message,
+    message_stack_from_loop: MessageStack,
     engine: &Engine
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    let (our_name, process_name, send_to_terminal) = {
+    let (our_name, process_name, send_to_loop, send_to_terminal) = {
         let process_data = process.lock().await;
         (
             process_data.our_name.clone(),
             process_data.process_name.clone(),
+            process_data.send_to_loop.clone(),
             process_data.send_to_terminal.clone(),
         )
     };
+
+    let stack_len = message_stack_from_loop.len();
+    let message_from_loop = message_stack_from_loop[stack_len - 1].clone();
 
     if "filesystem".to_string() != message_from_loop.wire.source_app {
         panic!(
@@ -258,57 +322,209 @@ async fn make_process_loop(
                 ).await.unwrap();
             let mut i = 0;
             loop {
-                let message_from_loop = recv_in_process
+                let mut input_message_stack = recv_in_process
                     .recv()
                     .await
                     .unwrap();
-                let wit_payload = WitPayload {
-                    json: match message_from_loop.payload.json {
-                        Some(value) => Some(json_to_string(&value)),
-                        None => None,
-                    },
-                    bytes: message_from_loop.payload.bytes,
-                };
-                let wit_message_type = match message_from_loop.message_type {
+
+                //  for return
+                let stack_len = input_message_stack.len();
+                let (source_ship, source_app, message_type) = (
+                    input_message_stack[stack_len-1].wire.target_ship.clone(),
+                    input_message_stack[stack_len-1].wire.target_app.clone(),
+                    input_message_stack[stack_len-1].message_type.clone(),
+                );
+
+                let input_wit_message_stack =
+                    convert_message_stack_to_wit_message_stack(&input_message_stack).await;
+                let input_wit_message_stack: Vec<&WitMessage> =
+                    input_wit_message_stack.iter().collect();
+
+                // let messages_from_loop = recv_in_process
+                //     .recv()
+                //     .await
+                //     .unwrap();
+
+                // let wit_payload = WitPayload {
+                //     json: match message_from_loop.payload.json {
+                //         Some(value) => Some(json_to_string(&value)),
+                //         None => None,
+                //     },
+                //     bytes: message_from_loop.payload.bytes,
+                // };
+                // let wit_message_type = match message_from_loop.message_type {
+                //     MessageType::Request(is_expecting_response) => {
+                //         WitMessageType::Request(is_expecting_response)
+                //     },
+                //     MessageType::Response => WitMessageType::Response,
+                // };
+                // let wit_message = WitMessage {
+                //     message_type: wit_message_type,
+                //     wire: WitWire {
+                //         source_ship: &message_from_loop.wire.source_ship,
+                //         source_app: &message_from_loop.wire.source_app,
+                //         target_ship: &message_from_loop.wire.target_ship,
+                //         target_app: &message_from_loop.wire.target_app
+                //     },
+                //     payload: &wit_payload,
+                // };
+                // convert_wit_message_stack_to_message_stack(
+                match message_type {
                     MessageType::Request(is_expecting_response) => {
-                        WitMessageType::Request(is_expecting_response)
+                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
+                            bindings.call_run_write(
+                                &mut store,
+                                input_wit_message_stack.as_slice(),
+                            ).await.unwrap();
+                        if !is_expecting_response {
+                            //  pop off caller from stack
+                            input_message_stack.pop();
+                        }
+                        //  push to message_stack
+                        for (wit_message_type_with_target, wit_payload) in results.iter() {
+                            let mut input_message_stack = input_message_stack.clone();
+                            let (target_ship, target_app, message_type) =
+                                match wit_message_type_with_target {
+                                    WitMessageTypeWithTarget::Request(type_with_target) => {
+                                        //  set target based on request type
+                                        (
+                                            type_with_target.target_ship.clone(),
+                                            type_with_target.target_app.clone(),
+                                            MessageType::Request(
+                                                type_with_target.is_expecting_response
+                                            ),
+                                        )
+                                    },
+                                    WitMessageTypeWithTarget::Response => {
+                                        //  if popped off only message in stack, continue;
+                                        //   else target is most recent message source
+                                        if (1 == stack_len) & !is_expecting_response {
+                                            continue;
+                                        } else {
+                                            (
+                                                input_message_stack[stack_len - 1]
+                                                    .wire.
+                                                    source_ship
+                                                    .clone(),
+                                                input_message_stack[stack_len - 1]
+                                                    .wire
+                                                    .source_app
+                                                    .clone(),
+                                                MessageType::Response,
+                                            )
+                                        }
+                                    },
+                                };
+                            let payload = Payload {
+                                json: match wit_payload.json {
+                                    Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
+                                    None => None,
+                                },
+                                bytes: wit_payload.bytes.clone(),
+                            };
+                            let message = Message {
+                                message_type: message_type,
+                                wire: Wire {
+                                    source_ship: source_ship.clone(),
+                                    source_app: source_app.clone(),
+                                    target_ship: target_ship,
+                                    target_app: target_app,
+                                },
+                                payload: payload,
+                            };
+
+                            // let output_message_stack = input_message_stack.clone();
+                            // output_message_stack.push(message);
+                            input_message_stack.push(message);
+                            send_to_loop
+                                .send(input_message_stack)
+                                .await
+                                .unwrap();
+                        }
                     },
-                    MessageType::Response => WitMessageType::Response,
+                    MessageType::Response => {
+                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
+                            bindings.call_handle_response(
+                                &mut store,
+                                input_wit_message_stack.as_slice(),
+                            ).await.unwrap();
+                        //  pop message_stack twice: once for response message,
+                        //   and once for request message
+                        //   and Then place new message on stack
+                        input_message_stack.pop();
+                        input_message_stack.pop();
+                        //  push to message_stack
+                        for (wit_message_type_with_target, wit_payload) in results.iter() {
+                            let mut input_message_stack = input_message_stack.clone();
+                            let (target_ship, target_app, message_type) =
+                                match wit_message_type_with_target {
+                                    WitMessageTypeWithTarget::Request(type_with_target) => {
+                                        //  set target based on request type
+                                        (
+                                            type_with_target.target_ship.clone(),
+                                            type_with_target.target_app.clone(),
+                                            MessageType::Request(
+                                                type_with_target.is_expecting_response
+                                            ),
+                                        )
+                                    },
+                                    WitMessageTypeWithTarget::Response => {
+                                        //  if stack length == 0, continue; else
+                                        //  set target based on most recent message source
+                                        let stack_len = input_message_stack.len();
+                                        if 0 == stack_len {
+                                            continue;
+                                        } else {
+                                            (
+                                                input_message_stack[stack_len - 1]
+                                                    .wire.
+                                                    source_ship
+                                                    .clone(),
+                                                input_message_stack[stack_len - 1]
+                                                    .wire
+                                                    .source_app
+                                                    .clone(),
+                                                MessageType::Response,
+                                            )
+                                        }
+                                    },
+                                };
+                            let payload = Payload {
+                                json: match wit_payload.json {
+                                    Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
+                                    None => None,
+                                },
+                                bytes: wit_payload.bytes.clone(),
+                            };
+                            let message = Message {
+                                message_type: message_type,
+                                wire: Wire {
+                                    source_ship: source_ship.clone(),
+                                    source_app: source_app.clone(),
+                                    target_ship: target_ship,
+                                    target_app: target_app,
+                                },
+                                payload: payload,
+                            };
+
+                            // let output_message_stack = input_message_stack.clone();
+                            // output_message_stack.push(message);
+                            // send_to_loop
+                            //     .send(output_message_stack)
+                            //     .await
+                            //     .unwrap();
+                            input_message_stack.push(message);
+                            send_to_loop
+                                .send(input_message_stack)
+                                .await
+                                .unwrap();
+                        }
+                    },
                 };
-                let wit_message = WitMessage {
-                    message_type: wit_message_type,
-                    wire: WitWire {
-                        source_ship: &message_from_loop.wire.source_ship,
-                        source_app: &message_from_loop.wire.source_app,
-                        target_ship: &message_from_loop.wire.target_ship,
-                        target_app: &message_from_loop.wire.target_app
-                    },
-                    payload: &wit_payload,
-                };
-                match wit_message_type {
-                    WitMessageType::Request(is_expecting_response) => {
-                        bindings.call_run_write(
-                            &mut store,
-                            wit_message,
-                        ).await.unwrap();
-                        //  TODO
-                        // if is_expecting_response {
-                        //     //  TODO: push to message_stack
-                        // } else {
-                        //     bindings.call_run_write(
-                        //         &mut store,
-                        //         wit_message,
-                        //     ).await.unwrap();
-                        // }
-                    },
-                    WitMessageType::Response => {
-                        bindings.call_handle_response(
-                            &mut store,
-                            wit_message,
-                        ).await.unwrap();
-                        //  TODO: pop message_stack here or later?
-                    },
-                }
+                // send_to_loop
+                //     .send(message_stack)
+                //     .await
+                //     .unwrap();
                 i = i + 1;
                 send_to_terminal
                     .send(format!("{}: ran process step {}", process_name, i))
@@ -350,7 +566,7 @@ impl ProcessAndHandle {
     async fn start(
         mut process: Self,
         recv_in_process: MessageReceiver,
-        bytes_message: Message,
+        bytes_message: MessageStack,
         engine: &Engine
     ) -> Self {
         let process_handle = tokio::spawn(
@@ -378,7 +594,9 @@ fn make_event_loop(
     Box::pin(
         async move {
             loop {
-                let next_message = recv_in_loop.recv().await.unwrap();
+                let next_message_stack = recv_in_loop.recv().await.unwrap();
+                let stack_len = next_message_stack.len();
+                let next_message = next_message_stack[stack_len - 1].clone();
                 send_to_terminal
                     .send(
                         format!(
@@ -393,7 +611,7 @@ fn make_event_loop(
                     .await
                     .unwrap();
                 if our_name != next_message.wire.target_ship {
-                    match send_to_wss.send(next_message).await {
+                    match send_to_wss.send(next_message_stack).await {
                         Ok(()) => {
                             send_to_terminal
                                 .send("event loop: sent to wss".to_string())
@@ -414,12 +632,12 @@ fn make_event_loop(
                         //  TODO: generalize this to arbitrary URIs
                         //        (e.g., fs, http, peer, ...)
                         let _ = send_to_fs
-                            .send(next_message)
+                            .send(next_message_stack)
                             .await;
                         continue;
                     } else if "process_manager".to_string() == to {
                         let _ = send_to_process_manager
-                            .send(next_message)
+                            .send(next_message_stack)
                             .await;
                         continue;
                     }
@@ -430,7 +648,7 @@ fn make_event_loop(
                             let process = value.process.lock().await;
                             let _result = process
                                 .send_to_process
-                                .send(next_message)
+                                .send(next_message_stack)
                                 .await;
                             send_to_terminal
                                 .send(
@@ -483,7 +701,9 @@ async fn make_process_manager_loop(
                 .into_iter()
                 .collect();
             loop {
-                let next_message = recv_in_process_manager.recv().await.unwrap();
+                let mut next_message_stack = recv_in_process_manager.recv().await.unwrap();
+                let stack_len = next_message_stack.len();
+                let next_message = next_message_stack[stack_len - 1].clone();
                 println!("process manager: got {:?}", next_message);
                 //  TODO: validate source/target?
                 let Some(value) = next_message.payload.json else {
@@ -517,7 +737,7 @@ async fn make_process_manager_loop(
                             continue;
                         }
                         let (send_to_process, mut recv_in_process) =
-                            mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
+                            mpsc::channel::<MessageStack>(PROCESS_CHANNEL_CAPACITY);
                         {
                             let mut processes_write = processes.write().await;
                             processes_write.insert(
@@ -591,7 +811,8 @@ async fn make_process_manager_loop(
                                 bytes: None,
                             },
                         };
-                        let _ = send_to_loop.send(restart_message).await;
+                        next_message_stack.push(restart_message);
+                        let _ = send_to_loop.send(next_message_stack).await;
                     },
                 }
             }
@@ -614,7 +835,7 @@ pub async fn kernel(
 
     let processes: Processes = Arc::new(RwLock::new(HashMap::new()));
     let (send_to_process_manager, recv_in_process_manager) =
-        mpsc::channel::<Message>(PROCESS_MANAGER_CHANNEL_CAPACITY);
+        mpsc::channel::<MessageStack>(PROCESS_MANAGER_CHANNEL_CAPACITY);
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(

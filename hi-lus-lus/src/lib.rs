@@ -1,9 +1,10 @@
 use serde_json::json;
+use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 struct Component;
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(_source_ship: String, _source_app: String) {
+    fn init(_source_ship: String, _source_app: String) -> Vec<bindings::WitMessage> {
         bindings::set_state(
             serde_json::to_string(
                 &json!({
@@ -16,9 +17,13 @@ impl bindings::MicrokernelProcess for Component {
             .unwrap()
             .as_str()
         );
+        vec![]
     }
 
-    fn run_write(message: bindings::WitMessage) {
+    fn run_write(
+        mut message_stack: Vec<bindings::WitMessage>
+    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
+        let message = message_stack.pop().unwrap();
         let Some(message_from_loop_string) = message.payload.json else {
             panic!("foo")
         };
@@ -44,6 +49,7 @@ impl bindings::MicrokernelProcess for Component {
                         message_from_loop_string
                     ).as_str()
                 );
+                vec![]
             } else if action == "send" {
                 let json_pointer = "/messages/sent";
                 let state_string = bindings::fetch_state(json_pointer);
@@ -70,12 +76,22 @@ impl bindings::MicrokernelProcess for Component {
                     json: Some(payload.to_string()),
                     bytes: None,
                 };
-                bindings::to_event_loop(
-                    &target.to_string(),
-                    &"hi_lus_lus".to_string(),
-                    bindings::WitMessageType::Request(false),
-                    &response,
-                );
+                // bindings::to_event_loop(
+                //     &target.to_string(),
+                //     &"hi_lus_lus".to_string(),
+                //     bindings::WitMessageType::Request(false),
+                //     &response,
+                // );
+                vec![(
+                    bindings::WitMessageTypeWithTarget::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: target.to_string(),
+                            target_app: "hi_lus_lus".to_string(),
+                        }
+                    ),
+                    response,
+                )]
             } else {
                 bindings::print_to_terminal(
                     format!(
@@ -83,6 +99,7 @@ impl bindings::MicrokernelProcess for Component {
                         &message_from_loop["action"],
                     ).as_str()
                 );
+                vec![]
             }
         } else {
             bindings::print_to_terminal(
@@ -91,17 +108,23 @@ impl bindings::MicrokernelProcess for Component {
                     &message_from_loop["action"],
                 ).as_str()
             );
+            vec![]
         }
 
 
     }
 
-    fn run_read(_message: bindings::WitMessage) -> String {
-        "".to_string()
+    fn run_read(
+        _message_stack: Vec<bindings::WitMessage>
+    ) -> Vec<(bindings::WitMessageType, bindings::WitPayload)> {
+        vec![]
     }
 
-    fn handle_response(_message: bindings::WitMessage) {
-        return;
+    fn handle_response(
+        _message_stack: Vec<bindings::WitMessage>
+    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
+        bindings::print_to_terminal("in take");
+        vec![]
     }
 }
 

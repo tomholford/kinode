@@ -327,6 +327,8 @@ async fn make_process_loop(
                     .await
                     .unwrap();
 
+                println!("{}: got message_stack: {:?}", process_name, input_message_stack);
+
                 //  for return
                 let stack_len = input_message_stack.len();
                 let (source_ship, source_app, message_type) = (
@@ -371,6 +373,8 @@ async fn make_process_loop(
                 // convert_wit_message_stack_to_message_stack(
                 match message_type {
                     MessageType::Request(is_expecting_response) => {
+                        //  this code is nearly the same as the Response case below:
+                        //   TODO: refactor
                         let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
                             bindings.call_run_write(
                                 &mut store,
@@ -443,6 +447,8 @@ async fn make_process_loop(
                         }
                     },
                     MessageType::Response => {
+                        //  this code is nearly the same as the Request case above:
+                        //   TODO: refactor
                         let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
                             bindings.call_handle_response(
                                 &mut store,

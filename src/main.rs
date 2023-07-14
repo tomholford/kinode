@@ -1,6 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
-use tokio::net::TcpListener;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use std::env;
 
 use ethers::prelude::*;
@@ -41,9 +39,20 @@ async fn main() {
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
+    // this will be replaced with actual chain reading from indexer module?
+    let blockchain = std::fs::File::open("blockchain.json")
+        .expect("couldn't read from the chain lolz");
+    let json: serde_json::Value = serde_json::from_reader(blockchain)
+        .expect("blockchain.json should be proper JSON");
+    let pki: OnchainPKI = serde_json::from_value::<OnchainPKI>(json)
+        .expect("should be a JSON map of identities");
+    // our identity in the uqbar PKI
+    let our = pki.get(&our_name).expect("we should be in the PKI").clone();
+
+    // fake local blockchain
     let uqchain = engine::UqChain::new();
     let my_txn: engine::Transaction = engine::Transaction {
-                                        from: "0x0000000000000000000000000000000000000000000000000000000000001234".parse().unwrap(),
+                                        from: our.address,
                                         signature: None,
                                         to: "0x0000000000000000000000000000000000000000000000000000000000005678".parse().unwrap(),
                                         town_id: 0,
@@ -59,31 +68,8 @@ async fn main() {
         .expect("couldn't read from the chain lolz");
     let json: serde_json::Value = serde_json::from_reader(blockchain)
         .expect("blockchain.json should be proper JSON");
-    let pki = serde_json::from_value::<BlockchainPKI>(json)
+    let pki = serde_json::from_value::<OnchainPKI>(json)
         .expect("should be a list of peers");
-    let mut peermap = HashMap::new();
-    for (name, id) in pki {
-        peermap.insert(
-            name.clone(),
-            Peer {
-                name: id.name,
-                url: id.url,
-                port: id.port,
-                connection: None,
-            },
-        );
-    }
-
-    let our_port: u16 = peermap
-        .get(&our_name)
-        .expect("must use a name in blockchain.json")
-        .port;
-
-    let peers: Peers = Arc::new(RwLock::new(peermap));
-
-    let tcp_listener = TcpListener::bind(format!("0.0.0.0:{}", our_port))
-        .await
-        .expect("Can't listen");
 
     /*  we are currently running 4 I/O modules:
      *      terminal,
@@ -99,7 +85,7 @@ async fn main() {
      */
     let quit: String = tokio::select! {
         term = terminal::terminal(
-            &our_name,
+            &our,
             kernel_message_sender.clone(),
             print_receiver,
         ) => match term {
@@ -107,22 +93,19 @@ async fn main() {
             Err(e) => format!("exiting with error: {:?}", e),
         },
         _ = microkernel::kernel(
-            &our_name,
+            &our,
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
         ) => { "microkernel died".to_string() },
-        _ = websockets::ws_listener(
+        _ = websockets::websockets(
+            &our,
+            &pki,
+            wss_message_receiver,
             kernel_message_sender.clone(),
             print_sender.clone(),
-            tcp_listener
-        ) => { "websocket listener died".to_string() },
-        _ = websockets::ws_sender(
-            peers.clone(),
-            print_sender.clone(),
-            wss_message_receiver
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,

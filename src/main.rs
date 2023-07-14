@@ -1,9 +1,5 @@
-use ring::aead::*;
-use ring::error::Unspecified;
-use ring::pbkdf2::*;
-use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::KeyPair;
-use ring::{rand, signature};
+use ring::signature;
 use std::env;
 use tokio::sync::mpsc;
 
@@ -11,7 +7,6 @@ use ethers::prelude::*;
 
 use crate::types::*;
 
-mod blockchain;
 mod engine;
 mod filesystem;
 mod microkernel;
@@ -80,18 +75,14 @@ async fn main() {
 
     // this will be replaced with a key manager module
     let name_seed: [u8; 32] = our.address.into();
-    let key_pair = signature::Ed25519KeyPair::from_seed_unchecked(&name_seed).unwrap();
-    let hex_pubkey = hex::encode(key_pair.public_key().as_ref());
-    println!(
-        "our networking public key: {}",
-        hex_pubkey
-    );
+    let networking_keypair = signature::Ed25519KeyPair::from_seed_unchecked(&name_seed).unwrap();
+    let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
+    println!("our networking public key: {}", hex_pubkey);
     assert!(hex_pubkey == our.networking_key);
 
-    /*  we are currently running 4 I/O modules:
+    /*  we are currently running 3 I/O modules:
      *      terminal,
-     *      websocket listener,
-     *      websocket sender,
+     *      websockets,
      *      filesystem,
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
@@ -119,6 +110,7 @@ async fn main() {
         ) => { "microkernel died".to_string() },
         _ = websockets::websockets(
             &our,
+            networking_keypair,
             &pki,
             wss_message_receiver,
             kernel_message_sender.clone(),

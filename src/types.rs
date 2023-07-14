@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use ring::signature::KeyPair;
 
 use ethers::prelude::*;
 
@@ -12,7 +11,7 @@ pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
 
 pub type OnchainPKI = HashMap<String, Identity>;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
     pub address: H256,
@@ -21,19 +20,19 @@ pub struct Identity {
     pub ws_port: u16,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppNode {
     pub server: String,
     pub app: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub source: AppNode,
     pub target: AppNode,

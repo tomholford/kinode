@@ -9,7 +9,7 @@ use cita_trie::{PatriciaTrie, Trie};
 use ethers::prelude::*;
 use serde::{Serialize, Deserialize};
 
-use anyhow::{anyhow, Result};
+// use anyhow::{anyhow, Result};
 use wasmtime::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,10 +30,10 @@ pub struct ContractItem {
     pub code_hex: String, // source code of contract represented as hex string?
 }
 
-struct ContractContext {
+struct _ContractContext {
     this: H256,
 }
-type Process = Arc<Mutex<ContractContext>>;
+type _Process = Arc<Mutex<_ContractContext>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
@@ -49,7 +49,7 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn hash(&self) -> H256 {
-        let mut hasher = HasherKeccak::new();
+        let mut _hasher = HasherKeccak::new();
         let message = format!("{}{}{}{}{}{}{}",
             self.from,
             self.to,
@@ -116,7 +116,7 @@ impl UqChain {
     }
 }
 
-pub fn engine(mut chain: UqChain, txns: Vec<Transaction>) -> UqChain {
+pub fn engine(chain: UqChain, txns: Vec<Transaction>) -> UqChain {
     let start_time = Instant::now();
     // An engine stores and configures global compilation settings like
     // optimization level, enabled wasm features, etc.

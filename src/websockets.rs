@@ -1,12 +1,14 @@
 use futures::prelude::*;
 use futures::stream::{SplitSink, SplitStream};
+use ring::signature::{self, Ed25519KeyPair};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 // use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::Result};  // tungstenite::Message overloads our Message, so refer to it as tungstenite::Message in code
+use tokio_tungstenite::{accept_async, connect_async, tungstenite::Result}; // tungstenite::Message overloads our Message, so refer to it as tungstenite::Message in code
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
 
@@ -21,6 +23,12 @@ pub struct Peer {
     pub ws_write_stream: SplitSink<Sock, tungstenite::Message>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SignedMessage {
+    signature: Vec<u8>,
+    message: Message,
+}
+
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -29,6 +37,7 @@ pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// statelessly manages websocket connections to peer nodes.
 pub async fn websockets(
     our: &Identity,
+    keypair: Ed25519KeyPair,
     pki: &OnchainPKI,
     message_rx: MessageReceiver,
     message_tx: MessageSender,
@@ -56,6 +65,7 @@ pub async fn websockets(
         ),
         ws_sender(
             our,
+            keypair,
             pki,
             peers.clone(),
             message_rx,
@@ -65,7 +75,12 @@ pub async fn websockets(
     );
 }
 
-async fn ws_listener(tcp: TcpListener, peers: Peers, message_tx: MessageSender, print_tx: PrintSender) {
+async fn ws_listener(
+    tcp: TcpListener,
+    peers: Peers,
+    message_tx: MessageSender,
+    print_tx: PrintSender,
+) {
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         let closed =
             handle_connection(stream, peers.clone(), message_tx.clone(), print_tx.clone()).await;
@@ -91,7 +106,10 @@ async fn handle_connection(
     let (write_stream, mut read_stream) = ws_stream.split();
 
     // take first message on stream and use it to identify peer
-    let handshake_msg = read_stream.next().await.ok_or(tungstenite::Error::ConnectionClosed)??;
+    let handshake_msg = read_stream
+        .next()
+        .await
+        .ok_or(tungstenite::Error::ConnectionClosed)??;
 
     // XX verify with a signature or whatever
     let id: Identity = serde_json::from_str(&handshake_msg.to_string()).unwrap();
@@ -105,13 +123,13 @@ async fn handle_connection(
         id.name.clone(),
         Peer {
             address: id.address,
-            ws_url: id.ws_url,
+            ws_url: id.ws_url.clone(),
             ws_port: id.ws_port,
             ws_write_stream: write_stream,
         },
     ));
 
-    let _closed = active_reader(read_stream, message_tx.clone(), print_tx.clone()).await;
+    let _closed = active_reader(&id, read_stream, message_tx.clone(), print_tx.clone()).await;
 
     // remove peer, connection was closed!
     peers.write().await.remove(&id.name);
@@ -120,6 +138,7 @@ async fn handle_connection(
 }
 
 async fn active_reader(
+    who: &Identity,
     mut read_stream: SplitStream<Sock>,
     message_tx: MessageSender,
     print_tx: PrintSender,
@@ -128,7 +147,7 @@ async fn active_reader(
     while let Some(msg) = read_stream.next().await {
         match msg {
             Ok(msg) => {
-                ingest_peer_msg(message_tx.clone(), print_tx.clone(), msg).await;
+                ingest_peer_msg(who, message_tx.clone(), print_tx.clone(), msg).await;
             }
             Err(_) => {
                 // we lost a peer connection. send message to kernel to try and reconnect?
@@ -141,28 +160,34 @@ async fn active_reader(
 
 pub async fn ws_sender(
     our: &Identity,
+    keypair: Ed25519KeyPair,
     pki: &OnchainPKI,
     peers: Peers,
     mut card_rx: MessageReceiver,
-    card_tx: MessageSender,  // to change: card -> message
+    card_tx: MessageSender, // to change: card -> message
     print_tx: PrintSender,
 ) {
     while let Some(message) = card_rx.recv().await {
         let mut edit = peers.write().await;
         let target = &message.target.server;
+        let message_binary = bincode::serialize(&message).unwrap();
+        let signature = keypair.sign(&message_binary);
+        let signed = SignedMessage {
+            signature: signature.as_ref().to_vec(),
+            message: message.clone(),
+        };
+        let full_payload = serde_json::to_string(&signed).unwrap();
         match edit.remove(target) {
             Some(mut peer) => {
                 // let _ = print_tx.send(format!("sending card to existing peer {}", &card.target)).await;
                 // use existing write stream to send message
                 match peer
                     .ws_write_stream
-                    .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
+                    .send(tungstenite::Message::Text(full_payload))
                     .await
                 {
                     Ok(_) => {
-                        let _ = print_tx
-                            .send(format!("sent card to {}", target))
-                            .await;
+                        let _ = print_tx.send(format!("sent card to {}", target)).await;
                         edit.insert(message.target.server, peer);
                     }
                     Err(e) => {
@@ -189,12 +214,12 @@ pub async fn ws_sender(
                             .await;
                         // send handshake message with our Identity
                         let _ = socket
-                            .send(tungstenite::Message::text(serde_json::to_string(our).unwrap()))
+                            .send(tungstenite::Message::Text(
+                                serde_json::to_string(our).unwrap(),
+                            ))
                             .await;
                         // then send actual message
-                        let _ = socket
-                            .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
-                            .await;
+                        let _ = socket.send(tungstenite::Message::Text(full_payload)).await;
                         // then store connection in our peer map
                         // Convert MaybeTlsStream to TcpStream
                         let (write_stream, read_stream) = socket.split();
@@ -211,7 +236,7 @@ pub async fn ws_sender(
 
                         // and start reading from the stream
                         tokio::spawn(make_reader(
-                            id.name.clone(),
+                            id.clone(),
                             peers.clone(),
                             read_stream,
                             card_tx.clone(),
@@ -226,38 +251,59 @@ pub async fn ws_sender(
 }
 
 async fn make_reader(
-    who: String,
+    who: Identity,
     peers: Peers,
     read_stream: SplitStream<Sock>,
     message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    let _closed = active_reader(read_stream, message_tx.clone(), print_tx.clone()).await;
+    let _closed = active_reader(&who, read_stream, message_tx.clone(), print_tx.clone()).await;
 
     // remove peer, connection was closed!
-    peers.write().await.remove(&who);
+    peers.write().await.remove(&who.name);
 }
 
-async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: tungstenite::Message) {
-    let message = match msg.into_text() {
+async fn ingest_peer_msg(
+    who: &Identity,
+    message_tx: MessageSender,
+    print_tx: PrintSender,
+    msg: tungstenite::Message,
+) {
+    let full_payload = match msg.into_text() {
         Ok(v) => v,
-        Err(_) => {
-            let _ = print_tx
-                .send("got weird message over websocket".to_string())
-                .await;
+        Err(e) => {
+            eprintln!("error while reading message: {}", e);
             return;
         }
     };
 
     // deserialize
     // let start = Instant::now();
-    let message: Message = match serde_json::from_str(&message) {
+
+    let signed_message = match serde_json::from_str::<SignedMessage>(&full_payload) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error while parsing message: {}", e);
+            eprintln!("error while deserializing message: {}", e);
             return;
         }
     };
+
+    // let signature = Signature::try_from(sig_bytes.as_slice()).unwrap();
+    let message_bytes = bincode::serialize(&signed_message.message).unwrap();
+
+    let peer_public_key = signature::UnparsedPublicKey::new(
+        &signature::ED25519,
+        hex::decode(&who.networking_key).unwrap(),
+    );
+
+    match peer_public_key.verify(&message_bytes, &signed_message.signature) {
+        Ok(_) => {}
+        Err(_) => {
+            eprintln!("error: invalid signature from {}", who.name);
+            return;
+        }
+    }
+
     // let duration = start.elapsed();
     // let _ = print_tx
     //     .send(format!("Time taken to deserialize: {:?}", duration))
@@ -265,18 +311,20 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
 
     // if payload is just a string, print it as a "message"
     // otherwise forward to kernel for processing
-    match (&message.payload.json, &message.payload.bytes) {
+    match (
+        &signed_message.message.payload.json,
+        &signed_message.message.payload.bytes,
+    ) {
         (Some(serde_json::Value::String(s)), None) => {
             let _ = print_tx
                 .send(format!(
                     "\x1b[3;32m {}: {:?} \x1b[0m",
-                    message.source.server,
-                    s
+                    signed_message.message.source.server, s
                 ))
                 .await;
-        },
+        }
         _ => {
-            let _ = message_tx.send(message).await;
-        },
+            let _ = message_tx.send(signed_message.message).await;
+        }
     }
 }

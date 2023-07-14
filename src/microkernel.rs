@@ -1,31 +1,56 @@
 use anyhow::{anyhow, Result};
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
-use tokio::sync::mpsc;
-use std::collections::HashMap;
+use tokio::sync::{mpsc, Mutex, RwLock};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
 use serde_json::json;
 use std::sync::Arc;
-use futures::lock::Mutex;
+use serde::{Serialize, Deserialize};
 
 use crate::types::*;
+//  WIT errors when `use`ing interface unless we import this and implement Host for Process below
+use crate::microkernel::component::microkernel_process::types::Host;
 
 bindgen!({
     path: "wit",
     world: "microkernel-process",
-    async: true
+    async: true,
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
+const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum ProcessManagerCommand {
+    Start(ProcessManagerStart),
+    Stop(ProcessManagerStop),
+    Restart(ProcessManagerRestart),
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerStart {
+    process_name: String,
+    wasm_bytes_uri: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerStop {
+    process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessManagerRestart {
+    process_name: String,
+}
 
 struct ProcessData {
     our_name: String,
     process_name: String,
-    file_path: String,  // TODO: for use in restarting erroring process, ala midori
+    wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+    wasm_bytes: Vec<u8>,     // TODO: for use in restarting erroring process, ala midori
     state: serde_json::Value,
-    send_to_loop: CardSender,
-    send_to_process: mpsc::Sender<String>,
+    send_to_loop: MessageSender,
+    send_to_process: MessageSender,
     send_to_terminal: PrintSender
 }
 type Process = Arc<Mutex<ProcessData>>;
@@ -34,36 +59,50 @@ struct ProcessAndHandle {
     handle: JoinHandle<Result<()>>  // TODO: for use in restarting erroring process, ala midori
 }
 
-type Processes = HashMap<String, ProcessAndHandle>;
+type Processes = Arc<RwLock<HashMap<String, ProcessAndHandle>>>;
 
 fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
+}
+
+impl Host for Process {
 }
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
     async fn to_event_loop(
         &mut self,
-        target_server: String,
-        to: String,
-        data_string: String
+        target: WitAppNode,
+        wit_payload: WitPayload,
     ) -> Result<()> {
-        let data: serde_json::Value = serde_json::from_str(&data_string).expect(
-            format!("given data not JSON string: {}", data_string).as_str()
-        );
+        let payload = Payload {
+            json: match wit_payload.json {
+                Some(payload_string) => {
+                    Some(
+                        serde_json::from_str(&payload_string).expect(
+                            format!("given data not JSON string: {}", payload_string).as_str()
+                        )
+                    )
+                },
+                None => None,
+            },
+            bytes: wit_payload.bytes,
+        };
 
         let process_data = self.lock().await;
 
         let message_json = json!({
-            "source": process_data.our_name,
-            "target": target_server,
-            "payload": {
-                "from": process_data.process_name,
-                "to": to,
-                "data": data
-            }
+            "source": AppNode {
+                server: process_data.our_name.clone(),
+                app: process_data.process_name.clone(),
+            },
+            "target": AppNode { 
+                server: target.server,
+                app: target.app,
+            },
+            "payload": payload,
         });
-        let message: Card = serde_json::from_value(message_json).unwrap();
+        let message: Message = serde_json::from_value(message_json).unwrap();
 
         process_data.send_to_loop.send(message).await.expect("to_event_loop: error sending");
         Ok(())
@@ -121,22 +160,79 @@ impl MicrokernelProcessImports for Process {
     }
 }
 
+async fn init_process(process: Process) {
+    let (our_name, process_name, wasm_bytes_uri, send_to_loop) = {
+        let process_data = process.lock().await;
+        (
+            process_data.our_name.clone(),
+            process_data.process_name.clone(),
+            process_data.wasm_bytes_uri.clone(),
+            process_data.send_to_loop.clone(),
+        )
+    };
+
+    let get_bytes_message = Message {
+        source: AppNode {
+            server: our_name.clone(),
+            app: process_name.clone(),
+        },
+        //  TODO: target should be inferred from process.data.file_uri
+        target: AppNode {
+            server: our_name.clone(),
+            app: "filesystem".to_string(),
+        },
+        payload: Payload{
+            json: Some(
+                serde_json::to_value(
+                    FileSystemCommand{
+                        uri_string: wasm_bytes_uri,
+                        command: FileSystemAction::Read,
+                    }
+                ).unwrap()
+            ),
+            bytes: None,
+        },
+    };
+    send_to_loop.send(get_bytes_message).await.unwrap();
+}
+
 async fn make_process_loop(
     process: Process,
-    mut recv_in_process: mpsc::Receiver<String>,
+    mut recv_in_process: MessageReceiver,
+    message_from_loop: Message,
     engine: &Engine
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    let process_data = process.lock().await;
-    let component = Component::from_file(&engine, &process_data.file_path)
+    let (our_name, process_name, send_to_terminal) = {
+        let process_data = process.lock().await;
+        (
+            process_data.our_name.clone(),
+            process_data.process_name.clone(),
+            process_data.send_to_terminal.clone(),
+        )
+    };
+
+    if "filesystem".to_string() != message_from_loop.source.app {
+        panic!(
+            "message_process_loop: expected bytes message from filesystem, not {:?}",
+            message_from_loop.source.app,
+        );
+    }
+    let Payload { json: None, bytes: Some(wasm_bytes) } = message_from_loop.payload else {
+        panic!(
+            "message_process_loop: expected pure bytes message from filesystem, not {:?}",
+            message_from_loop,
+        );
+    };
+    let mut process_data = process.lock().await;
+    process_data.wasm_bytes = wasm_bytes.clone();
+
+    let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
     MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
-
-    let our_name = process_data.our_name.clone();
-    let process_name = process_data.process_name.clone();
-    let send_to_terminal = process_data.send_to_terminal.clone();
     std::mem::drop(process_data);  //  unlock
+
     let mut store = Store::new(
         engine,
         process
@@ -150,7 +246,12 @@ async fn make_process_loop(
                 &linker
             ).await.unwrap();
             bindings
-                .call_init(&mut store, &our_name)
+                .call_init(
+                    &mut store,
+                    &WitAppNode {
+                        server: our_name.clone(),
+                        app: process_name.clone(),
+                    })
                 .await
                 .unwrap();
             let mut i = 0;
@@ -159,18 +260,29 @@ async fn make_process_loop(
                     .recv()
                     .await
                     .unwrap();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "{}: got message from loop: {}",
-                            process_name,
-                            message_from_loop
-                        )
-                    )
-                    .await
-                    .unwrap();
+                let wit_payload = WitPayload {
+                    json: match message_from_loop.payload.json {
+                        Some(value) => Some(json_to_string(&value)),
+                        None => None,
+                    },
+                    bytes: message_from_loop.payload.bytes,
+                };
+                let wit_message = WitMessage {
+                    source: &WitAppNode {
+                        server: message_from_loop.source.server,
+                        app: message_from_loop.source.app,
+                    },
+                    target: &WitAppNode {
+                        server: message_from_loop.target.server,
+                        app: message_from_loop.target.app,
+                    },
+                    payload: &wit_payload,
+                };
                 bindings
-                    .call_run_write(&mut store, &our_name, &message_from_loop)
+                    .call_run_write(
+                        &mut store,
+                        wit_message,
+                    )
                     .await
                     .unwrap();
                 i = i + 1;
@@ -187,56 +299,75 @@ impl ProcessAndHandle {
     async fn new(
         our_name: String,
         process_name: String,
-        file_path: &str,
-        send_to_loop: CardSender,
+        wasm_bytes_uri: &str,
+        send_to_process: MessageSender,
+        send_to_loop: MessageSender,
         send_to_terminal: PrintSender,
-        engine: &Engine,
     ) -> Self {
-        let (send_to_process, recv_in_process) =
-            mpsc::channel::<String>(PROCESS_CHANNEL_CAPACITY);
-
         let process = Arc::new(Mutex::new(ProcessData {
                 our_name: our_name,
                 process_name: process_name,
-                file_path: file_path.to_string(),
+                wasm_bytes_uri: wasm_bytes_uri.to_string(),
+                wasm_bytes: Vec::new(),
                 state: serde_json::Value::Null,
                 send_to_loop: send_to_loop,
                 send_to_process: send_to_process,
                 send_to_terminal: send_to_terminal
             }));
 
-        let process_loop =
-            make_process_loop(
-                Arc::clone(&process),
-                recv_in_process,
-                engine
-            ).await;
-        let process_handle = tokio::spawn(process_loop);
+        init_process(Arc::clone(&process)).await;
 
         ProcessAndHandle {
             process: Arc::clone(&process),
-            handle: process_handle
+            handle: tokio::spawn(async {Ok(())}),  //  dummy placeholder
         }
+    }
+
+    async fn start(
+        mut process: Self,
+        recv_in_process: MessageReceiver,
+        bytes_message: Message,
+        engine: &Engine
+    ) -> Self {
+        let process_handle = tokio::spawn(
+            make_process_loop(
+                Arc::clone(&process.process),
+                recv_in_process,
+                bytes_message,
+                engine,
+            ).await
+        );
+        process.handle = process_handle;
+        process
     }
 }
 
 fn make_event_loop(
     our_name: String,
     processes: Processes,
-    mut recv_in_loop: CardReceiver,
-    send_to_wss: CardSender,
-    send_to_terminal: PrintSender
+    mut recv_in_loop: MessageReceiver,
+    send_to_wss: MessageSender,
+    send_to_fs: MessageSender,
+    send_to_process_manager: MessageSender,
+    send_to_terminal: PrintSender,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
             loop {
-                let next_card = recv_in_loop.recv().await.unwrap();
+                let next_message = recv_in_loop.recv().await.unwrap();
                 send_to_terminal
-                    .send(format!("event loop: got: {:?}", next_card))
+                    .send(
+                        format!(
+                            "event loop: got json message: source, target, payload.json: {:?}, {:?}, {:?}",
+                            next_message.source,
+                            next_message.target,
+                            next_message.payload.json,
+                        )
+                    )
                     .await
                     .unwrap();
-                if our_name != next_card.target {
-                    match send_to_wss.send(next_card).await {
+                if our_name != next_message.target.server {
+                    match send_to_wss.send(next_message).await {
                         Ok(()) => {
                             send_to_terminal
                                 .send("event loop: sent to wss".to_string())
@@ -251,15 +382,29 @@ fn make_event_loop(
                         }
                     }
                 } else {
-                    let to = json_to_string(&next_card.payload["to"]);
-                    let data = json_to_string(&next_card.payload["data"]);
-
-                    match processes.get(&to) {
+                    let to = next_message.target.app.clone();
+                    if "filesystem".to_string() == to {
+                        //  request bytes from filesystem
+                        //  TODO: generalize this to arbitrary URIs
+                        //        (e.g., fs, http, peer, ...)
+                        let _ = send_to_fs
+                            .send(next_message)
+                            .await;
+                        continue;
+                    } else if "process_manager".to_string() == to {
+                        let _ = send_to_process_manager
+                            .send(next_message)
+                            .await;
+                        continue;
+                    }
+                    //  pass message to appropriate process
+                    let processes_lock = processes.read().await;
+                    match processes_lock.get(&to) {
                         Some(value) => {
                             let process = value.process.lock().await;
                             let _result = process
                                 .send_to_process
-                                .send(data)
+                                .send(next_message)
                                 .await;
                             send_to_terminal
                                 .send(
@@ -277,7 +422,7 @@ fn make_event_loop(
                                     format!(
                                         "event loop: don't have {} amongst registered processes: {:?}",
                                         to,
-                                        processes.keys().collect::<Vec<_>>()
+                                        processes_lock.keys().collect::<Vec<_>>()
                                     )
                                 )
                                 .await
@@ -291,71 +436,184 @@ fn make_event_loop(
     )
 }
 
+//  TODO: remove unnecessary println!s;
+//        change necessary to send_to_terminals
+async fn make_process_manager_loop(
+    our_name: String,
+    processes: Processes,
+    send_to_loop: MessageSender,
+    send_to_terminal: PrintSender,
+    mut recv_in_process_manager: MessageReceiver,
+    engine: Engine,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    Box::pin(
+        async move {
+            let disallowed_process_names = vec![
+                "filesystem".to_string(),
+                "process_manager".to_string(),
+                "terminal".to_string(),
+            ];
+            let disallowed_process_names: HashSet<String> = disallowed_process_names
+                .into_iter()
+                .collect();
+            loop {
+                let next_message = recv_in_process_manager.recv().await.unwrap();
+                println!("process manager: got {:?}", next_message);
+                //  TODO: validate source/target?
+                let Some(value) = next_message.payload.json else {
+                    send_to_terminal
+                        .send(
+                            format!(
+                                "process manager: got payload with no json source, target: {:?}, {:?}",
+                                next_message.source,
+                                next_message.target,
+                            )
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                };
+                let process_manager_command: ProcessManagerCommand =
+                    serde_json::from_value(value)
+                    .expect("process manager: could not parse to command");
+                println!("process manager: parsed {:?}", process_manager_command);
+                match process_manager_command {
+                    ProcessManagerCommand::Start(start) => {
+                        println!("process manager: start");
+                        if disallowed_process_names.contains(&start.process_name) {
+                            println!(
+                                "process manager: cannot add process {} with name amongst {:?}",
+                                &start.process_name,
+                                disallowed_process_names.iter().collect::<Vec<_>>(),
+                            );
+                            continue;
+                        }
+                        let (send_to_process, mut recv_in_process) =
+                            mpsc::channel::<Message>(PROCESS_CHANNEL_CAPACITY);
+                        {
+                            let mut processes_write = processes.write().await;
+                            processes_write.insert(
+                                start.process_name.clone(),
+                                ProcessAndHandle::new(
+                                    our_name.to_string(),
+                                    start.process_name.clone(),
+                                    &start.wasm_bytes_uri,
+                                    send_to_process,
+                                    send_to_loop.clone(),
+                                    send_to_terminal.clone(),
+                                ).await
+                            );
+                        }
+
+                        //  Divide operation into two steps to avoid blocking event loop,
+                        //   which needs read access to processes HashMap.
+                        let bytes_message = recv_in_process.recv().await.unwrap();
+                        {
+                            let mut processes_write = processes.write().await;
+                            let process = processes_write
+                                .remove(&start.process_name)
+                                .unwrap();
+                            let process = ProcessAndHandle::start(
+                                process,
+                                recv_in_process,
+                                bytes_message,
+                                &engine
+                            ).await;
+                            processes_write.insert(
+                                start.process_name.clone(),
+                                process,
+                            );
+                        }
+                    },
+                    ProcessManagerCommand::Stop(stop) => {
+                        println!("process manager: stop");
+                        let mut processes_write = processes.write().await;
+                        let removed = processes_write
+                            .remove(&stop.process_name)
+                            .unwrap();
+                        removed.handle.abort();
+                        println!("process manager: {:?}", processes_write.keys().collect::<Vec<_>>());
+                    },
+                    ProcessManagerCommand::Restart(restart) => {
+                        println!("process manager: restart");
+                        let mut processes_write = processes.write().await;
+                        let removed = processes_write
+                            .remove(&restart.process_name)
+                            .unwrap();
+                        removed.handle.abort();
+
+                        let removed_process = removed.process.lock().await;
+                        let restart_payload_json =
+                            serde_json::to_value(
+                                ProcessManagerCommand::Start(ProcessManagerStart {
+                                    process_name: removed_process.process_name.clone(),
+                                    wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
+                                })
+                            ).unwrap();
+                        let restart_message = Message {
+                            source: AppNode {
+                                server: our_name.clone(),
+                                app: "process_manager".to_string(),
+                            },
+                            target: AppNode {
+                                server: removed_process.our_name.clone(),
+                                app: "process_manager".to_string(),
+                            },
+                            payload: Payload {
+                                json: Some(restart_payload_json),
+                                bytes: None,
+                            },
+                        };
+                        let _ = send_to_loop.send(restart_message).await;
+                    },
+                }
+            }
+        }
+    )
+}
+
 pub async fn kernel(
     our_name: &str,
-    send_to_loop: CardSender,
+    send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
-    recv_in_loop: CardReceiver,
-    send_to_wss: CardSender
+    recv_in_loop: MessageReceiver,
+    send_to_wss: MessageSender,
+    send_to_fs: MessageSender,
 ) {
     let mut config = Config::new();
     config.async_support(true);
     config.wasm_component_model(true);
     let engine = Engine::new(&config).unwrap();
 
-    let mut processes: Processes = HashMap::new();
-
-    let process_name = "http_server".to_string();
-    let file_path = "./http_server.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
-
-    let process_name = "hi_lus_lus".to_string();
-    let file_path = "./hi_lus_lus.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
-
-    let process_name = "poast".to_string();
-    let file_path = "./poast.wasm";
-    processes.insert(
-        process_name.clone(),
-        ProcessAndHandle::new(
-            our_name.to_string(),
-            process_name.clone(),
-            &file_path,
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &engine
-        ).await
-    );
+    let processes: Processes = Arc::new(RwLock::new(HashMap::new()));
+    let (send_to_process_manager, recv_in_process_manager) =
+        mpsc::channel::<Message>(PROCESS_MANAGER_CHANNEL_CAPACITY);
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our_name.to_string(),
-            processes,
+            Arc::clone(&processes),
             recv_in_loop,
             send_to_wss,
-            send_to_terminal.clone()
+            send_to_fs,
+            send_to_process_manager,
+            send_to_terminal.clone(),
         )
     );
 
-    let _event_loop_result = event_loop_handle.await;
+    let process_manager_handle = tokio::spawn(
+        make_process_manager_loop(
+            our_name.to_string(),
+            Arc::clone(&processes),
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            recv_in_process_manager,
+            engine,
+        ).await
+    );
+
+    _ = tokio::join!(
+        event_loop_handle,
+        process_manager_handle,
+    );
 }

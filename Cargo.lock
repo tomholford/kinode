@@ -4019,6 +4019,7 @@ dependencies = [
  "ethers",
  "futures",
  "hasher",
+ "http",
  "log",
  "rs_merkle",
  "rustyline-async",

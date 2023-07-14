@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use ring::signature::KeyPair;
 
 use ethers::prelude::*;
 
@@ -15,6 +16,7 @@ pub type OnchainPKI = HashMap<String, Identity>;
 pub struct Identity {
     pub name: String,
     pub address: H256,
+    pub networking_key: String,
     pub ws_url: String,
     pub ws_port: u16,
 }

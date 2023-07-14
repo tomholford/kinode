@@ -92,6 +92,7 @@ async fn handle_connection(
 
     // take first message on stream and use it to identify peer
     let handshake_msg = read_stream.next().await.ok_or(tungstenite::Error::ConnectionClosed)??;
+
     // XX verify with a signature or whatever
     let id: Identity = serde_json::from_str(&handshake_msg.to_string()).unwrap();
 

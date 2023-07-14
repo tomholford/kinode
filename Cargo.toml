@@ -27,5 +27,8 @@ cita_trie = "4.0.0"
 ethers = "2.0"
 hasher = "*"
 bincode = "*"
+rand = "0.8.4"
+ring = "0.16.20"
+hex = "0.4.3"
 # For use with https://github.com/tokio-rs/console
 # console-subscriber ="*"

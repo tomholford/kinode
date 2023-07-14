@@ -2,12 +2,10 @@ use anyhow::{anyhow, Result};
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
-// use tokio::sync::{mpsc, Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-// use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 
 use crate::types::*;
@@ -27,7 +25,6 @@ const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
 #[serde(tag = "type")]
 enum ProcessManagerCommand {
     Start(ProcessManagerStart),
-    // Bytes(ProcessManagerBytes),
     Stop(ProcessManagerStop),
     Restart(ProcessManagerRestart),
 }
@@ -37,10 +34,6 @@ struct ProcessManagerStart {
     wasm_bytes_uri: String,
     is_long_running_process: bool,
 }
-// #[derive(Debug, Serialize, Deserialize)]
-// struct ProcessManagerBytes {
-//     process_name: String,
-// }
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessManagerStop {
     process_name: String,
@@ -93,18 +86,11 @@ impl Clone for ProcessMetadata {
     }
 }
 
-// struct ProcessData {
 struct Process {
     metadata: ProcessMetadata,
     state: serde_json::Value,
     send_to_terminal: PrintSender,
-    // send_to_loop: MessageSender,  //  TODO: remove used to send directly to loop, now return via process_loop
 }
-// type Process = Arc<Mutex<ProcessData>>;
-// struct ProcessAndHandle {
-//     process: Process,
-//     handle: JoinHandle<Result<()>>  // TODO: for use in restarting erroring process, ala midori
-// }
 
 //  lives in process manager
 type ProcesseMetadatas = HashMap<String, ProcessMetadata>;
@@ -121,51 +107,6 @@ impl Host for Process {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
-    // async fn to_event_loop(
-    //     &mut self,
-    //     target_ship: String,
-    //     target_app: String,
-    //     message_type: WitMessageType,
-    //     wit_payload: WitPayload,
-    //     messages: MessageStack,
-    // ) -> Result<()> {
-    //     let payload = Payload {
-    //         json: match wit_payload.json {
-    //             Some(payload_string) => {
-    //                 Some(
-    //                     serde_json::from_str(&payload_string).expect(
-    //                         format!("given data not JSON string: {}", payload_string).as_str()
-    //                     )
-    //                 )
-    //             },
-    //             None => None,
-    //         },
-    //         bytes: wit_payload.bytes,
-    //     };
-
-    //     let process_data = self.lock().await;
-
-    //     let message = Message {
-    //         wire: Wire {
-    //             source_ship: process_data.our_name.clone(),
-    //             source_app: process_data.process_name.clone(),
-    //             target_ship: target_ship,
-    //             target_app: target_app,
-    //         },
-    //         message_type: match message_type {
-    //             WitMessageType::Request(is_expecting_response) => {
-    //                 MessageType::Request(is_expecting_response)
-    //             },
-    //             WitMessageType::Response => MessageType::Response,
-    //         },
-    //         payload: payload,
-    //     };
-    //     messages.push(message);
-
-    //     process_data.send_to_loop.send(messages).await.expect("to_event_loop: error sending");
-    //     Ok(())
-    // }
-
     async fn modify_state(
         &mut self,
         json_pointer: String,
@@ -258,34 +199,7 @@ async fn make_process_loop(
     wasm_bytes: Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    // let (our_name, process_name, send_to_loop, send_to_terminal) = {
-    //     let process_data = process.lock().await;
-    //     (
-    //         process_data.our_name.clone(),
-    //         process_data.process_name.clone(),
-    //         process_data.send_to_loop.clone(),
-    //         process_data.send_to_terminal.clone(),
-    //     )
-    // };
     let (our_name, process_name) = (metadata.our_name.clone(), metadata.process_name.clone());
-
-    // let stack_len = message_stack_from_loop.len();
-    // let message_from_loop = message_stack_from_loop[stack_len - 1].clone();
-
-    // if "filesystem".to_string() != message_from_loop.wire.source_app {
-    //     panic!(
-    //         "message_process_loop: expected bytes message from filesystem, not {:?}",
-    //         message_from_loop.wire.source_app,
-    //     );
-    // }
-    // let Payload { json: None, bytes: Some(wasm_bytes) } = message_from_loop.payload else {
-    //     panic!(
-    //         "message_process_loop: expected pure bytes message from filesystem, not {:?}",
-    //         message_from_loop,
-    //     );
-    // };
-    // let mut process_data = process.lock().await;
-    // process_data.wasm_bytes = wasm_bytes.clone();
 
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
@@ -337,9 +251,6 @@ async fn make_process_loop(
                     .await
                     .unwrap();
 
-
-
-
                 //  for return
                 let stack_len = input_message_stack.len();
                 let (source_ship, source_app, message_type) = (
@@ -353,35 +264,6 @@ async fn make_process_loop(
                 let input_wit_message_stack: Vec<&WitMessage> =
                     input_wit_message_stack.iter().collect();
 
-                // let messages_from_loop = recv_in_process
-                //     .recv()
-                //     .await
-                //     .unwrap();
-
-                // let wit_payload = WitPayload {
-                //     json: match message_from_loop.payload.json {
-                //         Some(value) => Some(json_to_string(&value)),
-                //         None => None,
-                //     },
-                //     bytes: message_from_loop.payload.bytes,
-                // };
-                // let wit_message_type = match message_from_loop.message_type {
-                //     MessageType::Request(is_expecting_response) => {
-                //         WitMessageType::Request(is_expecting_response)
-                //     },
-                //     MessageType::Response => WitMessageType::Response,
-                // };
-                // let wit_message = WitMessage {
-                //     message_type: wit_message_type,
-                //     wire: WitWire {
-                //         source_ship: &message_from_loop.wire.source_ship,
-                //         source_app: &message_from_loop.wire.source_app,
-                //         target_ship: &message_from_loop.wire.target_ship,
-                //         target_app: &message_from_loop.wire.target_app
-                //     },
-                //     payload: &wit_payload,
-                // };
-                // convert_wit_message_stack_to_message_stack(
                 match message_type {
                     MessageType::Request(is_expecting_response) => {
                         //  this code is nearly the same as the Response case below:
@@ -524,12 +406,6 @@ async fn make_process_loop(
                                 payload: payload,
                             };
 
-                            // let output_message_stack = input_message_stack.clone();
-                            // output_message_stack.push(message);
-                            // send_to_loop
-                            //     .send(output_message_stack)
-                            //     .await
-                            //     .unwrap();
                             input_message_stack.push(message);
                             send_to_loop
                                 .send(input_message_stack)
@@ -538,10 +414,6 @@ async fn make_process_loop(
                         }
                     },
                 };
-                // send_to_loop
-                //     .send(message_stack)
-                //     .await
-                //     .unwrap();
                 i = i + 1;
                 send_to_terminal
                     .send(format!("{}: ran process step {}", process_name, i))
@@ -554,7 +426,6 @@ async fn make_process_loop(
 
 fn make_event_loop(
     our_name: String,
-    // processes: Processes,
     mut recv_in_loop: MessageReceiver,
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
@@ -619,7 +490,6 @@ fn make_event_loop(
                         let kernel_command: KernelRequest =
                             serde_json::from_value(value)
                             .expect("kernel: could not parse to command");
-                        println!("kernel: parsed command {:?}", kernel_command);
                         match kernel_command {
                             KernelRequest::StartProcess(cmd) => {
                                 let Some(wasm_bytes) = next_message.payload.bytes else {
@@ -753,11 +623,9 @@ fn make_event_loop(
 //        change necessary to send_to_terminals
 async fn make_process_manager_loop(
     our_name: String,
-    // processes: Processes,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_in_process_manager: MessageReceiver,
-    // engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
@@ -806,7 +674,6 @@ async fn make_process_manager_loop(
                         let process_manager_command: ProcessManagerCommand =
                             serde_json::from_value(value)
                             .expect("process manager: could not parse to command");
-                        println!("process manager: parsed {:?}", process_manager_command);
                         match process_manager_command {
                             ProcessManagerCommand::Start(start) => {
                                 println!("process manager: start");
@@ -842,58 +709,10 @@ async fn make_process_manager_loop(
                                 };
                                 message_stack.push(get_bytes_message);
                                 send_to_loop.send(message_stack).await.unwrap();
-
-                                // let mut bytes_message_stack = recv_in_process_manager
-                                //     .recv()
-                                //     .await
-                                //     .unwrap();
-
-                                // // let bytes_message = bytes_message_stack.pop();
-                                // let stack_len = bytes_message_stack.len();
-                                // let bytes_message = bytes_message_stack[stack_len - 1].clone();
-
-
-                                // let (send_to_process, mut recv_in_process) =
-                                //     mpsc::channel::<MessageStack>(PROCESS_CHANNEL_CAPACITY);
-                                // {
-                                //     let mut processes_write = processes.write().await;
-                                //     processes_write.insert(
-                                //         start.process_name.clone(),
-                                //         ProcessAndHandle::new(
-                                //             our_name.to_string(),
-                                //             start.process_name.clone(),
-                                //             &start.wasm_bytes_uri,
-                                //             send_to_process,
-                                //             send_to_loop.clone(),
-                                //             send_to_terminal.clone(),
-                                //         ).await
-                                //     );
-                                // }
-
-                                // //  Divide operation into two steps to avoid blocking event loop,
-                                // //   which needs read access to processes HashMap.
-                                // let bytes_message = recv_in_process.recv().await.unwrap();
-                                // {
-                                //     let mut processes_write = processes.write().await;
-                                //     let process = processes_write
-                                //         .remove(&start.process_name)
-                                //         .unwrap();
-                                //     let process = ProcessAndHandle::start(
-                                //         process,
-                                //         recv_in_process,
-                                //         bytes_message,
-                                //         &engine
-                                //     ).await;
-                                //     processes_write.insert(
-                                //         start.process_name.clone(),
-                                //         process,
-                                //     );
-                                // }
                             },
                             ProcessManagerCommand::Stop(stop) => {
                                 //  TODO: refactor Stop and Restart since 99% of code is shared
                                 println!("process manager: stop");
-                                // let mut processes_write = processes.write().await;
                                 let _ = metadatas
                                     .remove(&stop.process_name)
                                     .unwrap();
@@ -924,10 +743,6 @@ async fn make_process_manager_loop(
                             ProcessManagerCommand::Restart(restart) => {
                                 //  TODO: refactor Stop and Restart since 99% of code is shared
                                 println!("process manager: restart");
-                                // let mut processes_write = processes.write().await;
-                                // let removed = metadatas
-                                //     .remove(&restart.process_name)
-                                //     .unwrap();
 
                                 let json_payload = serde_json::to_value(
                                     KernelRequest::StopProcess(KernelStopProcess {
@@ -949,31 +764,6 @@ async fn make_process_manager_loop(
                                 };
                                 message_stack.push(kernel_stop_process_message);
                                 send_to_loop.send(message_stack).await.unwrap();
-
-                                // let removed_process = removed.process.lock().await;
-                                // let restart_payload_json =
-                                //     serde_json::to_value(
-                                //         ProcessManagerCommand::Start(ProcessManagerStart {
-                                //             process_name: removed_process.process_name.clone(),
-                                //             wasm_bytes_uri: removed_process.wasm_bytes_uri.clone(),
-                                //             is_long_running_process: removed_process.is_long_running_process.clone(),
-                                //         })
-                                //     ).unwrap();
-                                // let restart_message = Message {
-                                //     message_type: MessageType::Request(true),
-                                //     wire: Wire {
-                                //         source_ship: our_name.clone(),
-                                //         source_app: "process_manager".to_string(),
-                                //         target_ship: removed_process.our_name.clone(),
-                                //         target_app: "process_manager".to_string(),
-                                //     },
-                                //     payload: Payload {
-                                //         json: Some(restart_payload_json),
-                                //         bytes: None,
-                                //     },
-                                // };
-                                // message_stack.push(restart_message);
-                                // let _ = send_to_loop.send(message_stack).await;
                             },
                         }
                     },
@@ -1098,103 +888,6 @@ async fn make_process_manager_loop(
                                 continue;
                             },
                         }
-
-                            // ProcessManagerCommand::Bytes(bytes) => {
-                            //     let Some(wasm_bytes) = message.payload.bytes else {
-                            //         send_to_terminal
-                            //             .send(
-                            //                 format!(
-                            //                     "process manager: bytes got payload with no bytes; stack: {:?}",
-                            //                     message_stack,
-                            //                 )
-                            //             )
-                            //             .await
-                            //             .unwrap();
-                            //         continue;
-                            //     };
-
-                            //     let start_message = message_stack[stack_len - 2].clone();
-
-                            //     println!("process manager: got bytes for {:?}", start_message);
-
-                            //     //  TODO: refactor since code is same as before main `match`
-                            //     let Some(value) = start_message.payload.json else {
-                            //         send_to_terminal
-                            //             .send(
-                            //                 format!(
-                            //                     "process manager: got payload with no json source, target: {:?}, {:?} {:?} {:?}",
-                            //                     start_message.wire.source_ship,
-                            //                     start_message.wire.source_app,
-                            //                     start_message.wire.target_ship,
-                            //                     start_message.wire.target_app,
-                            //                 )
-                            //             )
-                            //             .await
-                            //             .unwrap();
-                            //         continue;
-                            //     };
-                            //     let start_command: ProcessManagerCommand =
-                            //         serde_json::from_value(value)
-                            //         .expect("process manager: could not parse to command");
-                            //     println!(
-                            //         "process manager: bytes parsed start command {:?}",
-                            //         start_command
-                            //     );
-                            //     let ProcessManagerCommand::Start(start_command) = start_command else {
-                            //         send_to_terminal
-                            //             .send(
-                            //                 format!(
-                            //                     "process manager: bytes previous command is not start, stack: {:?}",
-                            //                     message_stack,
-                            //                 )
-                            //             )
-                            //             .await
-                            //             .unwrap();
-                            //         continue;
-                            //     };
-                            //     //  TODO: assert bytes.process_name is same as start_command's
-                            //     let json_payload = serde_json::to_value(
-                            //         KernelCommand::StartProcess(KernelStartProcess {
-                            //             process_name: bytes.process_name.clone(),
-                            //             wasm_bytes_uri: start_command.wasm_bytes_uri.clone(),
-                            //         })
-                            //     ).unwrap();
-                            //     let kernel_start_process_message = Message {
-                            //         message_type: MessageType::Request(true),
-                            //         wire: Wire {
-                            //             source_ship: our_name.clone(),
-                            //             source_app: "process_manager".to_string(),
-                            //             target_ship: our_name.clone(),
-                            //             target_app: "kernel".to_string(),
-                            //         },
-                            //         payload: Payload {
-                            //             json: Some(json_payload),
-                            //             bytes: Some(wasm_bytes),
-                            //         },
-                            //     };
-                            //     message_stack.push(kernel_start_process_message);
-                            //     send_to_loop.send(message_stack).await.unwrap();
-                            //     // let recv_in_process = recv_process_recv_channel_in_process_manager
-                            //     //     .recv()
-                            //     //     .await
-                            //     //     .unwrap();
-
-                            //     // processes.insert(bytes.process_name.clone(),
-                            //     //     ProcessAndHandle::new(
-                            //     //         our_name.to_string(),
-                            //     //         start.process_name.clone(),
-                            //     //         &start.wasm_bytes_uri,
-                            //     //         // send_to_process,
-                            //     //         // send_to_loop.clone(),
-                            //     //         send_to_terminal.clone(),
-                            //     //         wasm_bytes,
-                            //     //         &engine,
-                            //     //     ).await
-                            //     // );
-                            // },
-
-
-
                     },
                 }
             }
@@ -1215,7 +908,6 @@ pub async fn kernel(
     config.wasm_component_model(true);
     let engine = Engine::new(&config).unwrap();
 
-    // let processes: Processes = Arc::new(RwLock::new(HashMap::new()));
     let (send_to_process_manager, recv_in_process_manager) =
         mpsc::channel::<MessageStack>(PROCESS_MANAGER_CHANNEL_CAPACITY);
 

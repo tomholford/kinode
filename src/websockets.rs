@@ -1,3 +1,9 @@
+//  imports needed?
+use tokio::net::{TcpStream, TcpListener};
+use tokio_tungstenite::tungstenite::Error;
+use tokio_tungstenite::{connect_async, accept_async, tungstenite};
+// use tokio_tungstenite::{connect_async, tungstenite::Message, accept_async, tungstenite::Result};
+use url::Url;
 use futures::prelude::*;
 use futures::stream::{SplitSink, SplitStream};
 use std::collections::HashMap;
@@ -6,7 +12,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Error;
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message, tungstenite::Result};
+use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message, tungstenite::Result};  // tungstenite::Message overloads our Message, so refer to it as tungstenite::Message in code
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use url::Url;
 
@@ -30,8 +36,8 @@ pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub async fn websockets(
     our: &Identity,
     pki: &OnchainPKI,
-    card_rx: CardReceiver,
-    card_tx: CardSender,
+    message_rx: MessageReceiver,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
     let tcp_listener = TcpListener::bind(format!("0.0.0.0:{}", our.ws_port))
@@ -51,24 +57,24 @@ pub async fn websockets(
         ws_listener(
             tcp_listener,
             peers.clone(),
-            card_tx.clone(),
+            message_tx.clone(),
             print_tx.clone(),
         ),
         ws_sender(
             our,
             pki,
             peers.clone(),
-            card_rx,
-            card_tx.clone(),
+            message_rx,
+            message_tx.clone(),
             print_tx.clone(),
         ),
     );
 }
 
-async fn ws_listener(tcp: TcpListener, peers: Peers, card_tx: CardSender, print_tx: PrintSender) {
+async fn ws_listener(tcp: TcpListener, peers: Peers, message_tx: MessageSender, print_tx: PrintSender) {
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         let closed =
-            handle_connection(stream, peers.clone(), card_tx.clone(), print_tx.clone()).await;
+            handle_connection(stream, peers.clone(), message_tx.clone(), print_tx.clone()).await;
         match closed {
             Ok(()) => continue,
             Err(e) => {
@@ -83,7 +89,7 @@ async fn ws_listener(tcp: TcpListener, peers: Peers, card_tx: CardSender, print_
 async fn handle_connection(
     stream: TcpStream,
     peers: Peers,
-    card_tx: CardSender,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) -> Result<(), Error> {
     let ws_stream = accept_async(MaybeTlsStream::Plain(stream)).await?;
@@ -110,7 +116,7 @@ async fn handle_connection(
         },
     ));
 
-    let _closed = active_reader(read_stream, card_tx.clone(), print_tx.clone()).await;
+    let _closed = active_reader(read_stream, message_tx.clone(), print_tx.clone()).await;
 
     // remove peer, connection was closed!
     peers.write().await.remove(&id.name);
@@ -120,17 +126,17 @@ async fn handle_connection(
 
 async fn active_reader(
     mut read_stream: SplitStream<Sock>,
-    card_tx: CardSender,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
     let _ = print_tx.send(format!("actively listening to socket")).await;
     while let Some(msg) = read_stream.next().await {
         match msg {
             Ok(msg) => {
-                ingest_peer_msg(card_tx.clone(), print_tx.clone(), msg).await;
+                ingest_peer_msg(message_tx.clone(), print_tx.clone(), msg).await;
             }
             Err(_) => {
-                // we lost a peer connection. send card to kernel to try and reconnect?
+                // we lost a peer connection. send message to kernel to try and reconnect?
                 let _ = print_tx.send(format!("lost peer conn")).await;
                 break;
             }
@@ -143,7 +149,7 @@ pub async fn ws_sender(
     pki: &OnchainPKI,
     peers: Peers,
     mut card_rx: CardReceiver,
-    card_tx: CardSender,
+    card_tx: CardSender,  // to change: card -> message
     print_tx: PrintSender,
 ) {
     while let Some(card) = card_rx.recv().await {
@@ -236,7 +242,7 @@ async fn make_reader(
     peers.write().await.remove(&who);
 }
 
-async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Message) {
+async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: tungstenite::Message) {
     let message = match msg.into_text() {
         Ok(v) => v,
         Err(_) => {
@@ -249,7 +255,7 @@ async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Messag
 
     // deserialize
     // let start = Instant::now();
-    let card: Card = match serde_json::from_str(&message) {
+    let message: Message = match serde_json::from_str(&message) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error while parsing message: {}", e);
@@ -263,18 +269,30 @@ async fn ingest_peer_msg(card_tx: CardSender, print_tx: PrintSender, msg: Messag
 
     // if payload is just a string, print it as a "message"
     // otherwise forward to kernel for processing
-    match card.payload {
-        serde_json::Value::String(s) => {
-            let _ = print_tx
-                .send(format!(
-                    "\x1b[3;32m {}: {:?} \x1b[0m",
-                    card.source,
-                    s
-                ))
-                .await;
-        },
-        _ => {
-            let _ = card_tx.send(card).await;
-        },
+
+    //  TODO: print message if only content of payload is string in json;
+    //        else send on message_tx
+    //      aborted attempt:
+    // match message.payload {
+    //     Payload {
+    //         json: Some(v),
+    //         bytes: None,
+    //     } =>
+    //     serde_json::Value::String(s) => {}
+    // }
+    //    old:
+    // match card.payload {
+    //     serde_json::Value::String(s) => {
+    //         let _ = print_tx
+    //             .send(format!(
+    //                 "\x1b[3;32m {}: {:?} \x1b[0m",
+    //                 card.source,
+    //                 s
+    //             ))
+    //             .await;
+    //     },
+    //     _ => {
+    //         let _ = card_tx.send(card).await;
+    //     },
     }
 }

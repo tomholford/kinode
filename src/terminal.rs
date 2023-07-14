@@ -6,7 +6,7 @@ use crate::types::*;
 /*
  *  terminal driver
  */
-pub async fn terminal(our: &Identity, card_tx: CardSender, mut print_rx: PrintReceiver)
+pub async fn terminal(our: &Identity, message_tx: MessageSender, mut print_rx: PrintReceiver)
     -> Result<(), ReadlineError> {
 
     let (mut rl, mut stdout) = Readline::new("> ".into())?;
@@ -21,8 +21,8 @@ pub async fn terminal(our: &Identity, card_tx: CardSender, mut print_rx: PrintRe
                 Ok(line) => {
                     rl.add_history_entry(line.clone());
                     match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
-                        Command::Card(card) => {
-                            card_tx.send(card).await.unwrap();
+                        Command::Message(message) => {
+                            message_tx.send(message).await.unwrap();
                             writeln!(stdout, "{}", line)?;
                         },
                         Command::Quit => {
@@ -50,15 +50,26 @@ pub async fn terminal(our: &Identity, card_tx: CardSender, mut print_rx: PrintRe
 }
 
 fn parse_command(our_name: &str, line: &str) -> Option<Command> {
+    if line == "\n" { return None }
     let (head, tail) = line.split_once(" ")?;
     match head {
-        "!card" => {
-            let (target, payload) = tail.split_once(" ")?;
+        "!message" => {
+            let (target_server, tail) = tail.split_once(" ")?;
+            let (target_app, payload) = tail.split_once(" ")?;
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
-            Some(Command::Card(Card {
-                source: our_name.to_string(),
-                target: target.parse().unwrap(),
-                payload: val,
+            Some(Command::Message(Message {
+                source: AppNode {
+                    server: our_name.to_string(),
+                    app: "terminal".to_string(),
+                },
+                target: AppNode {
+                    server: target_server.to_string(),
+                    app: target_app.to_string(),
+                },
+                payload: Payload {
+                    json: Some(val),
+                    bytes: None,
+                },
             }))
         }
         "!quit" => Some(Command::Quit),

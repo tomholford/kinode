@@ -142,31 +142,32 @@ pub async fn ws_sender(
     our: &Identity,
     pki: &OnchainPKI,
     peers: Peers,
-    mut card_rx: MessageReceiver,
-    card_tx: MessageSender,  // to change: card -> message
+    mut message_rx: MessageReceiver,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    while let Some(message) = card_rx.recv().await {
+    while let Some(message_stack) = message_rx.recv().await {
+        let stack_len = message_stack.len();
         let mut edit = peers.write().await;
-        let target = &message.target.server;
-        match edit.remove(target) {
+        let target = message_stack[stack_len - 1].wire.target_ship.clone();
+        match edit.remove(&target) {
             Some(mut peer) => {
                 // let _ = print_tx.send(format!("sending card to existing peer {}", &card.target)).await;
                 // use existing write stream to send message
                 match peer
                     .ws_write_stream
-                    .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
+                    .send(tungstenite::Message::text(serde_json::to_string(&message_stack).unwrap()))
                     .await
                 {
                     Ok(_) => {
                         let _ = print_tx
                             .send(format!("sent card to {}", target))
                             .await;
-                        edit.insert(message.target.server, peer);
+                        edit.insert(target, peer);
                     }
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending card: {}", e)).await;
-                        edit.remove(target);
+                        edit.remove(&target);
                     }
                 }
             }
@@ -175,7 +176,7 @@ pub async fn ws_sender(
                 let _ = print_tx
                     .send(format!("trying to open new conn to {}", target))
                     .await;
-                let id = pki.get(target).unwrap();
+                let id = pki.get(&target).unwrap();
 
                 match connect_async(
                     Url::parse(&format!("ws://{}:{}/ws", id.ws_url, id.ws_port)).unwrap(),
@@ -192,13 +193,13 @@ pub async fn ws_sender(
                             .await;
                         // then send actual message
                         let _ = socket
-                            .send(tungstenite::Message::text(serde_json::to_string(&message).unwrap()))
+                            .send(tungstenite::Message::text(serde_json::to_string(&message_stack).unwrap()))
                             .await;
                         // then store connection in our peer map
                         // Convert MaybeTlsStream to TcpStream
                         let (write_stream, read_stream) = socket.split();
                         edit.insert(
-                            message.target.server,
+                            target,
                             Peer {
                                 address: id.address.clone(),
                                 ws_url: id.ws_url.clone(),
@@ -213,7 +214,7 @@ pub async fn ws_sender(
                             id.name.clone(),
                             peers.clone(),
                             read_stream,
-                            card_tx.clone(),
+                            message_tx.clone(),
                             print_tx.clone(),
                         ));
                     }
@@ -250,13 +251,15 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
 
     // deserialize
     // let start = Instant::now();
-    let message: Message = match serde_json::from_str(&message) {
+    let message_stack: MessageStack = match serde_json::from_str(&message) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error while parsing message: {}", e);
             return;
         }
     };
+    let stack_len = message_stack.len();
+    let message = message_stack[stack_len - 1].clone();
     // let duration = start.elapsed();
     // let _ = print_tx
     //     .send(format!("Time taken to deserialize: {:?}", duration))
@@ -269,13 +272,13 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
             let _ = print_tx
                 .send(format!(
                     "\x1b[3;32m {}: {:?} \x1b[0m",
-                    message.source.server,
+                    message.wire.source_ship,
                     s
                 ))
                 .await;
         },
         _ => {
-            let _ = message_tx.send(message).await;
+            let _ = message_tx.send(message_stack).await;
         },
     }
 }

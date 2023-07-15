@@ -3,8 +3,8 @@ use serde::{Serialize, Deserialize};
 
 use ethers::prelude::*;
 
-pub type MessageSender = tokio::sync::mpsc::Sender<Message>;
-pub type MessageReceiver = tokio::sync::mpsc::Receiver<Message>;
+pub type MessageSender = tokio::sync::mpsc::Sender<MessageStack>;
+pub type MessageReceiver = tokio::sync::mpsc::Receiver<MessageStack>;
 
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
@@ -26,6 +26,14 @@ pub struct AppNode {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct Wire {
+    pub source_ship: String,
+    pub source_app:  String,
+    pub target_ship: String,
+    pub target_app:  String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
@@ -33,9 +41,85 @@ pub struct Payload {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
-    pub source: AppNode,
-    pub target: AppNode,
+    pub message_type: MessageType,
+    pub wire: Wire,
     pub payload: Payload,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum MessageType {
+    Request(bool),
+    Response,
+}
+
+impl Clone for MessageType {
+    fn clone(&self) -> MessageType {
+        match self {
+            MessageType::Request(is_expecting_response) => {
+                MessageType::Request(is_expecting_response.clone())
+            },
+            MessageType::Response => MessageType::Response,
+        }
+    }
+}
+
+impl Clone for Wire {
+    fn clone(&self) -> Wire {
+        Wire {
+            source_ship: self.source_ship.clone(),
+            source_app: self.source_app.clone(),
+            target_ship: self.target_ship.clone(),
+            target_app: self.target_app.clone(),
+        }
+    }
+}
+
+impl Clone for Payload {
+    fn clone(&self) -> Payload {
+        Payload {
+            json: self.json.clone(),
+            bytes: self.bytes.clone(),
+        }
+    }
+}
+
+impl Clone for Message {
+    fn clone(&self) -> Message {
+        Message {
+            message_type: self.message_type.clone(),
+            wire: self.wire.clone(),
+            payload: self.payload.clone(),
+        }
+    }
+}
+
+pub type MessageStack = Vec<Message>;
+
+impl std::fmt::Display for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let bytes_string = match self.bytes {
+            Some(_) => "Some(<elided>)",
+            None => "None",
+        };
+        write!(
+            f,
+            "Payload {{ json: {:?}, bytes: {} }}",
+            self.json,
+            bytes_string,
+        )
+    }
+}
+
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Message {{ message_type: {:?}, wire: {:?}, payload: {} }}",
+            self.message_type,
+            self.wire,
+            self.payload,
+        )
+    }
 }
 
 // #[derive(Debug, Serialize, Deserialize)]
@@ -47,7 +131,7 @@ pub struct Message {
 // }
 
 pub enum Command {
-    Message(Message),
+    StartOfMessageStack(MessageStack),
     Quit,
     Invalid,
 }

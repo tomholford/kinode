@@ -9,7 +9,7 @@ use cita_trie::{PatriciaTrie, Trie};
 use ethers::prelude::*;
 use serde::{Serialize, Deserialize};
 
-use anyhow::{anyhow, Result};
+// use anyhow::{anyhow, Result};
 use wasmtime::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

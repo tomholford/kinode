@@ -193,7 +193,12 @@ async fn make_process_loop(
     wasm_bytes: Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    let (our_name, process_name) = (metadata.our_name.clone(), metadata.process_name.clone());
+    let (our_name, process_name, is_long_running_process) =
+        (
+            metadata.our_name.clone(),
+            metadata.process_name.clone(),
+            metadata.is_long_running_process.clone()
+        );
 
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
@@ -267,8 +272,9 @@ async fn make_process_loop(
                                 &mut store,
                                 input_wit_message_stack.as_slice(),
                             ).await.unwrap();
-                        if !is_expecting_response {
-                            //  pop off caller from stack
+                        if !is_expecting_response & (1 < stack_len) {
+                            //  pop off requests that dont expect responses
+                            //   UNLESS they are the request that started the chain
                             input_message_stack.pop();
                         }
                         //  push to message_stack
@@ -287,9 +293,9 @@ async fn make_process_loop(
                                         )
                                     },
                                     WitMessageTypeWithTarget::Response => {
-                                        //  if popped off only message in stack, continue;
+                                        //  if at chain start & dont want response, continue;
                                         //   else target is most recent message source
-                                        if (1 == stack_len) & !is_expecting_response {
+                                        if !is_expecting_response & (1 == stack_len) {
                                             continue;
                                         } else {
                                             (
@@ -324,8 +330,6 @@ async fn make_process_loop(
                                 payload: payload,
                             };
 
-                            // let output_message_stack = input_message_stack.clone();
-                            // output_message_stack.push(message);
                             input_message_stack.push(message);
                             send_to_loop
                                 .send(input_message_stack)
@@ -413,7 +417,11 @@ async fn make_process_loop(
                     .send(format!("{}: ran process step {}", process_name, i))
                     .await
                     .unwrap();
+                if !is_long_running_process {
+                    break;
+                }
             }
+            Ok(())
         }
     )
 }
@@ -557,7 +565,9 @@ fn make_event_loop(
                                     println!("kernel: StopProcess unexpected response instead of request");
                                     continue;
                                 };
-                                if !is_expecting_response {
+                                if !is_expecting_response & (1 < stack_len) {
+                                    //  pop off requests that dont expect responses
+                                    //   UNLESS they are the request that started the chain
                                     continue;
                                 }
                                 let json_payload = serde_json::to_value(
@@ -702,7 +712,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
-                                if !is_expecting_response {
+                                if !is_expecting_response & (1 < stack_len) {
+                                    //  pop off requests that dont expect responses
+                                    //   UNLESS they are the request that started the chain
                                     message_stack.pop();
                                 }
                                 message_stack.push(get_bytes_message);
@@ -733,7 +745,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
-                                if !is_expecting_response {
+                                if !is_expecting_response & (1 < stack_len) {
+                                    //  pop off requests that dont expect responses
+                                    //   UNLESS they are the request that started the chain
                                     message_stack.pop();
                                 }
                                 message_stack.push(kernel_stop_process_message);
@@ -763,7 +777,9 @@ async fn make_process_manager_loop(
                                         bytes: None,
                                     },
                                 };
-                                if !is_expecting_response {
+                                if !is_expecting_response & (1 < stack_len) {
+                                    //  pop off requests that dont expect responses
+                                    //   UNLESS they are the request that started the chain
                                     message_stack.pop();
                                 }
                                 message_stack.push(kernel_stop_process_message);

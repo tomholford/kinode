@@ -58,7 +58,7 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
             let (target_app, payload) = tail.split_once(" ")?;
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
             Some(Command::StartOfMessageStack(vec![Message {
-                message_type: MessageType::Request(true),
+                message_type: MessageType::Request(false),
                 wire: Wire {
                     source_ship: our_name.to_string(),
                     source_app: "terminal".to_string(),

@@ -107,6 +107,33 @@ impl Clone for Message {
 
 pub type MessageStack = Vec<Message>;
 
+impl std::fmt::Display for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let bytes_string = match self.bytes {
+            Some(_) => "Some(<elided>)",
+            None => "None",
+        };
+        write!(
+            f,
+            "Payload {{ json: {:?}, bytes: {} }}",
+            self.json,
+            bytes_string,
+        )
+    }
+}
+
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Message {{ message_type: {:?}, wire: {:?}, payload: {} }}",
+            self.message_type,
+            self.wire,
+            self.payload,
+        )
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ID {
     node: String,

@@ -1,4 +1,5 @@
 use http::Uri;
+use serde_json::json;
 use tokio::fs;
 use tokio_tungstenite::tungstenite::Error;
 
@@ -60,7 +61,7 @@ async fn handle_read(
             ).await;
 
             Payload {
-                json: None,
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: Some(file_contents),
             }
         },
@@ -72,7 +73,7 @@ async fn handle_read(
             fs::write(uri.host().unwrap(), &payload_bytes).await?;
 
             Payload {
-                json: Some(serde_json::Value::Null),  //  TODO: add real response once responses are real
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },
@@ -94,7 +95,7 @@ async fn handle_read(
             fs::write(uri.host().unwrap(), &file_contents).await?;
 
             Payload {
-                json: Some(serde_json::Value::Null),  //  TODO: add real response once responses are real
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },

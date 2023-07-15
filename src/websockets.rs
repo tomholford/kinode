@@ -22,17 +22,18 @@ pub async fn ws_listener(message_tx: MessageSender, print_tx: PrintSender, tcp: 
 
 pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: MessageReceiver) {
     while let Some(message) = rx.recv().await {
+        let last_message_index = message.len() - 1;
         let mut to = peers.write().await;
-        match to.remove(&message.wire.target_ship) {
+        match to.remove(&message[last_message_index].wire.target_ship) {
             Some(peer) => {
                 match handle_send(&message, &peer.url, &peer.port, peer.connection).await {
                     Ok(new_conn) => {
                         let _ = print_tx.send("message sent!".to_string()).await;
-                        to.insert(message.wire.target_ship, Peer {connection: Some(new_conn), ..peer});
+                        to.insert(message[last_message_index].wire.target_ship.clone(), Peer {connection: Some(new_conn), ..peer});
                     }
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending message: {}", e)).await;
-                        to.insert(message.wire.target_ship, Peer {connection: None, ..peer});
+                        to.insert(message[last_message_index].wire.target_ship.clone(), Peer {connection: None, ..peer});
                     }
                 }
             },
@@ -45,7 +46,7 @@ pub async fn ws_sender(peers: Peers, print_tx: PrintSender, mut rx: MessageRecei
 
 /// send a message to a peer over websocket.
 /// if we don't have an active connection to peer, try to make one
-async fn handle_send(message: &Message, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
+async fn handle_send(message: &MessageStack, peer_url: &str, peer_port: &u16, peer_conn: Option<Sock>)
     -> tungstenite::Result<Sock, Error> {
     match peer_conn {
         Some(mut socket) => {
@@ -94,7 +95,7 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
     }
     // deserialize
     let start = Instant::now();
-    let message: Message = match serde_json::from_str(&message) {
+    let messages: MessageStack = match serde_json::from_str(&message) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error while parsing message: {}", e);
@@ -103,5 +104,5 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
     };
     let duration = start.elapsed();
     let _ = print_tx.send(format!("Time taken to deserialize: {:?}", duration)).await;
-    let _ = message_tx.send(message).await;
+    let _ = message_tx.send(messages).await;
 }

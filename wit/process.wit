@@ -13,28 +13,47 @@ interface types {
         bytes: option<list<u8>>,
     }
 
-    enum wit-note {
-        pass,
-        give,
+    variant wit-message-type {
+        request(bool),
+        response,
+    }
+
+    record wit-request-type-with-target {
+        is-expecting-response: bool,
+        target-ship: string,
+        target-app: string,
+    }
+
+    variant wit-message-type-with-target {
+        request(wit-request-type-with-target),
+        response,
     }
     
     record wit-message {
-        note: wit-note,
+        message-type: wit-message-type,
         wire: wit-wire,
         payload: wit-payload,
     }
 }
 
 world microkernel-process {
-    use types.{wit-wire, wit-note, wit-payload, wit-message}
+    // use types.{wit-wire, wit-message-type, wit-payload, wit-message, wit-request-type-with-target, wit-message-type-with-target}
+    use types.{
+        wit-wire,
+        wit-message-type,
+        wit-payload,
+        wit-message,
+        wit-request-type-with-target,
+        wit-message-type-with-target,
+    }
 
-    import to-event-loop: func(target-ship: string, target-app: string, note: wit-note, payload: wit-payload)
+    // import to-event-loop: func(target-ship: string, target-app: string, message-type: wit-message-type, payload: wit-payload)
     import modify-state: func(json-pointer: string, new-value: string) -> string
     import fetch-state: func(json-pointer: string) -> string
     import set-state: func(json: string) -> string
     import print-to-terminal: func(message: string)
-    export init: func(source-ship: string, source-app: string)
-    export run-write: func(message: wit-message)
-    export run-take: func(message: wit-message)
-    export run-read: func(message: wit-message) -> string
+    export init: func(source-ship: string, source-app: string) -> list<wit-message>
+    export run-write: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type-with-target, wit-payload>>
+    export handle-response: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type-with-target, wit-payload>>
+    export run-read: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type, wit-payload>>  //  must be response
 }

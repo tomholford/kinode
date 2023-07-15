@@ -185,6 +185,75 @@ async fn convert_message_stack_to_wit_message_stack(message_stack: &Vec<Message>
     }).collect()
 }
 
+async fn send_process_results_to_loop(
+    results: Vec<(WitMessageTypeWithTarget, WitPayload)>,
+    source_ship: String,
+    source_app: String,
+    is_expecting_response: bool,
+    stack_len: usize,
+    message_stack: MessageStack,
+    send_to_loop: MessageSender,
+) -> () {
+    for (wit_message_type_with_target, wit_payload) in results.iter() {
+        let mut message_stack = message_stack.clone();
+        let (target_ship, target_app, message_type) =
+            match wit_message_type_with_target {
+                WitMessageTypeWithTarget::Request(type_with_target) => {
+                    //  set target based on request type
+                    (
+                        type_with_target.target_ship.clone(),
+                        type_with_target.target_app.clone(),
+                        MessageType::Request(
+                            type_with_target.is_expecting_response
+                        ),
+                    )
+                },
+                WitMessageTypeWithTarget::Response => {
+                    //  if at chain start & dont want response, continue;
+                    //   else target is most recent message source
+                    if !is_expecting_response & (1 >= stack_len) {
+                        continue;
+                    } else {
+                        (
+                            message_stack[stack_len - 1]
+                                .wire.
+                                source_ship
+                                .clone(),
+                            message_stack[stack_len - 1]
+                                .wire
+                                .source_app
+                                .clone(),
+                            MessageType::Response,
+                        )
+                    }
+                },
+            };
+        let payload = Payload {
+            json: match wit_payload.json {
+                Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
+                None => None,
+            },
+            bytes: wit_payload.bytes.clone(),
+        };
+        let message = Message {
+            message_type: message_type,
+            wire: Wire {
+                source_ship: source_ship.clone(),
+                source_app: source_app.clone(),
+                target_ship: target_ship,
+                target_app: target_app,
+            },
+            payload: payload,
+        };
+
+        message_stack.push(message);
+        send_to_loop
+            .send(message_stack)
+            .await
+            .unwrap();
+    }
+}
+
 async fn make_process_loop(
     metadata: ProcessMetadata,
     send_to_loop: MessageSender,
@@ -265,8 +334,6 @@ async fn make_process_loop(
 
                 match message_type {
                     MessageType::Request(is_expecting_response) => {
-                        //  this code is nearly the same as the Response case below:
-                        //   TODO: refactor
                         let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
                             bindings.call_run_write(
                                 &mut store,
@@ -277,69 +344,17 @@ async fn make_process_loop(
                             //   UNLESS they are the request that started the chain
                             input_message_stack.pop();
                         }
-                        //  push to message_stack
-                        for (wit_message_type_with_target, wit_payload) in results.iter() {
-                            let mut input_message_stack = input_message_stack.clone();
-                            let (target_ship, target_app, message_type) =
-                                match wit_message_type_with_target {
-                                    WitMessageTypeWithTarget::Request(type_with_target) => {
-                                        //  set target based on request type
-                                        (
-                                            type_with_target.target_ship.clone(),
-                                            type_with_target.target_app.clone(),
-                                            MessageType::Request(
-                                                type_with_target.is_expecting_response
-                                            ),
-                                        )
-                                    },
-                                    WitMessageTypeWithTarget::Response => {
-                                        //  if at chain start & dont want response, continue;
-                                        //   else target is most recent message source
-                                        if !is_expecting_response & (1 == stack_len) {
-                                            continue;
-                                        } else {
-                                            (
-                                                input_message_stack[stack_len - 1]
-                                                    .wire.
-                                                    source_ship
-                                                    .clone(),
-                                                input_message_stack[stack_len - 1]
-                                                    .wire
-                                                    .source_app
-                                                    .clone(),
-                                                MessageType::Response,
-                                            )
-                                        }
-                                    },
-                                };
-                            let payload = Payload {
-                                json: match wit_payload.json {
-                                    Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
-                                    None => None,
-                                },
-                                bytes: wit_payload.bytes.clone(),
-                            };
-                            let message = Message {
-                                message_type: message_type,
-                                wire: Wire {
-                                    source_ship: source_ship.clone(),
-                                    source_app: source_app.clone(),
-                                    target_ship: target_ship,
-                                    target_app: target_app,
-                                },
-                                payload: payload,
-                            };
-
-                            input_message_stack.push(message);
-                            send_to_loop
-                                .send(input_message_stack)
-                                .await
-                                .unwrap();
-                        }
+                        send_process_results_to_loop(
+                            results,
+                            source_ship,
+                            source_app,
+                            is_expecting_response,
+                            stack_len,
+                            input_message_stack,
+                            send_to_loop.clone(),
+                        ).await;
                     },
                     MessageType::Response => {
-                        //  this code is nearly the same as the Request case above:
-                        //   TODO: refactor
                         let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
                             bindings.call_handle_response(
                                 &mut store,
@@ -350,66 +365,15 @@ async fn make_process_loop(
                         //   and Then place new message on stack
                         input_message_stack.pop();
                         input_message_stack.pop();
-                        //  push to message_stack
-                        for (wit_message_type_with_target, wit_payload) in results.iter() {
-                            let mut input_message_stack = input_message_stack.clone();
-                            let (target_ship, target_app, message_type) =
-                                match wit_message_type_with_target {
-                                    WitMessageTypeWithTarget::Request(type_with_target) => {
-                                        //  set target based on request type
-                                        (
-                                            type_with_target.target_ship.clone(),
-                                            type_with_target.target_app.clone(),
-                                            MessageType::Request(
-                                                type_with_target.is_expecting_response
-                                            ),
-                                        )
-                                    },
-                                    WitMessageTypeWithTarget::Response => {
-                                        //  if stack length == 0, continue; else
-                                        //  set target based on most recent message source
-                                        let stack_len = input_message_stack.len();
-                                        if 0 == stack_len {
-                                            continue;
-                                        } else {
-                                            (
-                                                input_message_stack[stack_len - 1]
-                                                    .wire.
-                                                    source_ship
-                                                    .clone(),
-                                                input_message_stack[stack_len - 1]
-                                                    .wire
-                                                    .source_app
-                                                    .clone(),
-                                                MessageType::Response,
-                                            )
-                                        }
-                                    },
-                                };
-                            let payload = Payload {
-                                json: match wit_payload.json {
-                                    Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
-                                    None => None,
-                                },
-                                bytes: wit_payload.bytes.clone(),
-                            };
-                            let message = Message {
-                                message_type: message_type,
-                                wire: Wire {
-                                    source_ship: source_ship.clone(),
-                                    source_app: source_app.clone(),
-                                    target_ship: target_ship,
-                                    target_app: target_app,
-                                },
-                                payload: payload,
-                            };
-
-                            input_message_stack.push(message);
-                            send_to_loop
-                                .send(input_message_stack)
-                                .await
-                                .unwrap();
-                        }
+                        send_process_results_to_loop(
+                            results,
+                            source_ship,
+                            source_app,
+                            false,
+                            stack_len,
+                            input_message_stack,
+                            send_to_loop.clone(),
+                        ).await;
                     },
                 };
                 i = i + 1;
@@ -426,7 +390,139 @@ async fn make_process_loop(
     )
 }
 
-fn make_event_loop(
+async fn handle_kernel_request(
+    our_name: String,
+    stack_len: usize,
+    mut message_stack: MessageStack,
+    message: Message,
+    send_to_loop: MessageSender,
+    send_to_process_manager: MessageSender,
+    send_to_terminal: PrintSender,
+    senders: &mut Senders,
+    process_handles: &mut ProcessHandles,
+    engine: &Engine,
+) {
+    let Some(value) = message.payload.json else {
+        send_to_terminal
+            .send(
+                format!(
+                    "kernel: got kernel command with no json source, stack: {:?}",
+                    message_stack,
+                )
+            )
+            .await
+            .unwrap();
+        return;
+    };
+    let kernel_request: KernelRequest =
+        serde_json::from_value(value)
+        .expect("kernel: could not parse to command");
+    match kernel_request {
+        KernelRequest::StartProcess(cmd) => {
+            let Some(wasm_bytes) = message.payload.bytes else {
+                send_to_terminal
+                    .send(
+                        format!(
+                            "kernel: StartProcess requires bytes; stack: {:?}",
+                            message_stack,
+                        )
+                    )
+                    .await
+                    .unwrap();
+                return;
+            };
+            let (send_to_process, recv_in_process) =
+                mpsc::channel::<MessageStack>(PROCESS_CHANNEL_CAPACITY);
+            senders.insert(cmd.process_name.clone(), send_to_process);
+            let metadata = ProcessMetadata {
+                our_name: our_name.to_string(),
+                process_name: cmd.process_name.clone(),
+                wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
+                is_long_running_process: cmd.is_long_running_process.clone(),
+            };
+            process_handles.insert(
+                cmd.process_name.clone(),
+                tokio::spawn(
+                    make_process_loop(
+                        metadata.clone(),
+                        send_to_loop.clone(),
+                        send_to_terminal.clone(),
+                        recv_in_process,
+                        wasm_bytes,
+                        engine,
+                    ).await
+                ),
+            );
+
+            let start_completed_message = Message {
+                message_type: MessageType::Response,
+                wire: Wire {
+                    source_ship: our_name.clone(),
+                    source_app: "kernel".to_string(),
+                    target_ship: our_name.clone(),
+                    target_app: "process_manager".to_string(),
+                },
+                payload: Payload {
+                    json: Some(
+                        serde_json::to_value(
+                            KernelResponse::StartProcess(metadata)
+                        ).unwrap()
+                    ),
+                    bytes: None,
+                },
+            };
+            message_stack.push(start_completed_message);
+            send_to_process_manager
+                .send(message_stack)
+                .await
+                .unwrap();
+            return;
+        },
+        KernelRequest::StopProcess(cmd) => {
+            let _ = senders.remove(&cmd.process_name);
+            let process_handle = process_handles
+                .remove(&cmd.process_name).unwrap();
+            process_handle.abort();
+            let MessageType::Request(
+                is_expecting_response
+            ) = message.message_type else {
+                println!("kernel: StopProcess unexpected response instead of request");
+                return;
+            };
+            if !is_expecting_response & (1 < stack_len) {
+                //  pop off requests that dont expect responses
+                //   UNLESS they are the request that started the chain
+                return;
+            }
+            let json_payload = serde_json::to_value(
+                KernelResponse::StopProcess(KernelStopProcess {
+                    process_name: cmd.process_name.clone(),
+                })
+            ).unwrap();
+            let stop_completed_message = Message {
+                message_type: MessageType::Response,
+                wire: Wire {
+                    source_ship: our_name.clone(),
+                    source_app: "kernel".to_string(),
+                    target_ship: our_name.clone(),
+                    target_app: "process_manager".to_string(),
+                },
+                payload: Payload {
+                    json: Some(json_payload),
+                    bytes: None,
+                },
+            };
+            message_stack.push(stop_completed_message);
+            send_to_process_manager
+                .send(message_stack)
+                .await
+                .unwrap();
+            return;
+        },
+    }
+}
+
+async fn make_event_loop(
     our_name: String,
     mut recv_in_loop: MessageReceiver,
     send_to_loop: MessageSender,
@@ -443,24 +539,24 @@ fn make_event_loop(
             senders.insert("process_manager".to_string(), send_to_process_manager.clone());
             let mut process_handles: ProcessHandles = HashMap::new();
             loop {
-                let mut next_message_stack = recv_in_loop.recv().await.unwrap();
-                let stack_len = next_message_stack.len();
-                let next_message = next_message_stack[stack_len - 1].clone();
+                let message_stack = recv_in_loop.recv().await.unwrap();
+                let stack_len = message_stack.len();
+                let message = message_stack[stack_len - 1].clone();
                 send_to_terminal
                     .send(
                         format!(
                             "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
-                            next_message.wire.source_ship,
-                            next_message.wire.source_app,
-                            next_message.wire.target_ship,
-                            next_message.wire.target_app,
-                            next_message.payload.json,
+                            message.wire.source_ship,
+                            message.wire.source_app,
+                            message.wire.target_ship,
+                            message.wire.target_app,
+                            message.payload.json,
                         )
                     )
                     .await
                     .unwrap();
-                if our_name != next_message.wire.target_ship {
-                    match send_to_wss.send(next_message_stack).await {
+                if our_name != message.wire.target_ship {
+                    match send_to_wss.send(message_stack).await {
                         Ok(()) => {
                             send_to_terminal
                                 .send("event loop: sent to wss".to_string())
@@ -475,147 +571,40 @@ fn make_event_loop(
                         }
                     }
                 } else {
-                    let to = next_message.wire.target_app.clone();
+                    let to = message.wire.target_app.clone();
                     if to == "kernel" {
-                        let Some(value) = next_message.payload.json else {
-                            send_to_terminal
-                                .send(
-                                    format!(
-                                        "kernel: got kernel command with no json source, stack: {:?}",
-                                        next_message_stack,
-                                    )
-                                )
-                                .await
-                                .unwrap();
-                            continue;
-                        };
-                        let kernel_request: KernelRequest =
-                            serde_json::from_value(value)
-                            .expect("kernel: could not parse to command");
-                        println!("kernel: parsed kernel_request: {:?}", kernel_request);
-                        match kernel_request {
-                            KernelRequest::StartProcess(cmd) => {
-                                let Some(wasm_bytes) = next_message.payload.bytes else {
-                                    send_to_terminal
-                                        .send(
-                                            format!(
-                                                "kernel: StartProcess requires bytes; stack: {:?}",
-                                                next_message_stack,
-                                            )
+                        handle_kernel_request(
+                            our_name.clone(),
+                            stack_len,
+                            message_stack,
+                            message,
+                            send_to_loop.clone(),
+                            send_to_process_manager.clone(),
+                            send_to_terminal.clone(),
+                            &mut senders,
+                            &mut process_handles,
+                            &engine,
+                        ).await;
+                    } else {
+                        //  pass message to appropriate runtime/process
+                        match senders.get(&to) {
+                            Some(sender) => {
+                                let _result = sender
+                                    .send(message_stack)
+                                    .await;
+                            }
+                            None => {
+                                send_to_terminal
+                                    .send(
+                                        format!(
+                                            "event loop: don't have {} amongst registered processes: {:?}",
+                                            to,
+                                            senders.keys().collect::<Vec<_>>()
                                         )
-                                        .await
-                                        .unwrap();
-                                    continue;
-                                };
-                                let (send_to_process, recv_in_process) =
-                                    mpsc::channel::<MessageStack>(PROCESS_CHANNEL_CAPACITY);
-                                senders.insert(cmd.process_name.clone(), send_to_process);
-                                let metadata = ProcessMetadata {
-                                    our_name: our_name.to_string(),
-                                    process_name: cmd.process_name.clone(),
-                                    wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
-                                    is_long_running_process: cmd.is_long_running_process.clone(),
-                                };
-                                process_handles.insert(
-                                    cmd.process_name.clone(),
-                                    tokio::spawn(
-                                        make_process_loop(
-                                            metadata.clone(),
-                                            send_to_loop.clone(),
-                                            send_to_terminal.clone(),
-                                            recv_in_process,
-                                            wasm_bytes,
-                                            &engine,
-                                        ).await
-                                    ),
-                                );
-
-                                let start_completed_message = Message {
-                                    message_type: MessageType::Response,
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "kernel".to_string(),
-                                        target_ship: our_name.clone(),
-                                        target_app: "process_manager".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(
-                                            serde_json::to_value(
-                                                KernelResponse::StartProcess(metadata)
-                                            ).unwrap()
-                                        ),
-                                        bytes: None,
-                                    },
-                                };
-                                next_message_stack.push(start_completed_message);
-                                send_to_process_manager
-                                    .send(next_message_stack)
-                                    .await
-                                    .unwrap();
-                                continue;
-                            },
-                            KernelRequest::StopProcess(cmd) => {
-                                let _ = senders.remove(&cmd.process_name);
-                                let process_handle = process_handles
-                                    .remove(&cmd.process_name).unwrap();
-                                process_handle.abort();
-                                let MessageType::Request(
-                                    is_expecting_response
-                                ) = next_message.message_type else {
-                                    println!("kernel: StopProcess unexpected response instead of request");
-                                    continue;
-                                };
-                                if !is_expecting_response & (1 < stack_len) {
-                                    //  pop off requests that dont expect responses
-                                    //   UNLESS they are the request that started the chain
-                                    continue;
-                                }
-                                let json_payload = serde_json::to_value(
-                                    KernelResponse::StopProcess(KernelStopProcess {
-                                        process_name: cmd.process_name.clone(),
-                                    })
-                                ).unwrap();
-                                let stop_completed_message = Message {
-                                    message_type: MessageType::Response,
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "kernel".to_string(),
-                                        target_ship: our_name.clone(),
-                                        target_app: "process_manager".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(json_payload),
-                                        bytes: None,
-                                    },
-                                };
-                                next_message_stack.push(stop_completed_message);
-                                send_to_process_manager
-                                    .send(next_message_stack)
-                                    .await
-                                    .unwrap();
-                                continue;
-                            },
-                        }
-                    }
-                    //  pass message to appropriate runtime/process
-                    match senders.get(&to) {
-                        Some(sender) => {
-                            let _result = sender
-                                .send(next_message_stack)
-                                .await;
-                        }
-                        None => {
-                            send_to_terminal
-                                .send(
-                                    format!(
-                                        "event loop: don't have {} amongst registered processes: {:?}",
-                                        to,
-                                        senders.keys().collect::<Vec<_>>()
                                     )
-                                )
-                                .await
-                                .unwrap();
-                            continue;
+                                    .await
+                                    .unwrap();
+                            }
                         }
                     }
                 }
@@ -623,6 +612,40 @@ fn make_event_loop(
         }
     )
 }
+
+async fn send_process_manager_results_to_loop(
+    our_name: String,
+    process_name: String,
+    is_expecting_response: bool,
+    stack_len: usize,
+    mut message_stack: MessageStack,
+    send_to_loop: MessageSender,
+) -> () {
+    let json_payload = serde_json::to_value(
+        KernelRequest::StopProcess(KernelStopProcess { process_name,})
+    ).unwrap();
+    let kernel_stop_process_message = Message {
+        message_type: MessageType::Request(is_expecting_response),
+        wire: Wire {
+            source_ship: our_name.clone(),
+            source_app: "process_manager".to_string(),
+            target_ship: our_name.clone(),
+            target_app: "kernel".to_string(),
+        },
+        payload: Payload {
+            json: Some(json_payload),
+            bytes: None,
+        },
+    };
+    if !is_expecting_response & (1 < stack_len) {
+        //  pop off requests that dont expect responses
+        //   UNLESS they are the request that started the chain
+        message_stack.pop();
+    }
+    message_stack.push(kernel_stop_process_message);
+    send_to_loop.send(message_stack).await.unwrap();
+}
+
 
 //  TODO: remove unnecessary println!s;
 //        change necessary to send_to_terminals
@@ -727,31 +750,14 @@ async fn make_process_manager_loop(
                                     .remove(&stop.process_name)
                                     .unwrap();
 
-                                let json_payload = serde_json::to_value(
-                                    KernelRequest::StopProcess(KernelStopProcess {
-                                        process_name: stop.process_name.clone(),
-                                    })
-                                ).unwrap();
-                                let kernel_stop_process_message = Message {
-                                    message_type: MessageType::Request(false),
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "process_manager".to_string(),
-                                        target_ship: our_name.clone(),
-                                        target_app: "kernel".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(json_payload),
-                                        bytes: None,
-                                    },
-                                };
-                                if !is_expecting_response & (1 < stack_len) {
-                                    //  pop off requests that dont expect responses
-                                    //   UNLESS they are the request that started the chain
-                                    message_stack.pop();
-                                }
-                                message_stack.push(kernel_stop_process_message);
-                                send_to_loop.send(message_stack).await.unwrap();
+                                send_process_manager_results_to_loop(
+                                    our_name.clone(),
+                                    stop.process_name,
+                                    false,
+                                    stack_len,
+                                    message_stack,
+                                    send_to_loop.clone(),
+                                ).await;
 
                                 println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
                             },
@@ -759,31 +765,14 @@ async fn make_process_manager_loop(
                                 //  TODO: refactor Stop and Restart since 99% of code is shared
                                 println!("process manager: restart");
 
-                                let json_payload = serde_json::to_value(
-                                    KernelRequest::StopProcess(KernelStopProcess {
-                                        process_name: restart.process_name.clone(),
-                                    })
-                                ).unwrap();
-                                let kernel_stop_process_message = Message {
-                                    message_type: MessageType::Request(true),
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "process_manager".to_string(),
-                                        target_ship: our_name.clone(),
-                                        target_app: "kernel".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(json_payload),
-                                        bytes: None,
-                                    },
-                                };
-                                if !is_expecting_response & (1 < stack_len) {
-                                    //  pop off requests that dont expect responses
-                                    //   UNLESS they are the request that started the chain
-                                    message_stack.pop();
-                                }
-                                message_stack.push(kernel_stop_process_message);
-                                send_to_loop.send(message_stack).await.unwrap();
+                                send_process_manager_results_to_loop(
+                                    our_name.clone(),
+                                    restart.process_name,
+                                    true,
+                                    stack_len,
+                                    message_stack,
+                                    send_to_loop.clone(),
+                                ).await;
                             },
                         }
                     },
@@ -939,7 +928,6 @@ pub async fn kernel(
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our_name.to_string(),
-            // Arc::clone(&processes),
             recv_in_loop,
             send_to_loop.clone(),
             send_to_wss,
@@ -947,15 +935,14 @@ pub async fn kernel(
             send_to_process_manager,
             send_to_terminal.clone(),
             engine,
-        )
+        ).await
     );
 
     let process_manager_handle = tokio::spawn(
         make_process_manager_loop(
             our_name.to_string(),
-            // Arc::clone(&processes),
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
+            send_to_loop,
+            send_to_terminal,
             recv_in_process_manager,
         ).await
     );

@@ -1,22 +1,26 @@
 {
     "squid": {
+        "address": "0x00000000000000000000000000000000000000000000000000000000deadbeef",
         "name": "squid",
-        "url": "147.135.114.167",
-        "port": 9000
+        "ws_url": "147.135.114.167",
+        "ws_port": 9000
     },
     "loach": {
+        "address": "0x00000000000000000000000000000000000000000000000000000000cafebabe",
         "name": "loach",
-        "url": "75.197.158.142",
-        "port": 9001
+        "ws_url": "localhost",
+        "ws_port": 9001
     },
     "tuna": {
+        "address": "0x00000000000000000000000000000000000000000000000000000000faceface",
         "name": "tuna",
-        "url": "localhost",
-        "port": 9002
+        "ws_url": "localhost",
+        "ws_port": 9002
     },
     "dolph": {
+        "address": "0x0000000000000000000000000000000000000000000000000000000000facade",
         "name": "dolph",
-        "url": "localhost",
-        "port": 9003
+        "ws_url": "localhost",
+        "ws_port": 9003
     }
 }

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use ethers::types::H256;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
@@ -911,7 +912,7 @@ async fn make_event_loop(
 
 
 pub async fn kernel(
-    our_name: &str,
+    our: &Identity,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -928,7 +929,7 @@ pub async fn kernel(
 
     let event_loop_handle = tokio::spawn(
         make_event_loop(
-            our_name.to_string(),
+            our.name.clone(),
             recv_in_loop,
             send_to_loop.clone(),
             send_to_wss,
@@ -941,7 +942,7 @@ pub async fn kernel(
 
     let process_manager_handle = tokio::spawn(
         make_process_manager_loop(
-            our_name.to_string(),
+            our.name.clone(),
             send_to_loop,
             send_to_terminal,
             recv_in_process_manager,

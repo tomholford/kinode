@@ -1,12 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use tokio::net::TcpStream;
-use tokio::sync::RwLock;
-use tokio_tungstenite::{WebSocketStream, MaybeTlsStream};
 
-pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
-
-pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
+use ethers::prelude::*;
 
 pub type MessageSender = tokio::sync::mpsc::Sender<MessageStack>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<MessageStack>;
@@ -14,21 +9,14 @@ pub type MessageReceiver = tokio::sync::mpsc::Receiver<MessageStack>;
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
 
-pub type BlockchainPKI = HashMap<String, Identity>;
+pub type OnchainPKI = HashMap<String, Identity>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
-    pub url: String,
-    pub port: u16,
-}
-
-#[derive(Debug)]
-pub struct Peer {
-    pub name: String,
-    pub url: String,
-    pub port: u16,
-    pub connection: Option<Sock>,
+    pub address: H256,
+    pub ws_url: String,
+    pub ws_port: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,13 +122,13 @@ impl std::fmt::Display for Message {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ID {
-    node: String,
-    app_name: String,
-    app_distributor: String,
-    app_version: String,
-}
+// #[derive(Debug, Serialize, Deserialize)]
+// pub struct ID {
+//     node: String,
+//     app_name: String,
+//     app_distributor: String,
+//     app_version: String,
+// }
 
 pub enum Command {
     StartOfMessageStack(MessageStack),

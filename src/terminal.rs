@@ -6,7 +6,7 @@ use crate::types::*;
 /*
  *  terminal driver
  */
-pub async fn terminal(our_name: &str, to_event_loop: MessageSender, mut print_rx: PrintReceiver)
+pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx: PrintReceiver)
     -> Result<(), ReadlineError> {
 
     let (mut rl, mut stdout) = Readline::new("> ".into())?;
@@ -20,7 +20,7 @@ pub async fn terminal(our_name: &str, to_event_loop: MessageSender, mut print_rx
             cmd = rl.readline() => match cmd {
                 Ok(line) => {
                     rl.add_history_entry(line.clone());
-                    match parse_command(our_name, &line).unwrap_or(Command::Invalid) {
+                    match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
                         Command::StartOfMessageStack(messages) => {
                             to_event_loop.send(messages).await.unwrap();
                             writeln!(stdout, "{}", line)?;

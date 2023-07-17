@@ -122,14 +122,6 @@ impl std::fmt::Display for Message {
     }
 }
 
-// #[derive(Debug, Serialize, Deserialize)]
-// pub struct ID {
-//     node: String,
-//     app_name: String,
-//     app_distributor: String,
-//     app_version: String,
-// }
-
 pub enum Command {
     StartOfMessageStack(MessageStack),
     Quit,
@@ -137,14 +129,9 @@ pub enum Command {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct FileSystemCommand {
-    pub uri_string: String,
-    pub command: FileSystemAction,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemAction {
-    Read,
-    Write,
-    Append,
+pub enum FileSystemRequest {
+    Read(String),
+    Write(String),
+    Append(String),
+    AlterReadPermissions(Vec<String>)
 }

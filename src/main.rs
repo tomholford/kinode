@@ -1,6 +1,8 @@
-use ring::signature::KeyPair;
 use ring::signature;
+use ring::signature::KeyPair;
+use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use ethers::prelude::*;
@@ -45,8 +47,10 @@ async fn main() {
         std::fs::File::open("blockchain.json").expect("couldn't read from the chain lolz");
     let json: serde_json::Value =
         serde_json::from_reader(blockchain).expect("blockchain.json should be proper JSON");
-    let pki: OnchainPKI =
-        serde_json::from_value::<OnchainPKI>(json).expect("should be a JSON map of identities");
+    let pki: OnchainPKI = Arc::new(
+        serde_json::from_value::<HashMap<String, Identity>>(json)
+            .expect("should be a JSON map of identities"),
+    );
     // our identity in the uqbar PKI
     let our = pki.get(&our_name).expect("we should be in the PKI").clone();
 
@@ -65,13 +69,6 @@ async fn main() {
         gas_limit: U256::from(0),
     };
     let _ = uqchain.run_batch(vec![my_txn]);
-
-    // this will be replaced with actual chain reading
-    let blockchain =
-        std::fs::File::open("blockchain.json").expect("couldn't read from the chain lolz");
-    let json: serde_json::Value =
-        serde_json::from_reader(blockchain).expect("blockchain.json should be proper JSON");
-    let pki = serde_json::from_value::<OnchainPKI>(json).expect("should be a list of peers");
 
     // this will be replaced with a key manager module
     let name_seed: [u8; 32] = our.address.into();
@@ -109,10 +106,11 @@ async fn main() {
             fs_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = websockets::websockets(
-            &our,
+            our.clone(),
             networking_keypair,
-            &pki,
+            pki.clone(),
             wss_message_receiver,
+            wss_message_sender.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
         ) => { "websocket sender died".to_string() },

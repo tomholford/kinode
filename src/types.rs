@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use serde::{Serialize, Deserialize};
 
 use ethers::prelude::*;
@@ -9,7 +9,7 @@ pub type MessageReceiver = tokio::sync::mpsc::Receiver<MessageStack>;
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
 
-pub type OnchainPKI = HashMap<String, Identity>;
+pub type OnchainPKI = Arc<HashMap<String, Identity>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {

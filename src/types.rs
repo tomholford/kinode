@@ -34,13 +34,13 @@ pub struct Wire {
     pub target_app:  String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
     pub message_type: MessageType,
     pub wire: Wire,

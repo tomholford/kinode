@@ -163,11 +163,12 @@ pub async fn ws_sender(
     keypair: Ed25519KeyPair,
     pki: &OnchainPKI,
     peers: Peers,
-    mut card_rx: MessageReceiver,
-    card_tx: MessageSender, // to change: card -> message
+    mut message_rx: MessageReceiver,
+    message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    while let Some(message) = card_rx.recv().await {
+    while let Some(message_stack) = message_rx.recv().await {
+        let stack_len = message_stack.len();
         let mut edit = peers.write().await;
         let target = &message.target.server;
         let message_binary = bincode::serialize(&message).unwrap();
@@ -192,7 +193,7 @@ pub async fn ws_sender(
                     }
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending card: {}", e)).await;
-                        edit.remove(target);
+                        edit.remove(&target);
                     }
                 }
             }
@@ -201,7 +202,7 @@ pub async fn ws_sender(
                 let _ = print_tx
                     .send(format!("trying to open new conn to {}", target))
                     .await;
-                let id = pki.get(target).unwrap();
+                let id = pki.get(&target).unwrap();
 
                 match connect_async(
                     Url::parse(&format!("ws://{}:{}/ws", id.ws_url, id.ws_port)).unwrap(),
@@ -224,7 +225,7 @@ pub async fn ws_sender(
                         // Convert MaybeTlsStream to TcpStream
                         let (write_stream, read_stream) = socket.split();
                         edit.insert(
-                            message.target.server,
+                            target,
                             Peer {
                                 address: id.address.clone(),
                                 ws_url: id.ws_url.clone(),
@@ -239,7 +240,7 @@ pub async fn ws_sender(
                             id.clone(),
                             peers.clone(),
                             read_stream,
-                            card_tx.clone(),
+                            message_tx.clone(),
                             print_tx.clone(),
                         ));
                     }

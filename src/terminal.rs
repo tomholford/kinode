@@ -23,7 +23,7 @@ pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx
                     match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
                         Command::StartOfMessageStack(messages) => {
                             to_event_loop.send(messages).await.unwrap();
-                            writeln!(stdout, "{}", line)?;
+                            // writeln!(stdout, "{}", line)?;
                         },
                         Command::Quit => {
                             break;

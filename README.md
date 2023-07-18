@@ -17,8 +17,6 @@ cargo install --git https://github.com/bytecodealliance/cargo-component --locked
 
 # Build the components.
 
-cd http-server
-cargo component build --target wasm32-unknown-unknown
 cd ..
 cd poast
 cargo component build --target wasm32-unknown-unknown
@@ -44,14 +42,12 @@ cd ..
 ```bash
 # Terminal A: add some test apps to process_manager and run a simple test
 cargo r tuna
-!message tuna process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "is_long_running_process": true}
 !message tuna poast "poast from tuna terminal"
 
 # Terminal B: While A is still running, run the same poast command remotely, then add hi++ to process_manager
 cargo r dolph
-!message dolph process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm", "is_long_running_process": true}
 !message tuna poast "poast from tuna terminal"
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "is_long_running_process": true}
 
@@ -69,4 +65,14 @@ cargo r dolph
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Restart", "process_name": "poast"}
 !message tuna poast "hello from tuna terminal"
+```
+
+
+# http-server actions
+```
+// bind some data to an endpoint (GETs)
+!message tuna http_server {"SetResponse":{"path":"test","content":"<h1>hello world</h1>"}}
+// connect an app (POSTs)
+!message tuna http_server {"Connect": {"path":"meme","app":"poast"}}
+
 ```

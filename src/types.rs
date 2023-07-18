@@ -16,8 +16,9 @@ pub struct Identity {
     pub name: String,
     pub address: H256,
     pub networking_key: String,
-    pub ws_url: String,
-    pub ws_port: u16,
+    pub ws_routing: Option<(String, u16)>,
+    pub allowed_routers: Vec<String>,
+    pub routing_for: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

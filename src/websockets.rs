@@ -23,8 +23,7 @@ use ethers::prelude::*;
 
 pub struct Peer {
     pub address: H256,
-    pub ws_url: String,
-    pub ws_port: u16,
+    pub ws_url: Url,
     pub nonce: Arc<Nonce>,
     pub our_ephemeral_secret: Arc<EphemeralSecret<Secp256k1>>,
     pub their_ephemeral_pk: Arc<PublicKey<Secp256k1>>,
@@ -38,17 +37,24 @@ struct SignedMessage {
 }
 
 /// contains identity and encryption keys, used in initial handshake
-#[derive(Debug, Serialize, Deserialize)]
-struct SignedIdentity {
-    name: String,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Handshake {
+    from: (String, String),
+    target: String,
     id_signature: Vec<u8>,
     ephemeral_public_key: Vec<u8>,
     ephemeral_public_key_signature: Vec<u8>,
     nonce: Option<Vec<u8>>,
 }
 
-pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
-pub type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type Peers = Arc<RwLock<HashMap<String, Peer>>>;
+type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Clone)]
+enum HandshakeOrTarget {
+    Handshake(Handshake),
+    Target(String),
+}
 
 /// websockets driver.
 ///
@@ -62,24 +68,31 @@ pub async fn websockets(
     message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    let tcp_listener = TcpListener::bind(format!("0.0.0.0:{}", our.ws_port))
+    let our_port: u16 = match our.ws_routing {
+        Some((_, port)) => port,
+        None => 9999, // TODO make this configurable without being onchain
+    };
+    let tcp_listener = TcpListener::bind(format!("0.0.0.0:{}", our_port))
         .await
-        .expect(format!("error: can't listen on port {}", our.ws_port).as_str());
+        .expect(format!("error: can't listen on port {}", our_port).as_str());
 
     // initialize peer-connection-map as empty -- can pre-populate as optimization?
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
 
     let _ = print_tx
-        .send(format!("now listening on port {}", our.ws_port))
+        .send(format!("now listening on port {}", our_port))
         .await;
 
     let keypair = Arc::new(keypair);
+
+    let our_url = Arc::new(Url::parse(&format!("ws://0.0.0.0:{}/ws", our_port)).unwrap());
 
     // listen on our port for new connections, and
     // listen on our receiver for messages to send to peers
     tokio::join!(
         ws_listener(
             our.clone(),
+            our_url.clone(),
             keypair.clone(),
             pki.clone(),
             tcp_listener,
@@ -89,6 +102,7 @@ pub async fn websockets(
         ),
         ws_sender(
             our.clone(),
+            our_url.clone(),
             keypair.clone(),
             pki.clone(),
             peers.clone(),
@@ -104,6 +118,7 @@ pub async fn websockets(
 /// that will call handle_connection()
 async fn ws_listener(
     our: Identity,
+    our_url: Arc<Url>,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     tcp: TcpListener,
@@ -115,15 +130,15 @@ async fn ws_listener(
         let stream = accept_async(MaybeTlsStream::Plain(stream)).await;
         match stream {
             Ok(stream) => {
-                let conn = handle_connection(
+                let conn = establish_route(
                     our.clone(),
+                    our_url.clone(),
                     keypair.clone(),
                     pki.clone(),
                     stream,
                     peers.clone(),
                     message_tx.clone(),
                     print_tx.clone(),
-                    false, // we are not initiator
                 )
                 .await;
                 match conn {
@@ -148,6 +163,7 @@ async fn ws_listener(
 /// or spawning a new connection using handle_connection()
 pub async fn ws_sender(
     our: Identity,
+    our_url: Arc<Url>,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
@@ -193,7 +209,7 @@ pub async fn ws_sender(
                     .send(tungstenite::Message::Binary(ciphertext))
                     .await
                 {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) => {
                         let _ = print_tx.send(format!("error sending card: {}", e)).await;
                         edit.remove(target);
@@ -213,15 +229,43 @@ pub async fn ws_sender(
                     }
                 };
 
-                let url = match Url::parse(&format!("ws://{}:{}/ws", id.ws_url, id.ws_port)) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = print_tx.send(format!("error parsing url: {}", e)).await;
-                        continue;
+                // if their identity does not include direct websocket
+                // routing info, try to go through a router
+                let ws_url: Url = match &id.ws_routing {
+                    Some((url, port)) => Url::parse(&format!("ws://{}:{}/ws", url, port)).unwrap(),
+                    None => {
+                        let router = match id.allowed_routers.get(0) {
+                            Some(v) => v,
+                            None => {
+                                let _ = print_tx
+                                    .send(format!("error: {} has no allowed routers", target))
+                                    .await;
+                                continue;
+                            }
+                        };
+                        let router_id = match pki.get(router) {
+                            Some(v) => v,
+                            None => {
+                                let _ = print_tx
+                                    .send(format!("error: router {} not in PKI", router))
+                                    .await;
+                                continue;
+                            }
+                        };
+                        let (ws_url, ws_port) = match &router_id.ws_routing {
+                            Some((url, port)) => (url, port),
+                            None => {
+                                let _ = print_tx
+                                    .send(format!("error: router {} has no routing info", router))
+                                    .await;
+                                continue;
+                            }
+                        };
+                        Url::parse(&format!("ws://{}:{}/ws", ws_url, ws_port)).unwrap()
                     }
                 };
 
-                match connect_async(url).await {
+                match connect_async(ws_url).await {
                     Err(e) => {
                         let _ = print_tx
                             .send(format!("error connecting to {}: {}", target, e))
@@ -229,12 +273,14 @@ pub async fn ws_sender(
                         // try again to send message?
                         // TODO route this back through kernel or something?
                     }
-                    Ok(stream) => {
+                    Ok((stream, _response)) => {
                         let conn = handle_connection(
                             our.clone(),
+                            our_url.clone(),
+                            HandshakeOrTarget::Target(message.wire.target_ship.clone()),
                             keypair.clone(),
                             pki.clone(),
-                            stream.0,
+                            stream,
                             peers.clone(),
                             message_tx.clone(),
                             print_tx.clone(),
@@ -258,19 +304,99 @@ pub async fn ws_sender(
     }
 }
 
+/// determine if incoming connection is targeting us or if we should
+/// route it ahead to a true target.
+async fn establish_route(
+    our: Identity,
+    our_url: Arc<Url>,
+    keypair: Arc<Ed25519KeyPair>,
+    pki: OnchainPKI,
+    mut ws_stream: Sock,
+    peers: Peers,
+    message_tx: MessageSender,
+    print_tx: PrintSender,
+) -> Result<(), String> {
+    // receive handshake from peer
+    let handshake: Handshake = serde_json::from_str(
+        &ws_stream
+            .next()
+            .await
+            .ok_or("handshake failed")?
+            .map_err(|_| "handshake failed")?
+            .into_text()
+            .map_err(|_| "got bad handshake")?,
+    )
+    .map_err(|_| "got bad handshake")?;
+
+    if handshake.target == our.name {
+        return handle_connection(
+            our,
+            our_url.clone(),
+            HandshakeOrTarget::Handshake(handshake),
+            keypair,
+            pki,
+            ws_stream,
+            peers,
+            message_tx,
+            print_tx,
+            false,
+        )
+        .await;
+    }
+    // if the handshake is to be routed, attempt to connect to
+    // routing target and forward the handshake to them
+    // NB: in order to route for a node, they *must be a peer*,
+    // in other words, we must have an active connection with them.
+    let ws_url: Url = peers
+        .read()
+        .await
+        .get(&handshake.target)
+        .ok_or("router: target not in peer-set")?
+        .ws_url
+        .clone();
+
+    match connect_async(ws_url).await {
+        Err(e) => {
+            let _ = print_tx
+                .send(format!(
+                    "router: error connecting to {}: {}",
+                    handshake.target, e
+                ))
+                .await;
+            // try again to send message?
+            // TODO route this back through kernel or something?
+            Err("router: couldn't connect to target".into())
+        }
+        Ok((mut ws_stream_2, _response)) => {
+            // send the handshake through to target
+            ws_stream_2
+                .send(tungstenite::Message::Text(
+                    serde_json::to_string(&handshake)
+                        .map_err(|_| "failed to serialize handshake")?,
+                ))
+                .await
+                .map_err(|_| "failed to send handshake")?;
+            tokio::spawn(active_router(ws_stream, ws_stream_2, print_tx));
+            Ok(())
+        }
+    }
+}
+
 /// perform two-way handshake with new peer, then start reading from their stream.
 /// if connection is closed, remove peer from peer map.
 /// this function will live as long as the connection is open.
 /// TODO make a good Error type for this
 async fn handle_connection(
     our: Identity,
+    our_url: Arc<Url>,
+    target: HandshakeOrTarget,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
-    ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ws_stream: Sock,
     peers: Peers,
     message_tx: MessageSender,
     print_tx: PrintSender,
-    initiator: bool,
+    initiating: bool,
 ) -> Result<(), String> {
     // produce ephemeral keys for DH exchange and subsequent symmetric encryption
     let ephemeral_secret = Arc::new(EphemeralSecret::<k256::Secp256k1>::random(
@@ -287,7 +413,7 @@ async fn handle_connection(
         .as_ref()
         .to_vec();
 
-    let nonce = match initiator {
+    let nonce = match initiating {
         false => None,
         true => {
             let mut iv = [0u8; 12];
@@ -296,8 +422,12 @@ async fn handle_connection(
         }
     };
 
-    let signed_identity = SignedIdentity {
-        name: our.name.clone(),
+    let signed_identity = Handshake {
+        from: (our.name.clone(), our_url.to_string()),
+        target: match target.clone() {
+            HandshakeOrTarget::Handshake(h) => h.target,
+            HandshakeOrTarget::Target(t) => t,
+        },
         id_signature: signed_id,
         ephemeral_public_key: ephemeral_public_key.to_sec1_bytes().to_vec(),
         ephemeral_public_key_signature: signed_pk,
@@ -316,21 +446,26 @@ async fn handle_connection(
         serde_json::to_string(&signed_identity).map_err(|_| "failed to serialize handshake")?,
     ));
 
-    let (got, _) = tokio::join!(handshake_read, handshake_write);
-    let handshake_string = got
-        .ok_or("handshake failed")?
-        .map_err(|_| "handshake failed")?
-        .into_text()
-        .map_err(|_| "got bad handshake")?;
-    // recieve their identity and verify signatures
-    let handshake: SignedIdentity = match serde_json::from_str(&handshake_string) {
-        Ok(v) => v,
-        Err(_) => return Err("got bad handshake".into()),
+    let handshake = match target {
+        HandshakeOrTarget::Handshake(h) => {
+            let _ = handshake_write.await;
+            h
+        }
+        HandshakeOrTarget::Target(_) => {
+            let (got, _) = tokio::join!(handshake_read, handshake_write);
+            serde_json::from_str(
+                &got.ok_or("handshake failed")?
+                    .map_err(|_| "handshake failed")?
+                    .into_text()
+                    .map_err(|_| "got bad handshake")?,
+            )
+            .map_err(|_| "got bad handshake")?
+        }
     };
 
     // verify their identity using signatures and pki info
     let their_id: Identity = pki
-        .get(&handshake.name)
+        .get(&handshake.from.0)
         .ok_or("got handshake from user not in PKI")?
         .clone();
 
@@ -354,7 +489,7 @@ async fn handle_connection(
     {
         // improper signatures on identity info, close connection
         let _ = print_tx
-            .send(format!("invalid peer: {}", handshake.name))
+            .send(format!("invalid peer: {}", handshake.from.0))
             .await;
         return Err("got improperly signed networking info".into());
     }
@@ -366,7 +501,7 @@ async fn handle_connection(
         };
 
     // assign nonce based on our role in the connection
-    let nonce: Arc<Nonce> = match initiator {
+    let nonce: Arc<Nonce> = match initiating {
         true => Arc::new(*Nonce::from_slice(&nonce.ok_or("produced bad nonce")?)),
         false => Arc::new(*Nonce::from_slice(&handshake.nonce.ok_or("got bad nonce")?)),
     };
@@ -380,8 +515,7 @@ async fn handle_connection(
         their_id.name.clone(),
         Peer {
             address: their_id.address,
-            ws_url: their_id.ws_url.clone(),
-            ws_port: their_id.ws_port,
+            ws_url: Url::parse(&handshake.from.1).unwrap(),
             nonce: nonce.clone(),
             our_ephemeral_secret: ephemeral_secret.clone(),
             their_ephemeral_pk: their_ephemeral_pk.clone(),
@@ -441,9 +575,47 @@ async fn active_reader(
             }
             Err(e) => {
                 let _ = print_tx
-                    .send(format!("lost connection to peer {}!\nerror: {}", e, who.name))
+                    .send(format!(
+                        "lost connection to peer {}!\nerror: {}",
+                        who.name, e
+                    ))
                     .await;
                 peers.write().await.remove(&who.name);
+                break;
+            }
+        }
+    }
+}
+
+/// takes in two streams. every message received on stream_1 is forwarded to stream_2,
+/// and every message received on stream_2 is forwarded to stream_1.
+async fn active_router(stream_1: Sock, stream_2: Sock, print_tx: PrintSender) {
+    let (write_stream_1, read_stream_1) = stream_1.split();
+    let (write_stream_2, read_stream_2) = stream_2.split();
+
+    tokio::select! {
+        _ = forwarder(read_stream_1, write_stream_2, print_tx.clone()) => {},
+        _ = forwarder(read_stream_2, write_stream_1, print_tx.clone()) => {},
+    }
+}
+
+async fn forwarder(
+    mut read: SplitStream<Sock>,
+    mut write: SplitSink<Sock, tungstenite::Message>,
+    print_tx: PrintSender,
+) {
+    while let Some(msg) = read.next().await {
+        let _ = print_tx.send(format!("routing a message...")).await;
+        match msg {
+            Ok(msg) => match write.send(msg).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = print_tx.send(format!("we failed as a router: {}", e)).await;
+                    break;
+                }
+            },
+            Err(e) => {
+                let _ = print_tx.send(format!("we failed as a router: {}", e)).await;
                 break;
             }
         }

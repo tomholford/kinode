@@ -1,12 +1,33 @@
 use serde_json::json;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
+use bindings::component::microkernel_process::types::*;
 
 struct Component;
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(_source_ship: String, _source_app: String) -> Vec<bindings::WitMessage> {
+    fn init(source_ship: String, source_app: String) -> Vec<bindings::WitMessage> {
         bindings::set_state(serde_json::to_string(&json!([])).unwrap().as_str());
-        vec![]
+        vec![
+            WitMessage {
+                message_type: WitMessageType::Response, // TODO no lol
+                wire: WitWire {
+                    source_ship: source_ship.clone(),
+                    source_app:  source_app,
+                    target_ship: source_ship.clone(),
+                    target_app:  "http_server".to_string(),
+                },
+                payload: WitPayload {
+                    json: Some(json!({
+                        "SetResponse":
+                            {
+                                "path":"poast",
+                                "content":"<h1>welcome to poast</h1>"
+                            }
+                        }
+                    ).to_string()),
+                    bytes: None
+                }
+            }
+        ]
     }
 
     fn run_write(

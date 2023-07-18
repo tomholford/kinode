@@ -17,7 +17,6 @@ cargo install --git https://github.com/bytecodealliance/cargo-component --locked
 
 # Build the components.
 
-cd ..
 cd poast
 cargo component build --target wasm32-unknown-unknown
 cd ..

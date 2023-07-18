@@ -293,12 +293,37 @@ async fn make_process_loop(
                 &component,
                 &linker
             ).await.unwrap();
-            bindings
+            let results: Vec<WitMessage> = bindings
                 .call_init(
                     &mut store,
                     &our_name.clone(),
                     &process_name.clone(),
                 ).await.unwrap();
+            for result in &results {
+                let result = Message {
+                    message_type: match result.message_type {
+                        WitMessageType::Request(is_expecting_response) => MessageType::Request(is_expecting_response),
+                        WitMessageType::Response => MessageType::Response,
+                    },
+                    wire: Wire {
+                        source_ship: result.wire.source_ship.clone(),
+                        source_app: result.wire.source_app.clone(),
+                        target_ship: result.wire.target_ship.clone(),
+                        target_app: result.wire.target_app.clone(),
+                    },
+                    payload: Payload {
+                        json: match result.payload.json {
+                            Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
+                            None => None,
+                        },
+                        bytes: result.payload.bytes.clone(),
+                    },
+                };
+                send_to_loop
+                    .send(vec![result])
+                    .await
+                    .unwrap();
+            }
             let mut i = 0;
             loop {
                 let mut input_message_stack = recv_in_process

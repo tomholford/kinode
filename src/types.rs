@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use warp::{Filter, Rejection, Reply, reply::html};
 
 use ethers::prelude::*;
 
@@ -148,3 +149,24 @@ pub enum FileSystemAction {
     Write,
     Append,
 }
+
+// http types
+// TODO this is way too basic
+#[derive(Serialize, Deserialize)]
+pub enum DynamicRoute {
+    Hello,
+    Greet(String),
+    // Add more variants as needed for different routes
+}
+
+impl Reply for DynamicRoute {
+    fn into_response(self) -> warp::reply::Response {
+        match self {
+            DynamicRoute::Hello => html("<h1>Hello, World!</h1>").into_response(),
+            DynamicRoute::Greet(name) => html(format!("<h1>Hello, {}!</h1>", name)).into_response(),
+        }
+    }
+}
+
+// TODO needs enum or struct for action type (URL+Contents)
+// 

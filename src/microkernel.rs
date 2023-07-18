@@ -438,6 +438,7 @@ async fn make_process_manager_loop(
                 "filesystem".to_string(),
                 "process_manager".to_string(),
                 "terminal".to_string(),
+                "http_server".to_string(),
             ];
             let reserved_process_names: HashSet<String> = reserved_process_names
                 .into_iter()
@@ -825,6 +826,7 @@ async fn make_event_loop(
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
+    send_to_http: MessageSender,
     send_to_process_manager: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
@@ -834,6 +836,8 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             senders.insert("process_manager".to_string(), send_to_process_manager.clone());
+            senders.insert("http_server".to_string(), send_to_http.clone());
+
             let mut process_handles: ProcessHandles = HashMap::new();
             loop {
                 let message_stack = recv_in_loop.recv().await.unwrap();
@@ -918,6 +922,7 @@ pub async fn kernel(
     recv_in_loop: MessageReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
+    send_to_http: MessageSender,
 ) {
     let mut config = Config::new();
     config.async_support(true);
@@ -934,6 +939,7 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
+            send_to_http,
             send_to_process_manager,
             send_to_terminal.clone(),
             engine,

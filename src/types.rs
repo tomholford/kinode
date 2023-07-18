@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use warp::{Filter, Rejection, Reply, reply::html};
+use warp::{Filter, Reply, reply::html};
 
 use ethers::prelude::*;
 
@@ -151,22 +151,30 @@ pub enum FileSystemAction {
 }
 
 // http types
+//
 // TODO this is way too basic
-#[derive(Serialize, Deserialize)]
-pub enum DynamicRoute {
-    Hello,
-    Greet(String),
-    // Add more variants as needed for different routes
+// what actions do we want here?
+//   - set-response
+//   - connect to an app, let it handle everything related to it
+//   
+//
+
+enum HttpServerCommand {
+    SetResponse(SetResponseFields),
+    Connect(ConnectFields),
 }
 
-impl Reply for DynamicRoute {
-    fn into_response(self) -> warp::reply::Response {
-        match self {
-            DynamicRoute::Hello => html("<h1>Hello, World!</h1>").into_response(),
-            DynamicRoute::Greet(name) => html(format!("<h1>Hello, {}!</h1>", name)).into_response(),
-        }
-    }
+// set a static http response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetResponseFields {
+    pub path: String,
+    pub content: String,
 }
 
-// TODO needs enum or struct for action type (URL+Contents)
 // 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConnectFields {
+    pub path: String,
+    pub app: String,
+}
+

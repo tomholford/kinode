@@ -47,7 +47,7 @@ async fn main() {
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
     // http hashmap to store routes
-    let routes: Arc<Mutex<HashMap<String, DynamicRoute>>> = Arc::new(Mutex::new(HashMap::new()));
+    let routes: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // this will be replaced with actual chain reading from indexer module?
     let blockchain = std::fs::File::open("blockchain.json")

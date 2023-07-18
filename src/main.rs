@@ -107,7 +107,7 @@ async fn main() {
             kernel_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
-            http_server_sender,
+            http_server_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = websockets::websockets(
             &our,
@@ -123,7 +123,9 @@ async fn main() {
             fs_message_receiver
         ) => { "".to_string() },
         _ = http_server::http_server(
+            &our_name,
             http_server_receiver,
+            http_server_sender.clone(),
             print_sender.clone(),
         ) => { "http_server died".to_string() },
     };

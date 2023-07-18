@@ -158,10 +158,10 @@ pub enum FileSystemAction {
 //   - connect to an app, let it handle everything related to it
 //   
 //
-
-enum HttpServerCommand {
+#[derive(Debug, Serialize, Deserialize)]
+pub enum HttpServerCommand {
     SetResponse(SetResponseFields),
-    Connect(ConnectFields),
+    Connect(ConnectAppFields),
 }
 
 // set a static http response
@@ -173,7 +173,7 @@ pub struct SetResponseFields {
 
 // 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConnectFields {
+pub struct ConnectAppFields {
     pub path: String,
     pub app: String,
 }

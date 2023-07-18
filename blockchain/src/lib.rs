@@ -6,6 +6,7 @@ struct Component;
 impl bindings::MicrokernelProcess for Component {
     fn init(_source_ship: String, _source_app: String) -> Vec<bindings::WitMessage> {
         bindings::set_state(serde_json::to_string(&json!([])).unwrap().as_str());
+        bindings::print_to_terminal("blockchain: initialized");
         vec![]
     }
 
@@ -60,7 +61,7 @@ impl bindings::MicrokernelProcess for Component {
     fn handle_response(
         _message_stack: Vec<bindings::WitMessage>
     ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
-        bindings::print_to_terminal("in take");
+        bindings::print_to_terminal("in handle_response");
         vec![]
     }
 }

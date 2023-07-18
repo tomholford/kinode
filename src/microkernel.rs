@@ -335,7 +335,7 @@ async fn make_process_loop(
 
                 match message_type {
                     MessageType::Request(is_expecting_response) => {
-                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
+                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> =
                             bindings.call_run_write(
                                 &mut store,
                                 input_wit_message_stack.as_slice(),
@@ -356,7 +356,7 @@ async fn make_process_loop(
                         ).await;
                     },
                     MessageType::Response => {
-                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
+                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> =
                             bindings.call_handle_response(
                                 &mut store,
                                 input_wit_message_stack.as_slice(),
@@ -447,17 +447,17 @@ async fn make_process_manager_loop(
                 let mut message_stack = recv_in_process_manager.recv().await.unwrap();
                 let stack_len = message_stack.len();
                 let message = message_stack[stack_len - 1].clone();
-                send_to_terminal
-                    .send("process manager: called with stack: [".to_string())
-                    .await
-                    .unwrap();
-                for m in message_stack.iter() {
-                    send_to_terminal.send(format!("    {}", m)).await.unwrap();
-                }
-                send_to_terminal
-                    .send("]".to_string())
-                    .await
-                    .unwrap();
+                // send_to_terminal
+                //     .send("process manager: called with stack: [".to_string())
+                //     .await
+                //     .unwrap();
+                // for m in message_stack.iter() {
+                //     send_to_terminal.send(format!("    {}", m)).await.unwrap();
+                // }
+                // send_to_terminal
+                //     .send("]".to_string())
+                //     .await
+                //     .unwrap();
                 //  TODO: validate source/target?
                 let Some(value) = message.payload.json else {
                     send_to_terminal
@@ -481,7 +481,7 @@ async fn make_process_manager_loop(
                             .expect("process manager: could not parse to command");
                         match process_manager_command {
                             ProcessManagerCommand::Start(start) => {
-                                println!("process manager: start");
+                                // println!("process manager: start");
                                 if reserved_process_names.contains(&start.process_name) {
                                     println!(
                                         "process manager: cannot add process {} with name amongst {:?}",
@@ -496,7 +496,7 @@ async fn make_process_manager_loop(
                                     wire: Wire {
                                         source_ship: our_name.clone(),
                                         source_app: "process_manager".to_string(),
-                                        //  TODO: target should be inferred from process.data.file_uri 
+                                        //  TODO: target should be inferred from process.data.file_uri
                                         target_ship: our_name.clone(),
                                         target_app: "filesystem".to_string(),
                                     },
@@ -536,7 +536,7 @@ async fn make_process_manager_loop(
                                     send_to_loop.clone(),
                                 ).await;
 
-                                println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
+                                // println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
                             },
                             ProcessManagerCommand::Restart(restart) => {
                                 //  TODO: refactor Stop and Restart since 99% of code is shared
@@ -839,19 +839,19 @@ async fn make_event_loop(
                 let message_stack = recv_in_loop.recv().await.unwrap();
                 let stack_len = message_stack.len();
                 let message = message_stack[stack_len - 1].clone();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
-                            message.wire.source_ship,
-                            message.wire.source_app,
-                            message.wire.target_ship,
-                            message.wire.target_app,
-                            message.payload.json,
-                        )
-                    )
-                    .await
-                    .unwrap();
+                // send_to_terminal
+                //     .send(
+                //         format!(
+                //             "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
+                //             message.wire.source_ship,
+                //             message.wire.source_app,
+                //             message.wire.target_ship,
+                //             message.wire.target_app,
+                //             message.payload.json,
+                //         )
+                //     )
+                //     .await
+                //     .unwrap();
                 if our_name != message.wire.target_ship {
                     match send_to_wss.send(message_stack).await {
                         Ok(()) => {

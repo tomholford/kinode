@@ -14,7 +14,7 @@ pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx
     loop {
         tokio::select! {
             prints = print_rx.recv() => match prints {
-                Some(print) => { writeln!(stdout, "{}", print)?; },
+                Some(print) => { writeln!(stdout, "\x1b[34m{}\x1b[0m", print)?; },
                 None => { break; }
             },
             cmd = rl.readline() => match cmd {
@@ -51,7 +51,7 @@ pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx
 
 fn parse_command(our_name: &str, line: &str) -> Option<Command> {
     if line == "\n" { return None }
-    let (head, tail) = line.split_once(" ")?;
+    let (head, tail) = line.split_once(" ").unwrap_or((line, ""));
     match head {
         "!message" => {
             let (target_server, tail) = tail.split_once(" ")?;

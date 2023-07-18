@@ -44,7 +44,7 @@ cd ..
 ```bash
 # Terminal A: add some test apps to process_manager and run a simple test
 cargo r tuna
-!message tuna process_manager {"type": "Start", "process_name": "blockchain", "wasm_bytes_uri": "fs://blockchain.wasm", "is_long_running_process": true}
+!message tuna process_manager {"type": "Start", "process_name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "is_long_running_process": true}
 !message tuna poast "poast from tuna terminal"

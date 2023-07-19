@@ -56,6 +56,12 @@ enum HandshakeOrTarget {
     Target(String),
 }
 
+enum SuccessOrTimeout {
+    Success,
+    Timeout,
+    TryAgain,
+}
+
 /// websockets driver.
 ///
 /// statelessly manages websocket connections to peer nodes
@@ -190,22 +196,24 @@ pub async fn ws_sender(
         .await;
 
         match result {
-            Ok(_) => {
-                // let _ = kernel_message_tx
-                //         .send(vec![Message {
-                //             message_type: MessageType::Response,
-                //             wire: Wire {
-                //                 source_ship: our.name.clone(),
-                //                 source_app: "ws".into(),
-                //                 target_ship: our.name.clone(),
-                //                 target_app: message.wire.source_app.clone(),
-                //             },
-                //             payload: Payload {
-                //                 json: Some("ack".into()),
-                //                 bytes: None,
-                //             },
-                //         }])
-                //         .await;
+            Ok(res) => {
+                if let SuccessOrTimeout::Timeout = res {
+                    let _ = kernel_message_tx
+                        .send(vec![Message {
+                            message_type: MessageType::Response,
+                            wire: Wire {
+                                source_ship: our.name.clone(),
+                                source_app: "ws".into(),
+                                target_ship: our.name.clone(),
+                                target_app: message.wire.source_app.clone(),
+                            },
+                            payload: Payload {
+                                json: Some(serde_json::to_value(NetworkingError::MessageTimeout).unwrap()),
+                                bytes: None,
+                            },
+                        }])
+                        .await;
+                }
                 continue;
             }
             Err(e) => {
@@ -220,7 +228,7 @@ pub async fn ws_sender(
                             target_app: message.wire.source_app.clone(),
                         },
                         payload: Payload {
-                            json: Some("error: peer unreachable".into()),
+                            json: Some(serde_json::to_value(NetworkingError::PeerOffline).unwrap()),
                             bytes: None,
                         },
                     }])
@@ -240,7 +248,7 @@ async fn send_message(
     self_message_tx: MessageSender,
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
-) -> Result<(), String> {
+) -> Result<SuccessOrTimeout, String> {
     let message_bytes = match serde_json::to_vec(&message) {
         Ok(v) => v,
         Err(e) => return Err(format!("error serializing message: {}", e)),
@@ -264,10 +272,11 @@ async fn send_message(
                 .send(tungstenite::Message::Binary(ciphertext))
                 .await
             {
-                Ok(_) => return Ok(()),
-                Err(e) => {
+                Ok(_) => return Ok(SuccessOrTimeout::Success),
+                Err(_) => {
+                    //  TODO handle this actual websocket error better
                     edit.remove(&message.wire.target_ship);
-                    return Err(format!("error: message timeout: {}", e));
+                    return Ok(SuccessOrTimeout::Timeout)
                 }
             }
         }
@@ -332,7 +341,7 @@ async fn send_message(
                     match conn {
                         Ok(_) => {
                             let _ = self_message_tx.send(vec![message.clone()]).await;
-                            return Ok(());
+                            return Ok(SuccessOrTimeout::TryAgain);
                         }
                         Err(e) => return Err(format!("error opening new conn: {}", e)),
                     }

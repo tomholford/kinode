@@ -9,7 +9,7 @@ struct Messages {
 }
 
 impl bindings::MicrokernelProcess for Component {
-    fn run_process() {
+    fn run_process(_: String, _: String) {
         bindings::print_to_terminal("hi++: start");
 
         let mut messages = Messages {

@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
-use ethers::types::H256;
+use anyhow::Result;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
+use tokio::fs;
 use serde::{Serialize, Deserialize};
 
 use crate::types::*;
@@ -23,7 +23,6 @@ bindgen!({
     async: true,
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
-const PROCESS_MANAGER_CHANNEL_CAPACITY: usize = 10;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -89,8 +88,6 @@ struct Process {
     current_message_stack: MessageStack,
 }
 
-//  lives in process manager
-type ProcesseMetadatas = HashMap<String, ProcessMetadata>;
 //  live in event loop
 type Senders = HashMap<String, MessageSender>;
 type ProcessHandles = HashMap<String, JoinHandle<Result<()>>>;
@@ -108,6 +105,8 @@ impl MicrokernelProcessImports for Process {
         send_process_results_to_loop(
             results,
             &mut self.current_message_stack,
+            self.metadata.our_name.clone(),
+            self.metadata.process_name.clone(),
             self.send_to_loop.clone(),
         ).await;
         Ok(())
@@ -163,6 +162,8 @@ impl MicrokernelProcessImports for Process {
 async fn send_process_results_to_loop(
     results: Vec<WitProtomessage>,
     message_stack: &mut MessageStack,
+    source_ship: String,
+    source_app: String,
     send_to_loop: MessageSender,
 ) -> () {
     let stack_len = message_stack.len();
@@ -175,8 +176,6 @@ async fn send_process_results_to_loop(
                 MessageType::Response => false,
             }
         };
-    let source_ship = message_stack[stack_len - 1].wire.source_ship.clone();
-    let source_app = message_stack[stack_len - 1].wire.source_app.clone();
     for WitProtomessage { protomessage_type, payload } in &results {
         let mut message_stack = message_stack.clone();
         let (target_ship, target_app, message_type) =
@@ -291,6 +290,9 @@ async fn make_process_loop(
     wasm_bytes: Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+    let our_name = metadata.our_name.clone();
+    let process_name = metadata.process_name.clone();
+
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
 
@@ -317,7 +319,11 @@ async fn make_process_loop(
             ).await.unwrap();
 
             //  process loop happens inside the WASM component process -- if desired
-            let _ = bindings.call_run_process(&mut store).await;
+            let _ = bindings.call_run_process(
+                &mut store,
+                &our_name,
+                &process_name,
+            ).await;
 
             //  TODO: propagate error from process returning?
             Ok(())
@@ -325,324 +331,12 @@ async fn make_process_loop(
     )
 }
 
-async fn send_process_manager_results_to_loop(
-    our_name: String,
-    process_name: String,
-    is_expecting_response: bool,
-    stack_len: usize,
-    mut message_stack: MessageStack,
-    send_to_loop: MessageSender,
-) -> () {
-    let json_payload = serde_json::to_value(
-        KernelRequest::StopProcess(KernelStopProcess { process_name,})
-    ).unwrap();
-    let kernel_stop_process_message = Message {
-        message_type: MessageType::Request(is_expecting_response),
-        wire: Wire {
-            source_ship: our_name.clone(),
-            source_app: "process_manager".to_string(),
-            target_ship: our_name.clone(),
-            target_app: "kernel".to_string(),
-        },
-        payload: Payload {
-            json: Some(json_payload),
-            bytes: None,
-        },
-    };
-    if !is_expecting_response & (1 < stack_len) {
-        //  pop off requests that dont expect responses
-        //   UNLESS they are the request that started the chain
-        message_stack.pop();
-    }
-    message_stack.push(kernel_stop_process_message);
-    send_to_loop.send(message_stack).await.unwrap();
-}
-
-//  TODO: remove unnecessary println!s;
-//        change necessary to send_to_terminals
-async fn make_process_manager_loop(
-    our_name: String,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
-    mut recv_in_process_manager: MessageReceiver,
-) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    Box::pin(
-        async move {
-            let reserved_process_names = vec![
-                "filesystem".to_string(),
-                "process_manager".to_string(),
-                "terminal".to_string(),
-            ];
-            let reserved_process_names: HashSet<String> = reserved_process_names
-                .into_iter()
-                .collect();
-            let mut metadatas: ProcesseMetadatas = HashMap::new();
-            loop {
-                let mut message_stack = recv_in_process_manager.recv().await.unwrap();
-                let stack_len = message_stack.len();
-                let message = message_stack[stack_len - 1].clone();
-                print_stack_to_terminal(
-                    "process manager: called with stack",
-                    &message_stack,
-                    send_to_terminal.clone(),
-                ).await;
-                //  TODO: validate source/target?
-                let Some(value) = message.payload.json else {
-                    send_to_terminal
-                        .send(
-                            format!(
-                                "process manager: got payload with no json source, target: {:?}, {:?} {:?} {:?}",
-                                message.wire.source_ship,
-                                message.wire.source_app,
-                                message.wire.target_ship,
-                                message.wire.target_app,
-                            )
-                        )
-                        .await
-                        .unwrap();
-                    continue;
-                };
-                match message.message_type {
-                    MessageType::Request(is_expecting_response) => {
-                        let process_manager_command: ProcessManagerCommand =
-                            serde_json::from_value(value)
-                            .expect("process manager: could not parse to command");
-                        match process_manager_command {
-                            ProcessManagerCommand::Start(start) => {
-                                println!("process manager: start");
-                                if reserved_process_names.contains(&start.process_name) {
-                                    println!(
-                                        "process manager: cannot add process {} with name amongst {:?}",
-                                        &start.process_name,
-                                        reserved_process_names.iter().collect::<Vec<_>>(),
-                                    );
-                                    continue;
-                                }
-
-                                let get_bytes_message = Message {
-                                    message_type: MessageType::Request(true),
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "process_manager".to_string(),
-                                        //  TODO: target should be inferred from process.data.file_uri 
-                                        target_ship: our_name.clone(),
-                                        target_app: "filesystem".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(
-                                            serde_json::to_value(
-                                                FileSystemRequest::Read(
-                                                    start.wasm_bytes_uri.clone()
-                                                )
-                                            ).unwrap()
-                                        ),
-                                        bytes: None,
-                                    },
-                                };
-                                if !is_expecting_response & (1 < stack_len) {
-                                    //  pop off requests that dont expect responses
-                                    //   UNLESS they are the request that started the chain
-                                    message_stack.pop();
-                                }
-                                message_stack.push(get_bytes_message);
-                                send_to_loop.send(message_stack).await.unwrap();
-                            },
-                            ProcessManagerCommand::Stop(stop) => {
-                                //  TODO: refactor Stop and Restart since 99% of code is shared
-                                println!("process manager: stop");
-                                let _ = metadatas
-                                    .remove(&stop.process_name)
-                                    .unwrap();
-
-                                send_process_manager_results_to_loop(
-                                    our_name.clone(),
-                                    stop.process_name,
-                                    false,
-                                    stack_len,
-                                    message_stack,
-                                    send_to_loop.clone(),
-                                ).await;
-
-                                println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
-                            },
-                            ProcessManagerCommand::Restart(restart) => {
-                                //  TODO: refactor Stop and Restart since 99% of code is shared
-                                println!("process manager: restart");
-
-                                send_process_manager_results_to_loop(
-                                    our_name.clone(),
-                                    restart.process_name,
-                                    true,
-                                    stack_len,
-                                    message_stack,
-                                    send_to_loop.clone(),
-                                ).await;
-                            },
-                        }
-                    },
-                    MessageType::Response => {
-                        match (
-                            message.wire.source_ship,
-                            message.wire.source_app.as_str(),
-                            message.payload.bytes,
-                        ) {
-                            (
-                                our_name,
-                                "filesystem",
-                                Some(wasm_bytes),
-                            ) => {
-                                //  get process_name out of stack
-                                let start_message = message_stack[stack_len - 3]
-                                    .clone();
-                                let Some(value) = start_message.payload.json else {
-                                    //  TODO: handle error or bail?
-                                    print_stack_to_terminal(
-                                        "process_manager: couldnt access start message from stack while handling filesystem reponse; stack",
-                                        &message_stack,
-                                        send_to_terminal.clone(),
-                                    ).await;
-                                    continue;
-                                };
-                                let ProcessManagerCommand::Start(start) =
-                                    serde_json::from_value(value).unwrap() else {
-                                    //  TODO: handle error or bail?
-                                    print_stack_to_terminal(
-                                        "process_manager: couldnt parse start message from stack while handling filesystem reponse; stack",
-                                        &message_stack,
-                                        send_to_terminal.clone(),
-                                    ).await;
-                                    continue;
-                                };
-
-                                let json_payload = serde_json::to_value(
-                                    KernelRequest::StartProcess(ProcessStart {
-                                        process_name: start.process_name.clone(),
-                                        wasm_bytes_uri: start.wasm_bytes_uri.clone(),
-                                    })
-                                ).unwrap();
-                                let kernel_start_process_message = Message {
-                                    message_type: MessageType::Request(true),
-                                    wire: Wire {
-                                        source_ship: our_name.clone(),
-                                        source_app: "process_manager".to_string(),
-                                        target_ship: our_name.clone(),
-                                        target_app: "kernel".to_string(),
-                                    },
-                                    payload: Payload {
-                                        json: Some(json_payload),
-                                        bytes: Some(wasm_bytes),
-                                    },
-                                };
-                                message_stack.pop();
-                                message_stack.pop();
-                                message_stack.push(kernel_start_process_message);
-                                send_to_loop.send(message_stack).await.unwrap();
-                            },
-                            (
-                                our_name,
-                                "kernel",
-                                None,
-                            ) => {
-                                match serde_json::from_value(value) {
-                                    Ok(KernelResponse::StartProcess(metadata)) => {
-                                        metadatas.insert(
-                                            metadata.process_name.clone(),
-                                            metadata,
-                                        );
-                                        //  TODO: response?
-                                        continue;
-                                    },
-                                    Ok(KernelResponse::StopProcess(_stop)) => {
-                                        //  if in response to a Restart, send new Start
-                                        let restart_message = message_stack[stack_len - 3]
-                                            .clone();
-                                        let Some(value) = restart_message.payload.json else {
-                                            //  TODO: handle error or bail?
-                                            print_stack_to_terminal(
-                                                "process_manager: couldnt access restart message from stack while handling filesystem reponse; stack",
-                                                &message_stack,
-                                                send_to_terminal.clone(),
-                                            ).await;
-                                            continue;
-                                        };
-                                        let ProcessManagerCommand::Restart(restart) =
-                                            serde_json::from_value(value).unwrap() else {
-                                            //  TODO: handle error or bail?
-                                            print_stack_to_terminal(
-                                                "process_manager: couldnt parse restart message from stack while handling filesystem reponse; stack",
-                                                &message_stack,
-                                                send_to_terminal.clone(),
-                                            ).await;
-                                            continue;
-                                        };
-
-                                        let removed = metadatas
-                                            .remove(&restart.process_name)
-                                            .unwrap();
-
-                                        let json_payload = serde_json::to_value(
-                                            ProcessManagerCommand::Start(ProcessStart {
-                                                process_name: removed.process_name,
-                                                wasm_bytes_uri: removed.wasm_bytes_uri,
-                                            })
-                                        ).unwrap();
-                                        let kernel_start_process_message = Message {
-                                            message_type: MessageType::Request(true),
-                                            wire: Wire {
-                                                source_ship: our_name.clone(),
-                                                source_app: "process_manager".to_string(),
-                                                target_ship: our_name.clone(),
-                                                target_app: "process_manager".to_string(),
-                                            },
-                                            payload: Payload {
-                                                json: Some(json_payload),
-                                                bytes: None,
-                                            },
-                                        };
-                                        message_stack.pop();
-                                        message_stack.pop();
-                                        message_stack.push(kernel_start_process_message);
-                                        send_to_loop.send(message_stack).await.unwrap();
-                                        continue;
-                                    },
-                                    Err(e) => {
-                                        print_stack_to_terminal(
-                                            format!(
-                                                "process_manager: kernel response unexpected case; error: {} stack",
-                                                e,
-                                                ).as_str(),
-                                            &message_stack,
-                                            send_to_terminal.clone(),
-                                        ).await;
-                                        continue;
-                                    },
-                                }
-                            },
-                            _ => {
-                                //  TODO: handle error or bail?
-                                print_stack_to_terminal(
-                                    "process_manager: response unexpected case; stack",
-                                    &message_stack,
-                                    send_to_terminal.clone(),
-                                ).await;
-                                continue;
-                            },
-                        }
-                    },
-                }
-            }
-        }
-    )
-}
-
-
 async fn handle_kernel_request(
     our_name: String,
     stack_len: usize,
     mut message_stack: MessageStack,
     message: Message,
     send_to_loop: MessageSender,
-    send_to_process_manager: MessageSender,
     send_to_terminal: PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
@@ -709,10 +403,12 @@ async fn handle_kernel_request(
                 },
             };
             message_stack.push(start_completed_message);
-            send_to_process_manager
-                .send(message_stack)
-                .await
-                .unwrap();
+            if let Some(send_to_process_manager) = senders.get("process_manager") {
+                send_to_process_manager
+                    .send(message_stack)
+                    .await
+                    .unwrap();
+            }
             return;
         },
         KernelRequest::StopProcess(cmd) => {
@@ -750,10 +446,12 @@ async fn handle_kernel_request(
                 },
             };
             message_stack.push(stop_completed_message);
-            send_to_process_manager
-                .send(message_stack)
-                .await
-                .unwrap();
+            if let Some(send_to_process_manager) = senders.get("process_manager") {
+                send_to_process_manager
+                    .send(message_stack)
+                    .await
+                    .unwrap();
+            }
             return;
         },
     }
@@ -765,7 +463,6 @@ async fn make_event_loop(
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_process_manager: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -773,7 +470,6 @@ async fn make_event_loop(
         async move {
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
-            senders.insert("process_manager".to_string(), send_to_process_manager.clone());
             let mut process_handles: ProcessHandles = HashMap::new();
             loop {
                 let message_stack = recv_in_loop.recv().await.unwrap();
@@ -816,7 +512,6 @@ async fn make_event_loop(
                             message_stack,
                             message,
                             send_to_loop.clone(),
-                            send_to_process_manager.clone(),
                             send_to_terminal.clone(),
                             &mut senders,
                             &mut process_handles,
@@ -853,6 +548,7 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: &Identity,
+    process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -864,9 +560,6 @@ pub async fn kernel(
     config.wasm_component_model(true);
     let engine = Engine::new(&config).unwrap();
 
-    let (send_to_process_manager, recv_in_process_manager) =
-        mpsc::channel::<MessageStack>(PROCESS_MANAGER_CHANNEL_CAPACITY);
-
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our.name.clone(),
@@ -874,23 +567,35 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
-            send_to_process_manager,
             send_to_terminal.clone(),
             engine,
         ).await
     );
 
-    let process_manager_handle = tokio::spawn(
-        make_process_manager_loop(
-            our.name.clone(),
-            send_to_loop,
-            send_to_terminal,
-            recv_in_process_manager,
-        ).await
-    );
+    let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
+    let start_process_manager_message: MessageStack = vec![
+        Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "process_manager".to_string(),
+                            wasm_bytes_uri: process_manager_wasm_path,
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(process_manager_wasm_bytes),
+            },
+        },
+    ];
+    send_to_loop.send(start_process_manager_message).await.unwrap();
 
-    _ = tokio::join!(
-        event_loop_handle,
-        process_manager_handle,
-    );
+    let _ = event_loop_handle.await;
 }

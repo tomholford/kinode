@@ -4,8 +4,6 @@ use std::env;
 use ethers::prelude::*;
 
 use crate::types::*;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 mod types;
 mod terminal;

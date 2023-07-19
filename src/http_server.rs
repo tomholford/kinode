@@ -14,7 +14,7 @@ pub async fn http_server(
   let posts: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
   tokio::join!(
-    http_serve(our, gets.clone(), posts.clone(), message_tx.clone(), print_tx.clone()),
+    http_serve(our.clone(), gets.clone(), posts.clone(), message_tx.clone(), print_tx.clone()),
     http_bind(gets, posts, message_rx, print_tx)
   );
 }
@@ -43,14 +43,14 @@ async fn http_bind(
       HttpServerCommand::Connect(req) => {
         let mut routes_map = posts.lock().unwrap();
         routes_map.insert(req.path, req.app);
-        let _ = print_tx.send(format!("connect {:?}", routes_map)).await;
+        let _ = print_tx.send(format!("connected app {:?}", routes_map)).await;
       }
     }
   }
 }
 
 async fn http_serve(
-  our: &String,
+  our: String,
   gets: Arc<Mutex<HashMap<String, String>>>,
   posts: Arc<Mutex<HashMap<String, String>>>,
   message_tx: MessageSender,
@@ -61,13 +61,14 @@ async fn http_serve(
     .and(warp::any().map(move || gets.clone()))
     .and_then(http_get_request);
 
-    let post_filter = warp::path!("post")
-      .and(warp::post())
-      .and(warp::body::json())
-      .and(warp::any().map(move || posts.clone()))
-      .and(warp::any().map(move || message_tx.clone()))
-      .and(warp::any().map(move || print_tx.clone()))
-      .and_then(http_post_request);
+  let post_filter = warp::path!(String)
+    .and(warp::post())
+    .and(warp::body::json())
+    .and(warp::any().map(move || our.clone()))
+    .and(warp::any().map(move || posts.clone()))
+    .and(warp::any().map(move || message_tx.clone()))
+    .and(warp::any().map(move || print_tx.clone()))
+    .and_then(http_post_request);
   
   let filter = get_filter.or(post_filter);
 
@@ -90,27 +91,36 @@ async fn http_get_request(path: String, map: Arc<Mutex<HashMap<String, String>>>
 }
 
 // TODO send message to app
-async fn http_post_request(data: String, posts: Arc<Mutex<HashMap<String, String>>>, message_tx: MessageSender, print_tx: PrintSender) -> Result<impl warp::Reply, warp::Rejection> {
+async fn http_post_request(
+  path: String,
+  data: serde_json::Value,
+  our: String,
+  posts: Arc<Mutex<HashMap<String, String>>>,
+  message_tx: MessageSender, print_tx: PrintSender
+) -> Result<impl warp::Reply, warp::Rejection> {
   // Here we handle the POST request.
   // You can process the `data` as needed and add it to the `posts` HashMap if required.
   // For example:
   // posts.lock().await.insert("key".to_string(), data.clone());
   print_tx.send("IN HTTP_POST_REQEST".to_string()).await;
+  print_tx.send(data.to_string()).await;
+  // let message: Message = serde_json::from_value(data.clone()).expect("Failed to deserialize into Message");
+  // let guard = posts.lock().unwrap();
+
   let message = Message {
-    message_type: MessageType::Response, // TODO not really
-    wire: Wire {
-      source_ship: "TODO".to_string(),
-      source_app:  "TODO".to_string(),
-      target_ship: "TODO".to_string(),
-      target_app:  "TODO".to_string(),
-    },
-    payload: Payload {
-      json: Some(serde_json::Value::String(data)),
-      bytes: None,
-    }
+      message_type: MessageType::Request(false),
+      wire: Wire {
+          source_ship: our.clone().to_string(),
+          source_app: "nowhere".to_string(),
+          target_ship: our.clone().to_string(),
+          target_app: "poast".to_string() // TODO guard.get(&path).unwrap().to_string().clone(),
+      },
+      payload: Payload {
+          json: Some(data),
+          bytes: None,
+      },
   };
 
-  // Now, send the message using the provided `message_tx`.
   message_tx.send(vec![message]).await.unwrap();
 
   Ok(warp::reply::json(&"Message sent successfully"))

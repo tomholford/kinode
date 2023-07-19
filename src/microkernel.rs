@@ -12,6 +12,9 @@ use serde::{Serialize, Deserialize};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
+use crate::microkernel::component::microkernel_process::types::WitMessageType;
+use crate::microkernel::component::microkernel_process::types::WitPayload;
+use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
 use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
@@ -33,7 +36,6 @@ enum ProcessManagerCommand {
 struct ProcessStart {
     process_name: String,
     wasm_bytes_uri: String,
-    is_long_running_process: bool,
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessManagerStop {
@@ -66,7 +68,6 @@ struct ProcessMetadata {
     our_name: String,
     process_name: String,
     wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
-    is_long_running_process: bool,
     // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
 }
 
@@ -76,15 +77,16 @@ impl Clone for ProcessMetadata {
             our_name: self.our_name.clone(),
             process_name: self.process_name.clone(),
             wasm_bytes_uri: self.wasm_bytes_uri.clone(),
-            is_long_running_process: self.is_long_running_process.clone(),
         }
     }
 }
 
 struct Process {
     metadata: ProcessMetadata,
-    state: serde_json::Value,
+    recv_in_process: MessageReceiver,
+    send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
+    current_message_stack: MessageStack,
 }
 
 //  lives in process manager
@@ -102,54 +104,57 @@ impl Host for Process {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
-    async fn modify_state(
-        &mut self,
-        json_pointer: String,
-        new_value_string: String
-    ) -> Result<String> {
-        // let mut process_data = self.lock().await;
-        let json =
-            // process_data.state.pointer_mut(json_pointer.as_str()).ok_or(
-            self.state.pointer_mut(json_pointer.as_str()).ok_or(
-                anyhow!(
-                    format!(
-                        "modify_state: state does not contain {:?}",
-                        json_pointer
-                    )
-                )
-            )?;
-        let new_value = serde_json::from_str(&new_value_string)?;
-        *json = new_value;
-        Ok(new_value_string)
+    async fn yield_results(&mut self, results: Vec<WitProtomessage>) -> Result<()> {
+        send_process_results_to_loop(
+            results,
+            &mut self.current_message_stack,
+            self.send_to_loop.clone(),
+        ).await;
+        Ok(())
     }
 
-    async fn fetch_state(&mut self, json_pointer: String) -> Result<String> {
-        // let process_data = self.lock().await;
-        let json =
-            // process_data.state.pointer(json_pointer.as_str()).ok_or(
-            self.state.pointer(json_pointer.as_str()).ok_or(
-                anyhow!(
-                    format!(
-                        "fetch_state: state does not contain {:?}",
-                        json_pointer
-                    )
-                )
-            )?;
-        Ok(json_to_string(json))
-    }
+    async fn await_next_message(&mut self) -> Result<Vec<WitMessage>> {
+        let mut next_message_stack = self.recv_in_process.recv().await.unwrap();
 
-    async fn set_state(&mut self, json_string: String) -> Result<String> {
-        let json = serde_json::from_str(&json_string)?;
-        // let mut process_data = self.lock().await;
-        // process_data.state = json;
-        self.state = json;
-        Ok(json_string)
+        self.send_to_terminal
+            .send(format!("{}: got message_stack: [", self.metadata.process_name))
+            .await
+            .unwrap();
+        for m in &next_message_stack {
+            self.send_to_terminal.send(format!("    {}", m)).await.unwrap();
+        }
+        self.send_to_terminal
+            .send("]".to_string())
+            .await
+            .unwrap();
+
+        let next_wit_message_stack =
+            convert_message_stack_to_wit_message_stack(&next_message_stack).await;
+
+        let stack_len = next_message_stack.len();
+        self.current_message_stack = match next_message_stack[stack_len - 1].message_type.clone() {
+            MessageType::Request(is_expecting_response) => {
+                //  pop off requests that dont expect responses
+                //   UNLESS they are the request that started the chain
+                if !is_expecting_response & (1 < stack_len) {
+                    next_message_stack.truncate(stack_len - 1);
+                    next_message_stack
+                } else {
+                    next_message_stack
+                }
+            },
+            MessageType::Response => {
+                //  pop message_stack twice: once for response message,
+                //   and once for request message
+                next_message_stack.truncate(stack_len - 2);
+                next_message_stack
+            },
+        };
+
+        Ok(next_wit_message_stack)
     }
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
-        // let process_data = self.lock().await;
-        // process_data
-        //     .send_to_terminal
         self.send_to_terminal
             .send(message)
             .await
@@ -187,19 +192,27 @@ async fn convert_message_stack_to_wit_message_stack(message_stack: &Vec<Message>
 }
 
 async fn send_process_results_to_loop(
-    results: Vec<(WitMessageTypeWithTarget, WitPayload)>,
-    source_ship: String,
-    source_app: String,
-    is_expecting_response: bool,
-    stack_len: usize,
-    message_stack: MessageStack,
+    results: Vec<WitProtomessage>,
+    message_stack: &mut MessageStack,
     send_to_loop: MessageSender,
 ) -> () {
-    for (wit_message_type_with_target, wit_payload) in results.iter() {
+    let stack_len = message_stack.len();
+    let is_expecting_response =
+        if stack_len == 0 {
+            false
+        } else {
+            match message_stack[stack_len - 1].message_type {
+                MessageType::Request(is_expecting_response) => is_expecting_response,
+                MessageType::Response => false,
+            }
+        };
+    let source_ship = message_stack[stack_len - 1].wire.source_ship.clone();
+    let source_app = message_stack[stack_len - 1].wire.source_app.clone();
+    for WitProtomessage { protomessage_type, payload } in &results {
         let mut message_stack = message_stack.clone();
         let (target_ship, target_app, message_type) =
-            match wit_message_type_with_target {
-                WitMessageTypeWithTarget::Request(type_with_target) => {
+            match protomessage_type {
+                WitProtomessageType::Request(type_with_target) => {
                     //  set target based on request type
                     (
                         type_with_target.target_ship.clone(),
@@ -209,7 +222,7 @@ async fn send_process_results_to_loop(
                         ),
                     )
                 },
-                WitMessageTypeWithTarget::Response => {
+                WitProtomessageType::Response => {
                     //  if at chain start & dont want response, continue;
                     //   else target is most recent message source
                     if !is_expecting_response & (1 >= stack_len) {
@@ -217,8 +230,8 @@ async fn send_process_results_to_loop(
                     } else {
                         (
                             message_stack[stack_len - 1]
-                                .wire.
-                                source_ship
+                                .wire
+                                .source_ship
                                 .clone(),
                             message_stack[stack_len - 1]
                                 .wire
@@ -230,11 +243,11 @@ async fn send_process_results_to_loop(
                 },
             };
         let payload = Payload {
-            json: match wit_payload.json {
+            json: match payload.json {
                 Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
                 None => None,
             },
-            bytes: wit_payload.bytes.clone(),
+            bytes: payload.bytes.clone(),
         };
         let message = Message {
             message_type,
@@ -259,30 +272,24 @@ async fn make_process_loop(
     metadata: ProcessMetadata,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
-    mut recv_in_process: MessageReceiver,
+    recv_in_process: MessageReceiver,
     wasm_bytes: Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    let (our_name, process_name, is_long_running_process) =
-        (
-            metadata.our_name.clone(),
-            metadata.process_name.clone(),
-            metadata.is_long_running_process.clone()
-        );
-
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
     MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
-    // std::mem::drop(process_data);  //  unlock
 
     let mut store = Store::new(
         engine,
         Process {
             metadata,
-            state: serde_json::Value::Null,
+            recv_in_process,
+            send_to_loop,
             send_to_terminal: send_to_terminal.clone(),
+            current_message_stack: vec![],
         },
     );
 
@@ -293,124 +300,11 @@ async fn make_process_loop(
                 &component,
                 &linker
             ).await.unwrap();
-            let results: Vec<WitMessage> = bindings
-                .call_init(
-                    &mut store,
-                    &our_name.clone(),
-                    &process_name.clone(),
-                ).await.unwrap();
-            for result in &results {
-                let result = Message {
-                    message_type: match result.message_type {
-                        WitMessageType::Request(is_expecting_response) => MessageType::Request(is_expecting_response),
-                        WitMessageType::Response => MessageType::Response,
-                    },
-                    wire: Wire {
-                        source_ship: result.wire.source_ship.clone(),
-                        source_app: result.wire.source_app.clone(),
-                        target_ship: result.wire.target_ship.clone(),
-                        target_app: result.wire.target_app.clone(),
-                    },
-                    payload: Payload {
-                        json: match result.payload.json {
-                            Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
-                            None => None,
-                        },
-                        bytes: result.payload.bytes.clone(),
-                    },
-                };
-                send_to_loop
-                    .send(vec![result])
-                    .await
-                    .unwrap();
-            }
-            let mut i = 0;
-            loop {
-                let mut input_message_stack = recv_in_process
-                    .recv()
-                    .await
-                    .unwrap();
 
-                println!("{}: got message_stack: {:?}", process_name, input_message_stack);
+            //  process loop happens inside the WASM component process -- if desired
+            let _ = bindings.call_run_process(&mut store).await;
 
-                send_to_terminal
-                    .send(format!("{}: got message_stack: [", process_name))
-                    .await
-                    .unwrap();
-                for m in input_message_stack.iter() {
-                    send_to_terminal.send(format!("    {}", m)).await.unwrap();
-                }
-                send_to_terminal
-                    .send("]".to_string())
-                    .await
-                    .unwrap();
-
-                //  for return
-                let stack_len = input_message_stack.len();
-                let (source_ship, source_app, message_type) = (
-                    input_message_stack[stack_len-1].wire.target_ship.clone(),
-                    input_message_stack[stack_len-1].wire.target_app.clone(),
-                    input_message_stack[stack_len-1].message_type.clone(),
-                );
-
-                let input_wit_message_stack =
-                    convert_message_stack_to_wit_message_stack(&input_message_stack).await;
-                let input_wit_message_stack: Vec<&WitMessage> =
-                    input_wit_message_stack.iter().collect();
-
-                match message_type {
-                    MessageType::Request(is_expecting_response) => {
-                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
-                            bindings.call_run_write(
-                                &mut store,
-                                input_wit_message_stack.as_slice(),
-                            ).await.unwrap();
-                        if !is_expecting_response & (1 < stack_len) {
-                            //  pop off requests that dont expect responses
-                            //   UNLESS they are the request that started the chain
-                            input_message_stack.pop();
-                        }
-                        send_process_results_to_loop(
-                            results,
-                            source_ship,
-                            source_app,
-                            is_expecting_response,
-                            stack_len,
-                            input_message_stack,
-                            send_to_loop.clone(),
-                        ).await;
-                    },
-                    MessageType::Response => {
-                        let results: Vec<(WitMessageTypeWithTarget, WitPayload)> = 
-                            bindings.call_handle_response(
-                                &mut store,
-                                input_wit_message_stack.as_slice(),
-                            ).await.unwrap();
-                        //  pop message_stack twice: once for response message,
-                        //   and once for request message
-                        //   and Then place new message on stack
-                        input_message_stack.pop();
-                        input_message_stack.pop();
-                        send_process_results_to_loop(
-                            results,
-                            source_ship,
-                            source_app,
-                            false,
-                            stack_len,
-                            input_message_stack,
-                            send_to_loop.clone(),
-                        ).await;
-                    },
-                };
-                i = i + 1;
-                send_to_terminal
-                    .send(format!("{}: ran process step {}", process_name, i))
-                    .await
-                    .unwrap();
-                if !is_long_running_process {
-                    break;
-                }
-            }
+            //  TODO: propagate error from process returning?
             Ok(())
         }
     )
@@ -608,9 +502,6 @@ async fn make_process_manager_loop(
                                     KernelRequest::StartProcess(ProcessStart {
                                         process_name: start.process_name.clone(),
                                         wasm_bytes_uri: start.wasm_bytes_uri.clone(),
-                                        is_long_running_process: start
-                                            .is_long_running_process
-                                            .clone(),
                                     })
                                 ).unwrap();
                                 let kernel_start_process_message = Message {
@@ -669,8 +560,6 @@ async fn make_process_manager_loop(
                                             ProcessManagerCommand::Start(ProcessStart {
                                                 process_name: removed.process_name,
                                                 wasm_bytes_uri: removed.wasm_bytes_uri,
-                                                is_long_running_process: removed
-                                                    .is_long_running_process,
                                             })
                                         ).unwrap();
                                         let kernel_start_process_message = Message {
@@ -760,7 +649,6 @@ async fn handle_kernel_request(
                 our_name: our_name.to_string(),
                 process_name: cmd.process_name.clone(),
                 wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
-                is_long_running_process: cmd.is_long_running_process.clone(),
             };
             process_handles.insert(
                 cmd.process_name.clone(),

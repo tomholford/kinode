@@ -567,7 +567,6 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
-            // send_to_process_manager,
             send_to_terminal.clone(),
             engine,
         ).await

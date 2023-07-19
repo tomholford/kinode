@@ -1,26 +1,34 @@
 {
     "squid": {
-        "address": "0x00000000000000000000000000000000000000000000000000000000deadbeef",
         "name": "squid",
-        "ws_url": "147.135.114.167",
-        "ws_port": 9000
+        "address": "0x00000000000000000000000000000000000000000000000000000000deadbeef",
+        "networking_key": "6077987c998066ed7dea3e30555add0523482475c705fb92c0c8e78307b8e62c",
+        "ws_routing": null,
+        "allowed_routers": ["loach"],
+        "routing_for": []
     },
     "loach": {
-        "address": "0x00000000000000000000000000000000000000000000000000000000cafebabe",
         "name": "loach",
-        "ws_url": "localhost",
-        "ws_port": 9001
+        "address": "0x00000000000000000000000000000000000000000000000000000000cafebabe",
+        "networking_key": "4ba6e48623ff21713aebee37230d39641bd86a871e548955237daa7b93a71ce7",
+        "ws_routing": ["localhost", 9001],
+        "allowed_routers": [],
+        "routing_for": ["squid"]
     },
     "tuna": {
-        "address": "0x00000000000000000000000000000000000000000000000000000000faceface",
         "name": "tuna",
-        "ws_url": "localhost",
-        "ws_port": 9002
+        "address": "0x00000000000000000000000000000000000000000000000000000000faceface",
+        "networking_key": "d7449f10932c8beb05d5251560862bad81b7803810d7be70d3be1e04903316f4",
+        "ws_routing": ["localhost", 9002],
+        "allowed_routers": [],
+        "routing_for": []
     },
     "dolph": {
-        "address": "0x0000000000000000000000000000000000000000000000000000000000facade",
         "name": "dolph",
-        "ws_url": "localhost",
-        "ws_port": 9003
+        "address": "0x0000000000000000000000000000000000000000000000000000000000facade",
+        "networking_key": "870e3c497ed1fd131b75625daf5305c57f07da7d394a7f1a15fee71e9a06ab17",
+        "ws_routing": ["localhost", 9003],
+        "allowed_routers": [],
+        "routing_for": []
     }
 }

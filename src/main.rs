@@ -1,18 +1,21 @@
-use tokio::sync::mpsc;
+use ring::signature;
+use ring::signature::KeyPair;
+use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use ethers::prelude::*;
 
 use crate::types::*;
 
-mod types;
-mod terminal;
-mod websockets;
-mod microkernel;
-mod blockchain;
 mod engine;
 mod filesystem;
 mod http_server;
+mod microkernel;
+mod terminal;
+mod types;
+mod websockets;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
@@ -45,41 +48,43 @@ async fn main() {
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
     // this will be replaced with actual chain reading from indexer module?
-    let blockchain = std::fs::File::open("blockchain.json")
-        .expect("couldn't read from the chain lolz");
-    let json: serde_json::Value = serde_json::from_reader(blockchain)
-        .expect("blockchain.json should be proper JSON");
-    let pki: OnchainPKI = serde_json::from_value::<OnchainPKI>(json)
-        .expect("should be a JSON map of identities");
+    let blockchain =
+        std::fs::File::open("blockchain.json").expect("couldn't read from the chain lolz");
+    let json: serde_json::Value =
+        serde_json::from_reader(blockchain).expect("blockchain.json should be proper JSON");
+    let pki: OnchainPKI = Arc::new(
+        serde_json::from_value::<HashMap<String, Identity>>(json)
+            .expect("should be a JSON map of identities"),
+    );
     // our identity in the uqbar PKI
     let our = pki.get(&our_name).expect("we should be in the PKI").clone();
 
     // fake local blockchain
     let uqchain = engine::UqChain::new();
     let my_txn: engine::Transaction = engine::Transaction {
-                                        from: our.address,
-                                        signature: None,
-                                        to: "0x0000000000000000000000000000000000000000000000000000000000005678".parse().unwrap(),
-                                        town_id: 0,
-                                        calldata: serde_json::to_value("hi").unwrap(),
-                                        nonce: U256::from(1),
-                                        gas_price: U256::from(0),
-                                        gas_limit: U256::from(0),
-                                    };
+        from: our.address,
+        signature: None,
+        to: "0x0000000000000000000000000000000000000000000000000000000000005678"
+            .parse()
+            .unwrap(),
+        town_id: 0,
+        calldata: serde_json::to_value("hi").unwrap(),
+        nonce: U256::from(1),
+        gas_price: U256::from(0),
+        gas_limit: U256::from(0),
+    };
     let _ = uqchain.run_batch(vec![my_txn]);
 
-    // this will be replaced with actual chain reading
-    let blockchain = std::fs::File::open("blockchain.json")
-        .expect("couldn't read from the chain lolz");
-    let json: serde_json::Value = serde_json::from_reader(blockchain)
-        .expect("blockchain.json should be proper JSON");
-    let pki = serde_json::from_value::<OnchainPKI>(json)
-        .expect("should be a list of peers");
+    // this will be replaced with a key manager module
+    let name_seed: [u8; 32] = our.address.into();
+    let networking_keypair = signature::Ed25519KeyPair::from_seed_unchecked(&name_seed).unwrap();
+    let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
+    println!("our networking public key: {}", hex_pubkey);
+    assert!(hex_pubkey == our.networking_key);
 
-    /*  we are currently running 5 I/O modules:
+    /*  we are currently running 4 I/O modules:
      *      terminal,
-     *      websocket listener,
-     *      websocket sender,
+     *      websockets,
      *      filesystem,
      *      http-server,
      *  the kernel module will handle our userspace processes and receives
@@ -108,9 +113,11 @@ async fn main() {
             http_server_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = websockets::websockets(
-            &our,
-            &pki,
+            our.clone(),
+            networking_keypair,
+            pki.clone(),
             wss_message_receiver,
+            wss_message_sender.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
         ) => { "websocket sender died".to_string() },

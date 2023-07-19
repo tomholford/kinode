@@ -130,7 +130,7 @@ async fn main() {
         _ = http_server::http_server(
             &our_name,
             http_server_receiver,
-            http_server_sender.clone(),
+            kernel_message_sender.clone(),
             print_sender.clone(),
         ) => { "http_server died".to_string() },
     };

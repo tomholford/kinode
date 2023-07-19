@@ -15,11 +15,11 @@ pub async fn http_server(
 
   tokio::join!(
     http_serve(our.clone(), gets.clone(), posts.clone(), message_tx.clone(), print_tx.clone()),
-    http_bind(gets, posts, message_rx, print_tx)
+    http_handle_messages(gets, posts, message_rx, print_tx)
   );
 }
 
-async fn http_bind(
+async fn http_handle_messages(
   gets: Arc<Mutex<HashMap<String, String>>>,
   posts: Arc<Mutex<HashMap<String, String>>>,
   mut message_rx: MessageReceiver,
@@ -111,7 +111,7 @@ async fn http_post_request(
       message_type: MessageType::Request(false),
       wire: Wire {
           source_ship: our.clone().to_string(),
-          source_app: "nowhere".to_string(),
+          source_app: "http_server".to_string(),
           target_ship: our.clone().to_string(),
           target_app: "poast".to_string() // TODO guard.get(&path).unwrap().to_string().clone(),
       },

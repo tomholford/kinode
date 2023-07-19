@@ -169,134 +169,172 @@ pub async fn ws_sender(
     peers: Peers,
     mut message_rx: MessageReceiver,
     self_message_tx: MessageSender,
-    message_tx: MessageSender,
+    kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
     while let Some(message_stack) = message_rx.recv().await {
         let stack_len = message_stack.len();
         let message = &message_stack[stack_len - 1];
-        let target = &message.wire.target_ship;
-        let message_bytes = match serde_json::to_vec(message) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = print_tx
-                    .send(format!("error serializing message: {}", e))
-                    .await;
+
+        let result = send_message(
+            &our,
+            our_url.clone(),
+            keypair.clone(),
+            pki.clone(),
+            peers.clone(),
+            message.clone(),
+            self_message_tx.clone(),
+            kernel_message_tx.clone(),
+            print_tx.clone(),
+        )
+        .await;
+
+        match result {
+            Ok(_) => {
+                // let _ = kernel_message_tx
+                //         .send(vec![Message {
+                //             message_type: MessageType::Response,
+                //             wire: Wire {
+                //                 source_ship: our.name.clone(),
+                //                 source_app: "ws".into(),
+                //                 target_ship: our.name.clone(),
+                //                 target_app: message.wire.source_app.clone(),
+                //             },
+                //             payload: Payload {
+                //                 json: Some("ack".into()),
+                //                 bytes: None,
+                //             },
+                //         }])
+                //         .await;
                 continue;
             }
-        };
+            Err(e) => {
+                let _ = print_tx.send(format!("{}", e)).await;
+                let _ = kernel_message_tx
+                    .send(vec![Message {
+                        message_type: MessageType::Response,
+                        wire: Wire {
+                            source_ship: our.name.to_string(),
+                            source_app: "ws".into(),
+                            target_ship: our.name.clone(),
+                            target_app: message.wire.source_app.clone(),
+                        },
+                        payload: Payload {
+                            json: Some("error: peer unreachable".into()),
+                            bytes: None,
+                        },
+                    }])
+                    .await;
+            }
+        }
+    }
+}
 
-        let mut edit = peers.write().await;
-        match edit.get_mut(target) {
-            Some(peer) => {
-                // we have an active connection with this peer, encrypt and send message
-                let encryption_key = peer
-                    .our_ephemeral_secret
-                    .diffie_hellman(&peer.their_ephemeral_pk);
-                let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-                let ciphertext = match cipher.encrypt(&peer.nonce, message_bytes.as_ref()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = print_tx
-                            .send(format!("error encrypting message: {}", e))
-                            .await;
-                        continue;
-                    }
-                };
-                // use existing write stream to send message
-                match peer
-                    .ws_write_stream
-                    .send(tungstenite::Message::Binary(ciphertext))
-                    .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        let _ = print_tx.send(format!("error sending card: {}", e)).await;
-                        edit.remove(target);
-                    }
+async fn send_message(
+    our: &Identity,
+    our_url: Arc<Url>,
+    keypair: Arc<Ed25519KeyPair>,
+    pki: OnchainPKI,
+    peers: Peers,
+    message: Message,
+    self_message_tx: MessageSender,
+    kernel_message_tx: MessageSender,
+    print_tx: PrintSender,
+) -> Result<(), String> {
+    let message_bytes = match serde_json::to_vec(&message) {
+        Ok(v) => v,
+        Err(e) => return Err(format!("error serializing message: {}", e)),
+    };
+
+    let mut edit = peers.write().await;
+    match edit.get_mut(&message.wire.target_ship) {
+        Some(peer) => {
+            // we have an active connection with this peer, encrypt and send message
+            let encryption_key = peer
+                .our_ephemeral_secret
+                .diffie_hellman(&peer.their_ephemeral_pk);
+            let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
+            let ciphertext = match cipher.encrypt(&peer.nonce, message_bytes.as_ref()) {
+                Ok(v) => v,
+                Err(e) => return Err(format!("error encrypting message: {}", e)),
+            };
+            // use existing write stream to send message
+            match peer
+                .ws_write_stream
+                .send(tungstenite::Message::Binary(ciphertext))
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    edit.remove(&message.wire.target_ship);
+                    return Err(format!("error: message timeout: {}", e));
                 }
             }
-            None => {
-                // we do not have an active connection, try to open a new connection
-                // then re-send the original message
-                drop(edit);
-
-                let id = match pki.get(target) {
-                    Some(v) => v,
-                    None => {
-                        let _ = print_tx.send(format!("error: {} not in PKI", target)).await;
-                        continue;
-                    }
-                };
-
-                // if their identity does not include direct websocket
-                // routing info, try to go through a router
-                let ws_url: Url = match &id.ws_routing {
-                    Some((url, port)) => Url::parse(&format!("ws://{}:{}/ws", url, port)).unwrap(),
-                    None => {
-                        let router = match id.allowed_routers.get(0) {
-                            Some(v) => v,
-                            None => {
-                                let _ = print_tx
-                                    .send(format!("error: {} has no allowed routers", target))
-                                    .await;
-                                continue;
-                            }
-                        };
-                        let router_id = match pki.get(router) {
-                            Some(v) => v,
-                            None => {
-                                let _ = print_tx
-                                    .send(format!("error: router {} not in PKI", router))
-                                    .await;
-                                continue;
-                            }
-                        };
-                        let (ws_url, ws_port) = match &router_id.ws_routing {
-                            Some((url, port)) => (url, port),
-                            None => {
-                                let _ = print_tx
-                                    .send(format!("error: router {} has no routing info", router))
-                                    .await;
-                                continue;
-                            }
-                        };
-                        Url::parse(&format!("ws://{}:{}/ws", ws_url, ws_port)).unwrap()
-                    }
-                };
-
-                match connect_async(ws_url).await {
-                    Err(e) => {
-                        let _ = print_tx
-                            .send(format!("error connecting to {}: {}", target, e))
-                            .await;
-                        // try again to send message?
-                        // TODO route this back through kernel or something?
-                    }
-                    Ok((stream, _response)) => {
-                        let conn = handle_connection(
-                            our.clone(),
-                            our_url.clone(),
-                            HandshakeOrTarget::Target(message.wire.target_ship.clone()),
-                            keypair.clone(),
-                            pki.clone(),
-                            stream,
-                            peers.clone(),
-                            message_tx.clone(),
-                            print_tx.clone(),
-                            true, // we are initiator
-                        )
-                        .await;
-                        match conn {
-                            Ok(_) => {
-                                let _ = self_message_tx.send(vec![message.clone()]).await;
-                            }
-                            Err(e) => {
-                                let _ = print_tx
-                                    .send(format!("error opening new conn: {}", e))
-                                    .await;
-                            }
+        }
+        None => {
+            // we do not have an active connection, try to open a new connection
+            // then re-send the original message
+            drop(edit);
+            let id = match pki.get(&message.wire.target_ship) {
+                Some(v) => v,
+                None => return Err(format!("error: {} not in PKI", &message.wire.target_ship)),
+            };
+            // if their identity does not include direct websocket
+            // routing info, try to go through a router
+            let ws_url: Url = match &id.ws_routing {
+                Some((url, port)) => Url::parse(&format!("ws://{}:{}/ws", url, port)).unwrap(),
+                None => {
+                    let router = match id.allowed_routers.get(0) {
+                        Some(v) => v,
+                        None => {
+                            return Err(format!(
+                                "error: {} has no allowed routers",
+                                &message.wire.target_ship
+                            ))
                         }
+                    };
+                    let router_id = match pki.get(router) {
+                        Some(v) => v,
+                        None => return Err(format!("error: router {} not in PKI", router)),
+                    };
+                    let (ws_url, ws_port) = match &router_id.ws_routing {
+                        Some((url, port)) => (url, port),
+                        None => {
+                            return Err(format!("error: router {} has no routing info", router))
+                        }
+                    };
+                    Url::parse(&format!("ws://{}:{}/ws", ws_url, ws_port)).unwrap()
+                }
+            };
+            match connect_async(ws_url).await {
+                Err(e) => {
+                    return Err(format!(
+                        "error connecting to {}: {}",
+                        &message.wire.target_ship, e
+                    ));
+                    // try again to send message?
+                    // TODO route this back through kernel or something?
+                }
+                Ok((stream, _response)) => {
+                    let conn = handle_connection(
+                        our.clone(),
+                        our_url.clone(),
+                        HandshakeOrTarget::Target(message.wire.target_ship.clone()),
+                        keypair.clone(),
+                        pki.clone(),
+                        stream,
+                        peers.clone(),
+                        kernel_message_tx.clone(),
+                        print_tx.clone(),
+                        true, // we are initiator
+                    )
+                    .await;
+                    match conn {
+                        Ok(_) => {
+                            let _ = self_message_tx.send(vec![message.clone()]).await;
+                            return Ok(());
+                        }
+                        Err(e) => return Err(format!("error opening new conn: {}", e)),
                     }
                 }
             }
@@ -488,9 +526,6 @@ async fn handle_connection(
             .is_ok())
     {
         // improper signatures on identity info, close connection
-        let _ = print_tx
-            .send(format!("invalid peer: {}", handshake.from.0))
-            .await;
         return Err("got improperly signed networking info".into());
     }
 

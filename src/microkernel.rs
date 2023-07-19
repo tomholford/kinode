@@ -422,10 +422,9 @@ async fn make_process_manager_loop(
                                     payload: Payload {
                                         json: Some(
                                             serde_json::to_value(
-                                                FileSystemCommand {
-                                                    uri_string: start.wasm_bytes_uri.clone(),
-                                                    command: FileSystemAction::Read,
-                                                }
+                                                FileSystemRequest::Read(
+                                                    start.wasm_bytes_uri.clone()
+                                                )
                                             ).unwrap()
                                         ),
                                         bytes: None,

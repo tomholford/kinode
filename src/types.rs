@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 use serde::{Serialize, Deserialize};
+use thiserror::Error;
 
 use ethers::prelude::*;
 
@@ -27,7 +28,7 @@ pub struct AppNode {
     pub app: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Wire {
     pub source_ship: String,
     pub source_app:  String,
@@ -35,64 +36,31 @@ pub struct Wire {
     pub target_app:  String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub message_type: MessageType,
     pub wire: Wire,
     pub payload: Payload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum MessageType {
     Request(bool),
     Response,
 }
 
-impl Clone for MessageType {
-    fn clone(&self) -> MessageType {
-        match self {
-            MessageType::Request(is_expecting_response) => {
-                MessageType::Request(is_expecting_response.clone())
-            },
-            MessageType::Response => MessageType::Response,
-        }
-    }
-}
-
-impl Clone for Wire {
-    fn clone(&self) -> Wire {
-        Wire {
-            source_ship: self.source_ship.clone(),
-            source_app: self.source_app.clone(),
-            target_ship: self.target_ship.clone(),
-            target_app: self.target_app.clone(),
-        }
-    }
-}
-
-impl Clone for Payload {
-    fn clone(&self) -> Payload {
-        Payload {
-            json: self.json.clone(),
-            bytes: self.bytes.clone(),
-        }
-    }
-}
-
-impl Clone for Message {
-    fn clone(&self) -> Message {
-        Message {
-            message_type: self.message_type.clone(),
-            wire: self.wire.clone(),
-            payload: self.payload.clone(),
-        }
-    }
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum NetworkingError {
+    #[error("Peer is offline or otherwise unreachable")]
+    PeerOffline,
+    #[error("Message delivery failed due to timeout")]
+    MessageTimeout
 }
 
 pub type MessageStack = Vec<Message>;

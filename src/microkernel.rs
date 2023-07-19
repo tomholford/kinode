@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
+use tokio::fs;
 use serde::{Serialize, Deserialize};
 
 use crate::types::*;
@@ -635,7 +636,6 @@ async fn make_process_manager_loop(
     )
 }
 
-
 async fn handle_kernel_request(
     our_name: String,
     stack_len: usize,
@@ -853,6 +853,7 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: &Identity,
+    process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -879,6 +880,31 @@ pub async fn kernel(
             engine,
         ).await
     );
+
+    let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
+    let start_process_manager_message: MessageStack = vec![
+        Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "process_manager".to_string(),
+                            wasm_bytes_uri: process_manager_wasm_path,
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(process_manager_wasm_bytes),
+            },
+        },
+    ];
+    send_to_loop.send(start_process_manager_message).await.unwrap();
 
     let process_manager_handle = tokio::spawn(
         make_process_manager_loop(

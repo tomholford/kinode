@@ -43,14 +43,14 @@ cd ..
 ## Example usage
 ```bash
 # Terminal A: add some test apps to process_manager and run a simple test
-cargo r tuna
+cargo r process_manager.wasm tuna
 !message tuna process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm", "is_long_running_process": true}
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "is_long_running_process": true}
 !message tuna poast "poast from tuna terminal"
 
 # Terminal B: While A is still running, run the same poast command remotely, then add hi++ to process_manager
-cargo r dolph
+cargo r process_manager.wasm dolph
 !message dolph process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm", "is_long_running_process": true}
 !message tuna poast "poast from tuna terminal"
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "is_long_running_process": true}

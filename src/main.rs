@@ -27,7 +27,8 @@ async fn main() {
     // console_subscriber::init();
 
     let args: Vec<String> = env::args().collect();
-    let our_name: String = args[1].clone();
+    let process_manager_wasm_path = args[1].clone();
+    let our_name: String = args[2].clone();
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -99,6 +100,7 @@ async fn main() {
         },
         _ = microkernel::kernel(
             &our,
+            process_manager_wasm_path,
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,

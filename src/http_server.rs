@@ -99,12 +99,7 @@ async fn http_post_request(
   message_tx: MessageSender, print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
   // Here we handle the POST request.
-  // You can process the `data` as needed and add it to the `posts` HashMap if required.
-  // For example:
-  // posts.lock().await.insert("key".to_string(), data.clone());
-  print_tx.send("IN HTTP_POST_REQEST".to_string()).await;
-  print_tx.send(data.to_string()).await;
-  // let message: Message = serde_json::from_value(data.clone()).expect("Failed to deserialize into Message");
+
   // let guard = posts.lock().unwrap();
 
   let message = Message {
@@ -113,7 +108,7 @@ async fn http_post_request(
           source_ship: our.clone().to_string(),
           source_app: "http_server".to_string(),
           target_ship: our.clone().to_string(),
-          target_app: "poast".to_string() // TODO guard.get(&path).unwrap().to_string().clone(),
+          target_app: "poast".to_string() // guard.get(&path).unwrap().to_string().clone(),
       },
       payload: Payload {
           json: Some(data),
@@ -123,5 +118,7 @@ async fn http_post_request(
 
   message_tx.send(vec![message]).await.unwrap();
 
+  // TODO actually have to let the app generate the response, which means
+  // waiting for a response in the event loop...kind of annoying...
   Ok(warp::reply::json(&"Message sent successfully"))
 }

@@ -464,7 +464,6 @@ async fn make_event_loop(
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
     send_to_http: MessageSender,
-    send_to_process_manager: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -472,7 +471,6 @@ async fn make_event_loop(
         async move {
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
-            senders.insert("process_manager".to_string(), send_to_process_manager.clone());
             senders.insert("http_server".to_string(), send_to_http.clone());
 
             let mut process_handles: ProcessHandles = HashMap::new();
@@ -574,7 +572,6 @@ pub async fn kernel(
             send_to_wss,
             send_to_fs,
             send_to_http,
-            send_to_process_manager,
             send_to_terminal.clone(),
             engine,
         ).await

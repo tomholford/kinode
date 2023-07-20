@@ -110,6 +110,7 @@ pub enum FileSystemAction {
     OpenRead,
     OpenWrite,
     Append,
+    ComputeHash,
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
 }

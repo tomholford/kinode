@@ -2,6 +2,8 @@ use anyhow::Result;
 use bytes::Bytes;
 use http::Uri;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::fs;
@@ -325,6 +327,32 @@ async fn handle_request(
             Payload {
                 json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
+            }
+        },
+        FileSystemAction::ComputeHash => {
+            //  TODO: use read_exact()?
+            let file_contents = fs::read(&file_path).await?;
+
+            let mut hasher = Sha256::new();
+            hasher.update(&file_contents);
+            let hash = hasher.finalize();
+            //  truncate
+            let hash = u64::from_be_bytes([
+                hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
+            ]);
+
+            let _ = print_tx.send(
+                format!(
+                    "filesystem: got file at {} of size {} with hash {:x}",
+                    file_path,
+                    file_contents.len(),
+                    hash,
+                    )
+            ).await;
+
+            Payload {
+                json: Some(json![{"uri_string": request.uri_string, "hash": hash}]),  //  TODO: error propagation to caller
+                bytes: Some(file_contents),
             }
         },
         FileSystemAction::ReadChunkFromOpen(number_bytes) => {

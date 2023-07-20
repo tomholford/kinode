@@ -24,7 +24,7 @@ interface types {
         target-app: string,
     }
 
-    variant wit-message-type-with-target {
+    variant wit-protomessage-type {
         request(wit-request-type-with-target),
         response,
     }
@@ -34,26 +34,26 @@ interface types {
         wire: wit-wire,
         payload: wit-payload,
     }
+
+    record wit-protomessage {
+        protomessage-type: wit-protomessage-type,
+        payload: wit-payload,
+    }
 }
 
 world microkernel-process {
-    // use types.{wit-wire, wit-message-type, wit-payload, wit-message, wit-request-type-with-target, wit-message-type-with-target}
     use types.{
         wit-wire,
         wit-message-type,
         wit-payload,
         wit-message,
         wit-request-type-with-target,
-        wit-message-type-with-target,
+        wit-protomessage-type,
+        wit-protomessage,
     }
 
-    // import to-event-loop: func(target-ship: string, target-app: string, message-type: wit-message-type, payload: wit-payload)
-    import modify-state: func(json-pointer: string, new-value: string) -> string
-    import fetch-state: func(json-pointer: string) -> string
-    import set-state: func(json: string) -> string
     import print-to-terminal: func(message: string)
-    export init: func(source-ship: string, source-app: string) -> list<wit-message>
-    export run-write: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type-with-target, wit-payload>>
-    export handle-response: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type-with-target, wit-payload>>
-    export run-read: func(message-stack: list<wit-message>) -> list<tuple<wit-message-type, wit-payload>>  //  must be response
+    import yield-results: func(results: list<wit-protomessage>)
+    import await-next-message: func() -> list<wit-message>
+    export run-process: func(our-name: string, process-name: string)
 }

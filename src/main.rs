@@ -21,6 +21,8 @@ const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() {
     // For use with https://github.com/tokio-rs/console
@@ -93,6 +95,7 @@ async fn main() {
     let quit: String = tokio::select! {
         term = terminal::terminal(
             &our,
+            VERSION,
             kernel_message_sender.clone(),
             print_receiver,
         ) => match term {
@@ -124,5 +127,5 @@ async fn main() {
         ) => { "".to_string() },
     };
 
-    println!("\x1b[1;31m{}\x1b[0m", quit);
+    println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

@@ -48,7 +48,6 @@ cargo r process_manager.wasm tuna
 
 # Terminal B: While A is still running, run the same poast command remotely, then add hi++ to process_manager
 cargo r process_manager.wasm dolph
-!message dolph process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm"}
 !message tuna poast "poast from tuna terminal"
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 

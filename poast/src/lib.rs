@@ -1,85 +1,69 @@
-use serde_json::json;
-use bindings::component::microkernel_process::types::*;
+use bindings::component::microkernel_process::types::WitProtomessageType;
+use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
+use bindings::component::microkernel_process::types::WitPayload;
 
 struct Component;
 
-/*
-    After installing this app, you can perform a GET request at /poast
-    Or you can send a POST request to /poast and this app will print it out
-*/
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(source_ship: String, source_app: String) -> Vec<bindings::WitMessage> {
-        bindings::set_state(serde_json::to_string(&json!([])).unwrap().as_str());
-        vec![
-            // accent GETs at /poast
-            WitMessage {
-                message_type: WitMessageType::Request(false),
-                wire: WitWire {
-                    source_ship: source_ship.clone(),
-                    source_app:  source_app.clone(),
-                    target_ship: source_ship.clone(),
-                    target_app:  "http_server".to_string(),
-                },
-                payload: WitPayload {
-                    json: Some(json!({
-                        "SetResponse":
-                            {
-                                "path":"poast",
-                                "content":"<h1>welcome to poast</h1>"
-                            }
+    fn run_process(our: String, dap: String) {
+        bindings::print_to_terminal("poast: start");
+        bindings::yield_results(
+            vec![
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: our.as_str(),
+                            target_app: "http_server",
                         }
-                    ).to_string()),
-                    bytes: None
-                }
-            },
-            // accept POSTs at /poast
-            WitMessage {
-                message_type: WitMessageType::Request(false),
-                wire: WitWire {
-                    source_ship: source_ship.clone(),
-                    source_app:  source_app,
-                    target_ship: source_ship.clone(),
-                    target_app:  "http_server".to_string(),
-                },
-                payload: WitPayload {
-                    json: Some(json!({
-                        "Connect":
-                            {
-                                "path":"poast",
-                                "app":"poast"
+                    ),
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "SetResponse":
+                                {
+                                    "path":"poast",
+                                    "content":"<h1>welcome to poast</h1>"
+                                }
                             }
+                        ).to_string()),
+                        bytes: None
+                    }
+                },
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: our.as_str(),
+                            target_app: "http_server",
                         }
-                    ).to_string()),
-                    bytes: None
-                }
-            }
-        ]
-    }
+                    ),
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "Connect":
+                                {
+                                    "path": "poast",
+                                    "app": dap
+                                }
+                            }
+                        ).to_string()),
+                        bytes: None
+                    }
 
-    fn run_write(
-        mut message_stack: Vec<bindings::WitMessage>
-    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
-        let message = message_stack.pop().unwrap();
+                },
+            ].as_slice()
+        );
 
-        let Some(message_from_loop) = message.payload.json else {
-            panic!("foo")
-        };
-        bindings::print_to_terminal(format!("Received a POST request: {}", &message_from_loop).as_str());
-        vec![]
-    }
-
-    fn run_read(
-        _message_stack: Vec<bindings::WitMessage>
-    ) -> Vec<(bindings::WitMessageType, bindings::WitPayload)> {
-        vec![]
-    }
-
-    fn handle_response(
-        _message_stack: Vec<bindings::WitMessage>
-    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
-        bindings::print_to_terminal("in take");
-        vec![]
+        loop {
+            let mut message_stack = bindings::await_next_message();
+            let message = message_stack.pop().unwrap();
+            let Some(message_from_loop_string) = message.payload.json else {
+                panic!("foo")
+            };
+            let message_from_loop: serde_json::Value =
+                serde_json::from_str(&message_from_loop_string).unwrap();
+            bindings::print_to_terminal(format!("poast: got POST request: {}", message_from_loop).as_str())
+        }
     }
 }
 

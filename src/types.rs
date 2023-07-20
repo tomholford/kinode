@@ -107,13 +107,7 @@ pub enum FileSystemRequest {
     AlterReadPermissions(Vec<String>)
 }
 
-// http types
-//
-// TODO this is way too basic
-// what actions do we want here?
-//   - set-response
-//   - connect to an app, let it handle everything related to it
-//   
+// http commands
 //
 #[derive(Debug, Serialize, Deserialize)]
 pub enum HttpServerCommand {
@@ -128,7 +122,7 @@ pub struct SetResponseFields {
     pub content: String,
 }
 
-// 
+// all incoming payloads to http://<url>/<path> will get sent to app
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectAppFields {
     pub path: String,

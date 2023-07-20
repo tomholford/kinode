@@ -28,7 +28,6 @@ async fn http_handle_messages(
   while let Some(message_stack) = message_rx.recv().await {
     let stack_len = message_stack.len();
     let message = message_stack[stack_len - 1].clone();
-    let _ = print_tx.send(format!("in http_server message => {:?}", message)).await;
     
     let Some(value) = message.payload.json.clone() else {
       panic!("http_server: request must have JSON payload, got: {:?}", message);

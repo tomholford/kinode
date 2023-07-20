@@ -68,8 +68,11 @@ async fn http_serve(
     .and(warp::any().map(move || posts.clone()))
     .and(warp::any().map(move || message_tx.clone()))
     .and(warp::any().map(move || print_tx.clone()))
-    .and_then(http_post_request);
-  
+    .and_then(|path, data, our, posts: Arc<Mutex<HashMap<String, String>>>, message_tx, print_tx| async move {
+      let target_app = posts.lock().unwrap().get(&path).unwrap().to_string();
+
+      http_post_request(path, data, our, target_app, message_tx, print_tx).await
+  });  
   let filter = get_filter.or(post_filter);
 
   warp::serve(filter).run(([127, 0, 0, 1], 3030)).await;
@@ -90,17 +93,15 @@ async fn http_get_request(path: String, map: Arc<Mutex<HashMap<String, String>>>
   }
 }
 
-// TODO send message to app
 async fn http_post_request(
   path: String,
   data: serde_json::Value,
   our: String,
-  posts: Arc<Mutex<HashMap<String, String>>>,
+  target_app: String,
   message_tx: MessageSender, print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
   // Here we handle the POST request.
 
-  // let guard = posts.lock().unwrap();
 
   let message = Message {
       message_type: MessageType::Request(false),
@@ -108,7 +109,7 @@ async fn http_post_request(
           source_ship: our.clone().to_string(),
           source_app: "http_server".to_string(),
           target_ship: our.clone().to_string(),
-          target_app: "poast".to_string() // guard.get(&path).unwrap().to_string().clone(),
+          target_app: target_app,
       },
       payload: Payload {
           json: Some(data),

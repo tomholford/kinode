@@ -71,5 +71,5 @@ After booting poast using the commands above, run
 curl -X POST \
      -H "Content-Type: application/json" \
      -d '{"foo": "bar" }' \
-     http://127.0.0.1:3030/poast
+     http://127.0.0.1:8080/poast
 ```

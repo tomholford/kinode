@@ -41,19 +41,22 @@ cd ..
 - `!quit`, `!exit`: kill the server
 
 ## Example usage
-```bash
-# Terminal A: add some test apps to process_manager and run a simple test
-cargo r process_manager.wasm tuna
-!message tuna process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm"}
-!message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
-!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
-!message tuna poast "poast from tuna terminal"
 
-# Terminal B: While A is still running, run the same poast command remotely, then add hi++ to process_manager
-cargo r process_manager.wasm dolph
-!message dolph process_manager {"type": "Start", "process_name": "http_server", "wasm_bytes_uri": "fs://http_server.wasm"}
-!message tuna poast "poast from tuna terminal"
-!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
+```bash
+# Create tuna and dolph home directories, and populate them:
+mkdir home
+mkdir home/tuna
+mkdir home/dolph
+cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/tuna
+cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/dolph
+
+# Terminal A: add hi++ apps to process_manager
+cargo r process_manager.wasm home/tuna tuna
+!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm"}
+
+# Terminal B: While A is still running add hi++ to process_manager
+cargo r process_manager.wasm home/dolph dolph
+!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/dolph/hi_lus_lus.wasm"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
 !message dolph hi_lus_lus {"target": "tuna", "action": "send", "contents": "hello from dolph"}
@@ -62,11 +65,11 @@ cargo r process_manager.wasm dolph
 !message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 
 # Terminal A: Stopping a process means messages will no longer work:
-!message tuna process_manager {"type": "Stop", "process_name": "poast"}
-!message tuna poast "hello from tuna terminal"
+!message tuna process_manager {"type": "Stop", "process_name": "hi_lus_lus"}
+!message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 
 # Terminal A: However, restarting a process will reset its state and messages will work since the process is running again:
-!message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
-!message tuna process_manager {"type": "Restart", "process_name": "poast"}
-!message tuna poast "hello from tuna terminal"
+!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm"}
+!message tuna process_manager {"type": "Restart", "process_name": "hi_lus_lus"}
+!message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 ```

@@ -1,28 +1,149 @@
+use anyhow::Result;
+use bytes::Bytes;
 use http::Uri;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::RwLock;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::sync::Mutex;
+// use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Error;
 
 use crate::types::*;
 
+lazy_static::lazy_static! {
+    static ref HAS_FULL_HOME_ACCESS: HashSet<String> = vec![
+        "filesystem".to_string(),
+        "kernel".to_string(),
+        "process_manager".to_string(),
+        "terminal".to_string(),
+    ].into_iter().collect();
+}
+
+#[derive(Eq, Hash, PartialEq)]
+enum FileMode {
+    Read,
+    Append,
+}
+#[derive(Eq, Hash, PartialEq)]
+struct FileRef {
+    path: String,
+    mode: FileMode,
+}
+
+async fn create_dir_if_dne(path: &str) -> Result<()> {
+    if let Err(_) = fs::read_dir(&path).await {
+        fs::create_dir_all(&path).await?;
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
+async fn get_file_path(uri_string: &str) -> String {
+    let uri = uri_string.parse::<Uri>().unwrap();
+    if Some("fs") != uri.scheme_str() {
+        panic!("filesystem: uri scheme must be uri, got: {:?}", uri.scheme_str());
+    }
+    let mut relative_file_path = uri.host().unwrap().to_string();
+    relative_file_path.push_str(uri.path());
+    fs::canonicalize(relative_file_path)
+        .await
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn make_sandbox_dir_path(home_directory_path: &str, source_app: &str) -> String {
+    std::path::Path::new(home_directory_path)
+        .join(source_app)
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn get_file_bytes_left(file: &mut fs::File) -> Result<u64> {
+    let current_pos = file.stream_position().await?;
+    let metadata = file.metadata().await?;
+
+    Ok(metadata.len() - current_pos)
+}
+
 pub async fn fs_sender(
     our_name: &str,
+    home_directory_path: &str,
     send_to_loop: MessageSender,
     print_tx: PrintSender,
     mut recv_in_fs: MessageReceiver
 ) {
-    //  TODO: store or back up in DB/kv?
-    let read_access_by_node: Arc<RwLock<HashMap<String, HashSet<String>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-    while let Some(message) = recv_in_fs.recv().await {
+    if let Err(e) = create_dir_if_dne(home_directory_path).await {
+        panic!(
+            "filesystem: failed to create home directory at path {}: {}",
+            home_directory_path,
+            e
+        );
+    }
+    let home_directory_path = fs::canonicalize(home_directory_path)
+        .await
+        .unwrap();
+    let home_directory_path = home_directory_path
+        .to_str()
+        .unwrap();
+
+    let mut process_to_open_files: HashMap<String, Arc<Mutex<HashMap<FileRef, fs::File>>>> =
+        HashMap::new();
+            //Arc::new(RwLock::new(HashMap::new()));
+
+    // //  TODO: store or back up in DB/kv?
+    while let Some(message_stack) = recv_in_fs.recv().await {
+        let stack_len = message_stack.len();
+        let source_ship = &message_stack[stack_len - 1].wire.source_ship;
+        let source_app = &message_stack[stack_len - 1].wire.source_app;
+        if our_name != source_ship {
+            println!(
+                "filesystem: request must come from our_name={}, got: {}",
+                our_name,
+                &message_stack[stack_len - 1],
+            );
+            continue;
+        }
+        let open_files = Arc::clone(
+            match process_to_open_files.get(source_app) {
+                Some(open_files) => open_files,
+                None => {
+                    //  create process sandbox directory
+                    if !HAS_FULL_HOME_ACCESS.contains(source_app) {
+                        let sandbox_dir_path = make_sandbox_dir_path(
+                            home_directory_path,
+                            source_app,
+                        );
+                        if let Err(e) = create_dir_if_dne(&sandbox_dir_path).await {
+                            panic!(
+                                "filesystem: failed to create process sandbox directory at path {}: {}",
+                                sandbox_dir_path,
+                                e,
+                            );
+                        }
+                    }
+
+                    //  create open_files entry
+                    process_to_open_files.insert(
+                        source_app.to_string(),
+                        Arc::new(Mutex::new(HashMap::new())),
+                    );
+                    process_to_open_files.get(source_app).unwrap()
+                },
+            }
+        );
         tokio::spawn(
             handle_request(
                 our_name.to_string(),
-                message,
-                Arc::clone(&read_access_by_node),
+                home_directory_path.to_string(),
+                message_stack,
+                open_files,
+                // Arc::clone(&read_access_by_node),
                 send_to_loop.clone(),
                 print_tx.clone()
             )
@@ -30,19 +151,12 @@ pub async fn fs_sender(
     }
 }
 
-fn get_file_path(uri_string: &str) -> String {
-    let uri = uri_string.parse::<Uri>().unwrap();
-    if Some("fs") != uri.scheme_str() {
-        panic!("filesystem: uri scheme must be uri, got: {:?}", uri.scheme_str());
-    }
-    uri.host().unwrap().to_string()
-}
-
 //  TODO: error handling: should probably send error messages to caller
 async fn handle_request(
     our_name: String,
+    home_directory_path: String,
     mut messages: MessageStack,
-    read_access_by_node: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) -> Result<(), Error> {
@@ -57,29 +171,36 @@ async fn handle_request(
     };
 
     let request: FileSystemRequest = serde_json::from_value(value).unwrap();
-    let source_ship = message.wire.source_ship.clone();
 
-    let response_payload = match request {
-        FileSystemRequest::Read(uri_string) => {
-            let file_path = get_file_path(&uri_string);
-            if our_name != source_ship {
-                let read_access_by_node = read_access_by_node.read().await;
-                let Some(allowed_files) = read_access_by_node.get(&source_ship) else {
-                    panic!(
-                        "filesystem: node {} not allowed to Read any files, got: {:?}",
-                        source_ship,
-                        message,
-                    );
-                };
-                if !allowed_files.contains(&file_path) {
-                    panic!(
-                        "filesystem: node {} not allowed to Read {}, got: {:?}",
-                        source_ship,
-                        file_path,
-                        message,
-                    );
-                }
-            }
+    let source_app = &message.wire.source_app;
+    let file_path = get_file_path(&request.uri_string).await;
+    if HAS_FULL_HOME_ACCESS.contains(source_app) {
+        if !std::path::Path::new(&file_path).starts_with(&home_directory_path) {
+            panic!(
+                "filesystem: {} can only read files within home dir {}; not {}",
+                source_app,
+                home_directory_path,
+                file_path,
+            );
+        }
+    } else {
+        let sandbox_dir_path = make_sandbox_dir_path(
+            &home_directory_path,
+            source_app,
+        );
+        if !std::path::Path::new(&file_path).starts_with(&sandbox_dir_path) {
+            panic!(
+                "filesystem: {} can only read files within process sandbox dir {}; not {}",
+                source_app,
+                sandbox_dir_path,
+                file_path,
+            );
+        }
+    }
+
+    let response_payload = match request.action {
+        FileSystemAction::Read => {
+            //  TODO: use read_exact()?
             let file_contents = fs::read(&file_path).await?;
             let _ = print_tx.send(
                 format!(
@@ -90,82 +211,188 @@ async fn handle_request(
             ).await;
 
             Payload {
-                json: Some(json![{"uri_string": uri_string}]),  //  TODO: error propagation to caller
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: Some(file_contents),
             }
         },
-        FileSystemRequest::Write(uri_string) => {
-            if our_name != source_ship {
-                panic!("filesystem: Write request must come from our_name={}, got: {:?}", our_name, message);
-            }
+        FileSystemAction::Write => {
             let Some(payload_bytes) = message.payload.bytes.clone() else {
                 panic!("filesystem: received Write without any bytes to append");  //  TODO: change to an error response once responses are real
             };
 
-            let file_path = get_file_path(&uri_string);
-
             fs::write(&file_path, &payload_bytes).await?;
 
             Payload {
-                json: Some(json![{"uri_string": uri_string}]),  //  TODO: error propagation to caller
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },
-        FileSystemRequest::Append(uri_string) => {
-            if our_name != source_ship {
-                panic!(
-                    "filesystem: Append request must come from our_name={}, got: {:?}",
-                    our_name,
-                    message
-                );
-            }
-            let Some(mut payload_bytes) = message.payload.bytes.clone() else {
-                panic!("filesystem: received Append without any bytes to append");  //  TODO: change to an error response once responses are real
+        FileSystemAction::OpenRead => {
+            //  TODO: refactor shared code with OpenWrite
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: FileMode::Read,
             };
+            {
+                let open_files_lock = open_files.lock().await;
+                if open_files_lock.contains_key(&file_ref) {
+                    panic!("filesystem: already have {} open for Read", file_path);
+                }
+            }
 
-            let file_path = get_file_path(&uri_string);
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .open(&file_path)
+                .await;
 
-            let mut file_contents = fs::read(&file_path).await?;
-            let _ = print_tx.send(
-                format!(
-                    "filesystem: got file at {} of size {}",
+            match file {
+                Ok(file) => {
+                    {
+                        let mut open_files_lock = open_files.lock().await;
+                        open_files_lock.insert(file_ref, file);
+                    }
+
+                    Payload {
+                        json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                        bytes: None,
+                    }
+                },
+                Err(e) => {
+                    panic!("filesystem: failed to open file {} for Read: {}", file_path, e);
+                },
+            }
+        },
+        FileSystemAction::OpenWrite => {
+            //  TODO: refactor shared code with OpenRead
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: FileMode::Append,
+            };
+            {
+                let open_files_lock = open_files.lock().await;
+                if open_files_lock.contains_key(&file_ref) {
+                    panic!("filesystem: already have {} open for Append", file_path);
+                }
+            }
+
+            let file = fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&file_path)
+                .await;
+
+            match file {
+                Ok(file) => {
+                    {
+                        let mut open_files_lock = open_files.lock().await;
+                        open_files_lock.insert(file_ref, file);
+                    }
+
+                    Payload {
+                        json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                        bytes: None,
+                    }
+                },
+                Err(e) => {
+                    panic!("filesystem: failed to open file {} for Append: {}", file_path, e);
+                },
+            }
+        },
+        FileSystemAction::Append => {
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: FileMode::Append,
+            };
+            let mut open_files_lock = open_files.lock().await;
+            let file = open_files_lock
+                .get_mut(&file_ref)
+                .expect(format!(
+                    "filesystem: didn't find open file for Append: {}",
                     file_path,
-                    file_contents.len()
-                    )
-            ).await;
+                ).as_str());
+            let payload_bytes = message
+                .payload
+                .bytes
+                .clone()
+                .expect("filesystem: received Append without any bytes to append");
 
-            file_contents.append(&mut payload_bytes);
-
-            fs::write(file_path, &file_contents).await?;
+            file.write_all_buf(&mut Bytes::from(payload_bytes))
+                .await
+                .expect(
+                    format!("filesystem: failed to write all bytes to {}", file_path).as_str()
+                );
 
             Payload {
-                json: Some(json![{"uri_string": uri_string}]),  //  TODO: error propagation to caller
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },
-        FileSystemRequest::AlterReadPermissions(uri_strings) => {
-            let mut read_access_by_node = read_access_by_node.write().await;
-            let mut allowed_files: HashSet<String> = match read_access_by_node.remove(&source_ship) {
-                Some(allowed_files) => allowed_files,
-                None => HashSet::new(),
+        FileSystemAction::ReadChunkFromOpen(number_bytes) => {
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: FileMode::Read,
             };
+            let mut open_files_lock = open_files.lock().await;
+            let file = open_files_lock
+                .get_mut(&file_ref)
+                .expect(format!(
+                    "filesystem: didn't find open file for ReadChunkFromOpen: {}",
+                    file_path,
+                ).as_str());
 
-            for uri_string in &uri_strings {
-                let file_path = get_file_path(uri_string);
-                allowed_files.insert(file_path.to_string());
+            let number_bytes_left = get_file_bytes_left(file)
+                .await
+                .expect("filesystem: couldn't determine number of bytes left in file");
+
+            let number_bytes_to_read =
+                if number_bytes_left < number_bytes {
+                    number_bytes_left
+                } else {
+                    number_bytes
+                } as usize;
+
+            let mut bytes: Vec<u8> = vec![0; number_bytes_to_read];
+
+            file.read_exact(&mut bytes)
+                .await
+                .expect(
+                    format!("filesystem: failed to read bytes from {}", file_path).as_str()
+                );
+
+            Payload {
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                bytes: Some(bytes),
+            }
+        },
+        FileSystemAction::SeekWithinOpen(seek_from) => {
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: FileMode::Read,
+            };
+            let mut open_files_lock = open_files.lock().await;
+            let file = open_files_lock
+                .get_mut(&file_ref)
+                .expect(format!(
+                    "filesystem: didn't find open file for ReadChunkFromOpen: {}",
+                    file_path,
+                ).as_str());
+
+            if let Err(e) = match seek_from {
+                FileSystemSeekFrom::Start(delta) => {
+                    file.seek(SeekFrom::Start(delta)).await
+                },
+                FileSystemSeekFrom::End(delta) => {
+                    file.seek(SeekFrom::End(delta)).await
+                },
+                FileSystemSeekFrom::Current(delta) => {
+                    file.seek(SeekFrom::Current(delta)).await
+                },
+            } {
+                panic!("filesystem: failed to seek in {}: {}", file_path, e);
             }
 
-            read_access_by_node.insert(source_ship.clone(), allowed_files);
-
-            let mut file_paths: Vec<String> = read_access_by_node
-                .get(&source_ship)
-                .unwrap()
-                .iter()
-                .cloned()
-                .collect();
-            file_paths.sort();
             Payload {
-                json: Some(json![{"file_paths": file_paths}]),
+                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },

@@ -9,8 +9,10 @@ edition = "2021"
 anyhow = "1.0.71"
 async-std = "*"
 async-trait = "0.1.71"
+bytes = "1.4.0"
 futures = { version = "0.3", default-features = false }
 http = "0.2.9"
+lazy_static = "1.4.0"
 log = "*"
 rs_merkle = { version = "1.4", default-features = false }
 rustyline-async = "*"

@@ -99,9 +99,24 @@ pub enum Command {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemRequest {
-    Read(String),
-    Write(String),
-    Append(String),
-    AlterReadPermissions(Vec<String>)
+pub struct FileSystemRequest {
+    pub uri_string: String,
+    pub action: FileSystemAction,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemAction {
+    Read,
+    Write,
+    OpenRead,
+    OpenWrite,
+    Append,
+    ReadChunkFromOpen(u64),
+    SeekWithinOpen(FileSystemSeekFrom),
+}
+//  copy of std::io::SeekFrom with Serialize/Deserialize
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemSeekFrom {
+    Start(u64),
+    End(i64),
+    Current(i64),
 }

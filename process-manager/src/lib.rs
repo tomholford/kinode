@@ -30,11 +30,26 @@ struct ProcessManagerRestart {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemRequest {
-    Read(String),
-    Write(String),
-    Append(String),
-    AlterReadPermissions(Vec<String>)
+pub struct FileSystemRequest {
+    pub uri_string: String,
+    pub action: FileSystemAction,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemAction {
+    Read,
+    Write,
+    OpenRead,
+    OpenWrite,
+    Append,
+    ReadChunkFromOpen(u64),
+    SeekWithinOpen(FileSystemSeekFrom),
+}
+//  copy of std::io::SeekFrom with Serialize/Deserialize
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemSeekFrom {
+    Start(u64),
+    End(i64),
+    Current(i64),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -174,9 +189,10 @@ impl bindings::MicrokernelProcess for Component {
                                 payload: &WitPayload {
                                     json: Some(
                                         serde_json::to_string(
-                                            &FileSystemRequest::Read(
-                                                start.wasm_bytes_uri.clone()
-                                            )
+                                            &FileSystemRequest {
+                                                uri_string: start.wasm_bytes_uri.clone(),
+                                                action: FileSystemAction::Read,
+                                            }
                                         ).unwrap()
                                     ),
                                     bytes: None,

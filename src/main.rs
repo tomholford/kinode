@@ -28,7 +28,8 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
     let process_manager_wasm_path = args[1].clone();
-    let our_name: String = args[2].clone();
+    let home_directory_path = &args[2];
+    let our_name: String = args[3].clone();
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -118,6 +119,7 @@ async fn main() {
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,
+            home_directory_path,
             kernel_message_sender.clone(),
             print_sender.clone(),
             fs_message_receiver

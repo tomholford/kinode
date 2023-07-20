@@ -99,9 +99,6 @@ async fn http_post_request(
   target_app: String,
   message_tx: MessageSender, print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
-  // Here we handle the POST request.
-
-
   let message = Message {
       message_type: MessageType::Request(false),
       wire: Wire {

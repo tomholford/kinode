@@ -44,11 +44,9 @@ cd ..
 cargo r process_manager.wasm tuna
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
-!message tuna poast "poast from tuna terminal"
 
 # Terminal B: While A is still running, run the same poast command remotely, then add hi++ to process_manager
 cargo r process_manager.wasm dolph
-!message tuna poast "poast from tuna terminal"
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
@@ -67,12 +65,11 @@ cargo r process_manager.wasm dolph
 !message tuna poast "hello from tuna terminal"
 ```
 
-
-# http-server actions
-```
-// bind some data to an endpoint (GETs)
-!message tuna http_server {"SetResponse":{"path":"test","content":"<h1>hello world</h1>"}}
-// connect an app (POSTs)
-!message tuna http_server {"Connect": {"path":"meme","app":"poast"}}
-
+## Sending a `POST` request to `poast`
+After booting poast using the commands above, run
+```bash
+curl -X POST \
+     -H "Content-Type: application/json" \
+     -d '{"foo": "bar" }' \
+     http://127.0.0.1:3030/poast
 ```

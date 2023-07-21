@@ -116,13 +116,14 @@ pub enum HttpServerCommand {
 }
 
 // set a static http response
+// TODO you don't actually need this...could remove...
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetResponseFields {
     pub path: String,
     pub content: String,
 }
 
-// all incoming payloads to http://<url>/<path> will get sent to app
+// all incoming requests to http://<url>/<path> will get sent to app
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConnectAppFields {
     pub path: String,

@@ -2,6 +2,7 @@ use crate::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use warp::{Reply, Filter};
+use serde_json::{json, Map, Value};
 
 /// http driver
 pub async fn http_server(
@@ -55,67 +56,64 @@ async fn http_serve(
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
-  let get_filter = warp::path!(String)
-    .and(warp::get())
-    .and(warp::any().map(move || gets.clone()))
-    .and_then(http_get_request);
-
-  let post_filter = warp::path!(String)
-    .and(warp::post())
-    .and(warp::body::json())
+  let filter = warp::filters::method::method()
+    .and(warp::path::full())
+    .and(warp::filters::header::headers_cloned())
+    .and(warp::filters::body::json())
     .and(warp::any().map(move || our.clone()))
     .and(warp::any().map(move || posts.clone()))
     .and(warp::any().map(move || message_tx.clone()))
     .and(warp::any().map(move || print_tx.clone()))
-    .and_then(|path, data, our, posts: Arc<Mutex<HashMap<String, String>>>, message_tx, print_tx| async move {
-      let target_app = posts.lock().unwrap().get(&path).unwrap().to_string();
+    .and_then(|method, path: warp::path::FullPath, headers, body, our, posts: Arc<Mutex<HashMap<String, String>>>, message_tx, print_tx| async move {
+      let target_app = posts.lock().unwrap().get(&path.as_str().to_string()).unwrap().to_string();
+      // await message loop incoming here?
 
-      http_post_request(path, data, our, target_app, message_tx, print_tx).await
-  });  
-  let filter = get_filter.or(post_filter);
+      handler(method, path, headers, body, our, target_app, message_tx, print_tx).await
+    });
 
   warp::serve(filter).run(([127, 0, 0, 1], 8080)).await;
 }
 
-// Handler function to serve content for a given path
-async fn http_get_request(path: String, map: Arc<Mutex<HashMap<String, String>>>) -> Result<impl Reply, warp::Rejection> {
-  // Acquire the lock to access the HashMap
-  let guard = map.lock().unwrap();
-  // Check if the requested path exists in the HashMap
-  if let Some(content) = guard.get(&path) {
-      // If the path exists, create a Warp Response with the content
-      Ok(warp::reply::html(content.clone()))
-  } else {
-    // If the path does not exist, return a 404 Not Found response
-    let not_found_response = warp::reply::html("Not Found".to_string());
-    Ok(not_found_response)
-  }
-}
-
-async fn http_post_request(
-  path: String,
-  data: serde_json::Value,
+async fn handler(
+  method: warp::http::Method,
+  path: warp::path::FullPath,
+  headers: warp::http::HeaderMap,
+  body: serde_json::Value,
   our: String,
   target_app: String,
   message_tx: MessageSender, print_tx: PrintSender
+
 ) -> Result<impl warp::Reply, warp::Rejection> {
+  let path_str = path.as_str().to_string();
+  // Return a response
+
+  let json_payload: serde_json::Value = serde_json::json!(
+    {
+      "method": method.to_string(),
+      "path": path_str,
+      // "headers": headers, // TODO serialize to json not working
+      "body": body
+    }
+  );
+
   let message = Message {
-      message_type: MessageType::Request(false),
-      wire: Wire {
-          source_ship: our.clone().to_string(),
-          source_app: "http_server".to_string(),
-          target_ship: our.clone().to_string(),
-          target_app: target_app,
-      },
-      payload: Payload {
-          json: Some(data),
-          bytes: None,
-      },
+    message_type: MessageType::Request(false), // TODO true
+    wire: Wire {
+        source_ship: our.clone().to_string(),
+        source_app: "http_server".to_string(),
+        target_ship: our.clone().to_string(),
+        target_app: target_app,
+    },
+    payload: Payload {
+        json: Some(json_payload),
+        bytes: None,
+    },
   };
 
   message_tx.send(vec![message]).await.unwrap();
 
-  // TODO actually have to let the app generate the response, which means
-  // waiting for a response in the event loop...kind of annoying...
-  Ok(warp::reply::json(&"Message sent successfully"))
+  Ok(warp::reply::html(format!(
+      "Received a {} request for path {} with headers: {:?} and body: {:?}",
+      method, path_str, headers, body
+  )))
 }

@@ -115,14 +115,14 @@ impl MicrokernelProcessImports for Process {
     async fn await_next_message(&mut self) -> Result<Vec<WitMessage>> {
         let mut next_message_stack = self.recv_in_process.recv().await.unwrap();
 
-        print_stack_to_terminal(
-            format!(
-                "{}: got message_stack",
-                self.metadata.process_name,
-            ).as_str(),
-            &next_message_stack,
-            self.send_to_terminal.clone(),
-        ).await;
+        // print_stack_to_terminal(
+        //     format!(
+        //         "{}: got message_stack",
+        //         self.metadata.process_name,
+        //     ).as_str(),
+        //     &next_message_stack,
+        //     self.send_to_terminal.clone(),
+        // ).await;
 
         let next_wit_message_stack =
             convert_message_stack_to_wit_message_stack(&next_message_stack).await;
@@ -133,11 +133,10 @@ impl MicrokernelProcessImports for Process {
                 //  pop off requests that dont expect responses
                 //   UNLESS they are the request that started the chain
                 if !is_expecting_response & (1 < stack_len) {
+                    self.send_to_terminal.send("popping off non-starting, non-expecting Request".to_string()).await.unwrap();
                     next_message_stack.truncate(stack_len - 1);
-                    next_message_stack
-                } else {
-                    next_message_stack
                 }
+                next_message_stack
             },
             MessageType::Response => {
                 //  pop message_stack twice: once for response message,
@@ -156,6 +155,19 @@ impl MicrokernelProcessImports for Process {
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
+    }
+
+    async fn get_current_unix_time(&mut self) -> Result<u64> {
+        Ok(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        )
+    }
+
+    async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
+        Ok(rand::random())
     }
 }
 
@@ -475,19 +487,11 @@ async fn make_event_loop(
                 let message_stack = recv_in_loop.recv().await.unwrap();
                 let stack_len = message_stack.len();
                 let message = message_stack[stack_len - 1].clone();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
-                            message.wire.source_ship,
-                            message.wire.source_app,
-                            message.wire.target_ship,
-                            message.wire.target_app,
-                            message.payload.json,
-                        )
-                    )
-                    .await
-                    .unwrap();
+                print_stack_to_terminal(
+                    "event loop: got message stack",
+                    &message_stack,
+                    send_to_terminal.clone(),
+                ).await;
                 if our_name != message.wire.target_ship {
                     match send_to_wss.send(message_stack).await {
                         Ok(()) => {

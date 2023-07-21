@@ -55,5 +55,7 @@ world microkernel-process {
     import print-to-terminal: func(message: string)
     import yield-results: func(results: list<wit-protomessage>)
     import await-next-message: func() -> list<wit-message>
+    import get-current-unix-time: func() -> u64
+    import get-insecure-uniform-u64: func() -> u64
     export run-process: func(our-name: string, process-name: string)
 }

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
 use http::Uri;
-use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
@@ -43,16 +42,58 @@ async fn create_dir_if_dne(path: &str) -> Result<()> {
     }
 }
 
-async fn get_file_path(uri_string: &str) -> String {
+// async fn get_file_path(uri_string: &str) -> String {
+//     let uri = uri_string.parse::<Uri>().unwrap();
+//     if Some("fs") != uri.scheme_str() {
+//         panic!("filesystem: uri scheme must be uri, got: {:?}", uri.scheme_str());
+//     }
+//     let mut relative_file_path = uri.host().unwrap().to_string();
+//     relative_file_path.push_str(uri.path());
+//     fs::canonicalize(relative_file_path)
+//         .await
+//         .unwrap()
+//         .to_str()
+//         .unwrap()
+//         .to_string()
+// }
+// 
+// async fn get_file_path_2(base_path: String, uri_string: &str) -> String {
+//     let uri = uri_string.parse::<Uri>().unwrap();
+//     if Some("fs") != uri.scheme_str() {
+//         panic!("filesystem: uri scheme must be uri, got: {:?}", uri.scheme_str());
+//     }
+//     let mut relative_file_path = uri.host().unwrap().to_string();
+//     relative_file_path.push_str(uri.path());
+//     std::path::Path::new(&base_path)
+//         .join(relative_file_path)
+//         .to_str()
+//         .unwrap()
+//         .to_string()
+// }
+
+async fn to_absolute_path(
+    home_directory_path: &str,
+    source_app: &str,
+    uri_string: &str
+) -> String {
     let uri = uri_string.parse::<Uri>().unwrap();
     if Some("fs") != uri.scheme_str() {
         panic!("filesystem: uri scheme must be uri, got: {:?}", uri.scheme_str());
     }
     let mut relative_file_path = uri.host().unwrap().to_string();
-    relative_file_path.push_str(uri.path());
-    fs::canonicalize(relative_file_path)
-        .await
-        .unwrap()
+    if "/" != uri.path() {
+        relative_file_path.push_str(uri.path());
+    }
+
+    let base_path =
+        if HAS_FULL_HOME_ACCESS.contains(source_app) {
+            home_directory_path.to_string()
+        } else {
+            make_sandbox_dir_path(home_directory_path, source_app)
+        };
+
+    std::path::Path::new(&base_path)
+        .join(relative_file_path)
         .to_str()
         .unwrap()
         .to_string()
@@ -71,6 +112,16 @@ async fn get_file_bytes_left(file: &mut fs::File) -> Result<u64> {
     let metadata = file.metadata().await?;
 
     Ok(metadata.len() - current_pos)
+}
+
+fn compute_truncated_hash(file_contents: &Vec<u8>) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(file_contents);
+    let hash = hasher.finalize();
+    //  truncate
+    u64::from_be_bytes(
+        [hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]
+    )
 }
 
 pub async fn fs_sender(
@@ -175,7 +226,13 @@ async fn handle_request(
     let request: FileSystemRequest = serde_json::from_value(value).unwrap();
 
     let source_app = &message.wire.source_app;
-    let file_path = get_file_path(&request.uri_string).await;
+    // let file_path = get_file_path(&request.uri_string).await;
+    let file_path = to_absolute_path(
+        &home_directory_path,
+        source_app,
+        &request.uri_string
+    ).await;
+    println!("filesystem: file_path: {}", file_path);
     if HAS_FULL_HOME_ACCESS.contains(source_app) {
         if !std::path::Path::new(&file_path).starts_with(&home_directory_path) {
             panic!(
@@ -204,16 +261,26 @@ async fn handle_request(
         FileSystemAction::Read => {
             //  TODO: use read_exact()?
             let file_contents = fs::read(&file_path).await?;
+            let hash = compute_truncated_hash(&file_contents);
             let _ = print_tx.send(
                 format!(
-                    "filesystem: got file at {} of size {}",
+                    "filesystem: got file at {} of size {} with hash {}",
                     file_path,
-                    file_contents.len()
-                    )
+                    file_contents.len(),
+                    hash,
+                )
             ).await;
 
             Payload {
-                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                json: Some(
+                    serde_json::to_value(
+                        FileSystemResponse::Read(FileSystemUriHash {
+                            uri_string: request.uri_string,
+                            hash: hash,
+                        })
+                    )
+                        .unwrap()
+                ),  //  TODO: error propagation to caller
                 bytes: Some(file_contents),
             }
         },
@@ -225,12 +292,44 @@ async fn handle_request(
             fs::write(&file_path, &payload_bytes).await?;
 
             Payload {
-                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                json: Some(
+                    serde_json::to_value(FileSystemResponse::Write(request.uri_string))
+                        .unwrap()
+                ),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },
+        FileSystemAction::GetMetadata => {
+            //  TODO: use read_exact()?
+            // let file_contents = fs::read(&file_path).await?;
+            let mut file = fs::OpenOptions::new()
+                .read(true)
+                .open(&file_path)
+                .await?;
+            let metadata = file.metadata().await?;
+            let mut file_contents = vec![];
+            file.read_to_end(&mut file_contents).await?;
+
+            let hash = compute_truncated_hash(&file_contents);
+
+            Payload {
+                json: Some(
+                    serde_json::to_value(
+                        FileSystemResponse::GetMetadata(FileSystemMetadata {
+                            uri_string: request.uri_string,
+                            hash: hash,
+                            is_dir: metadata.is_dir(),
+                            is_file: metadata.is_file(),
+                            is_symlink: metadata.is_symlink(),
+                            len: metadata.len(),
+                        })
+                    ).unwrap()
+                ),  //  TODO: error propagation to caller
+                bytes: Some(file_contents),
+            }
+        },
         FileSystemAction::OpenRead => {
-            //  TODO: refactor shared code with OpenWrite
+            //  TODO: refactor shared code with OpenAppend
             let file_ref = FileRef {
                 path: file_path.clone(),
                 mode: FileMode::Read,
@@ -255,7 +354,11 @@ async fn handle_request(
                     }
 
                     Payload {
-                        json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                        json: Some(
+                            serde_json::to_value(
+                                FileSystemResponse::OpenRead(request.uri_string)
+                            ).unwrap()
+                        ),  //  TODO: error propagation to caller
                         bytes: None,
                     }
                 },
@@ -264,7 +367,7 @@ async fn handle_request(
                 },
             }
         },
-        FileSystemAction::OpenWrite => {
+        FileSystemAction::OpenAppend => {
             //  TODO: refactor shared code with OpenRead
             let file_ref = FileRef {
                 path: file_path.clone(),
@@ -291,7 +394,11 @@ async fn handle_request(
                     }
 
                     Payload {
-                        json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                        json: Some(
+                            serde_json::to_value(
+                                FileSystemResponse::OpenAppend(request.uri_string)
+                            ).unwrap()
+                        ),  //  TODO: error propagation to caller
                         bytes: None,
                     }
                 },
@@ -325,34 +432,11 @@ async fn handle_request(
                 );
 
             Payload {
-                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                json: Some(
+                    serde_json::to_value(FileSystemResponse::Append(request.uri_string))
+                        .unwrap()
+                ),  //  TODO: error propagation to caller
                 bytes: None,
-            }
-        },
-        FileSystemAction::ComputeHash => {
-            //  TODO: use read_exact()?
-            let file_contents = fs::read(&file_path).await?;
-
-            let mut hasher = Sha256::new();
-            hasher.update(&file_contents);
-            let hash = hasher.finalize();
-            //  truncate
-            let hash = u64::from_be_bytes([
-                hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-            ]);
-
-            let _ = print_tx.send(
-                format!(
-                    "filesystem: got file at {} of size {} with hash {:x}",
-                    file_path,
-                    file_contents.len(),
-                    hash,
-                    )
-            ).await;
-
-            Payload {
-                json: Some(json![{"uri_string": request.uri_string, "hash": hash}]),  //  TODO: error propagation to caller
-                bytes: Some(file_contents),
             }
         },
         FileSystemAction::ReadChunkFromOpen(number_bytes) => {
@@ -379,17 +463,25 @@ async fn handle_request(
                     number_bytes
                 } as usize;
 
-            let mut bytes: Vec<u8> = vec![0; number_bytes_to_read];
+            let mut file_contents: Vec<u8> = vec![0; number_bytes_to_read];
 
-            file.read_exact(&mut bytes)
+            file.read_exact(&mut file_contents)
                 .await
                 .expect(
                     format!("filesystem: failed to read bytes from {}", file_path).as_str()
                 );
 
             Payload {
-                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
-                bytes: Some(bytes),
+                json: Some(
+                    serde_json::to_value(
+                        FileSystemResponse::ReadChunkFromOpen(FileSystemUriHash {
+                            uri_string: request.uri_string,
+                            hash: compute_truncated_hash(&file_contents),
+                        })
+                    )
+                        .unwrap()
+                ),  //  TODO: error propagation to caller
+                bytes: Some(file_contents),
             }
         },
         FileSystemAction::SeekWithinOpen(seek_from) => {
@@ -420,7 +512,10 @@ async fn handle_request(
             }
 
             Payload {
-                json: Some(json![{"uri_string": request.uri_string}]),  //  TODO: error propagation to caller
+                json: Some(
+                    serde_json::to_value(FileSystemResponse::SeekWithinOpen(request.uri_string))
+                        .unwrap()
+                ),  //  TODO: error propagation to caller
                 bytes: None,
             }
         },

@@ -180,7 +180,7 @@ pub async fn ws_sender(
 ) {
     while let Some(message_stack) = message_rx.recv().await {
         let stack_len = message_stack.len();
-        let message = &message_stack[stack_len - 1];
+        let message = message_stack[stack_len - 1].clone();
 
         let result = send_message(
             &our,
@@ -188,7 +188,7 @@ pub async fn ws_sender(
             keypair.clone(),
             pki.clone(),
             peers.clone(),
-            message.clone(),
+            message_stack,
             self_message_tx.clone(),
             kernel_message_tx.clone(),
             print_tx.clone(),
@@ -244,12 +244,14 @@ async fn send_message(
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
-    message: Message,
+    message_stack: MessageStack,
     self_message_tx: MessageSender,
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) -> Result<SuccessOrTimeout, String> {
-    let message_bytes = match serde_json::to_vec(&message) {
+    let stack_len = message_stack.len();
+    let message = &message_stack[stack_len - 1];
+    let message_bytes = match serde_json::to_vec(&message_stack) {
         Ok(v) => v,
         Err(e) => return Err(format!("error serializing message: {}", e)),
     };
@@ -340,7 +342,7 @@ async fn send_message(
                     .await;
                     match conn {
                         Ok(_) => {
-                            let _ = self_message_tx.send(vec![message.clone()]).await;
+                            let _ = self_message_tx.send(message_stack).await;
                             return Ok(SuccessOrTimeout::TryAgain);
                         }
                         Err(e) => return Err(format!("error opening new conn: {}", e)),
@@ -606,7 +608,7 @@ async fn active_reader(
                         continue;
                     }
                 };
-                let message = match serde_json::from_slice::<Message>(&plaintext) {
+                let message_stack = match serde_json::from_slice::<MessageStack>(&plaintext) {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = print_tx
@@ -615,7 +617,7 @@ async fn active_reader(
                         continue;
                     }
                 };
-                ingest_peer_msg(message_tx.clone(), print_tx.clone(), message).await;
+                ingest_peer_msg(message_tx.clone(), print_tx.clone(), message_stack).await;
             }
             Err(e) => {
                 let _ = print_tx
@@ -667,9 +669,11 @@ async fn forwarder(
 }
 
 /// take in a decrypted message received over network and send it to kernel
-async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: Message) {
+async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, message_stack: MessageStack) {
     // if payload is just a string, print it as a "message"
     // otherwise forward to kernel for processing
+    let stack_len = message_stack.len();
+    let msg = &message_stack[stack_len - 1];
     match (&msg.payload.json, &msg.payload.bytes) {
         (Some(serde_json::Value::String(s)), None) => {
             let _ = print_tx
@@ -680,7 +684,7 @@ async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: 
                 .await;
         }
         _ => {
-            let _ = message_tx.send(vec![msg]).await;
+            let _ = message_tx.send(message_stack).await;
         }
     }
 }

@@ -107,10 +107,10 @@ pub struct FileSystemRequest {
 pub enum FileSystemAction {
     Read,
     Write,
+    GetMetadata,
     OpenRead,
-    OpenWrite,
+    OpenAppend,
     Append,
-    ComputeHash,
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
 }
@@ -120,4 +120,29 @@ pub enum FileSystemSeekFrom {
     Start(u64),
     End(i64),
     Current(i64),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemResponse {
+    Read(FileSystemUriHash),
+    Write(String),
+    GetMetadata(FileSystemMetadata),
+    OpenRead(String),
+    OpenAppend(String),
+    Append(String),
+    ReadChunkFromOpen(FileSystemUriHash),
+    SeekWithinOpen(String),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileSystemUriHash {
+    pub uri_string: String,
+    pub hash: u64,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileSystemMetadata {
+    pub uri_string: String,
+    pub hash: u64,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
+    pub len: u64,
 }

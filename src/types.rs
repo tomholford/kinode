@@ -107,25 +107,11 @@ pub enum FileSystemRequest {
     AlterReadPermissions(Vec<String>)
 }
 
-// http commands
+// http_server commands
 //
-#[derive(Debug, Serialize, Deserialize)]
-pub enum HttpServerCommand {
-    SetResponse(SetResponseFields),
-    Connect(ConnectAppFields),
-}
-
-// set a static http response
-// TODO you don't actually need this...could remove...
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SetResponseFields {
-    pub path: String,
-    pub content: String,
-}
-
 // all incoming requests to http://<url>/<path> will get sent to app
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConnectAppFields {
+pub struct HttpConnect {
     pub path: String,
     pub app: String,
 }

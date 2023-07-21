@@ -11,18 +11,16 @@ pub async fn http_server(
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
-  let gets: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-  let posts: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+  let connections: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
   tokio::join!(
-    http_serve(our.clone(), gets.clone(), posts.clone(), message_tx.clone(), print_tx.clone()),
-    http_handle_messages(gets, posts, message_rx, print_tx)
+    http_serve(our.clone(), connections.clone(), message_tx.clone(), print_tx.clone()),
+    http_handle_messages(connections, message_rx, print_tx)
   );
 }
 
 async fn http_handle_messages(
-  gets: Arc<Mutex<HashMap<String, String>>>,
-  posts: Arc<Mutex<HashMap<String, String>>>,
+  connections: Arc<Mutex<HashMap<String, String>>>,
   mut message_rx: MessageReceiver,
   print_tx: PrintSender,
 ) {
@@ -33,26 +31,16 @@ async fn http_handle_messages(
     let Some(value) = message.payload.json.clone() else {
       panic!("http_server: request must have JSON payload, got: {:?}", message);
     };
-    let request: HttpServerCommand = serde_json::from_value(value).unwrap();
-    match request {
-      HttpServerCommand::SetResponse(req) => {
-        let mut routes_map = gets.lock().unwrap();
-        routes_map.insert(req.path, req.content);
-        let _ = print_tx.send(format!("set response {:?}", routes_map)).await;
-      },
-      HttpServerCommand::Connect(req) => {
-        let mut routes_map = posts.lock().unwrap();
-        routes_map.insert(req.path, req.app);
-        let _ = print_tx.send(format!("connected app {:?}", routes_map)).await;
-      }
-    }
+    let request: HttpConnect = serde_json::from_value(value).unwrap();
+    let mut routes_map = connections.lock().unwrap();
+    routes_map.insert(request.path, request.app);
+    let _ = print_tx.send(format!("connected app {:?}", routes_map)).await;
   }
 }
 
 async fn http_serve(
   our: String,
-  gets: Arc<Mutex<HashMap<String, String>>>,
-  posts: Arc<Mutex<HashMap<String, String>>>,
+  connections: Arc<Mutex<HashMap<String, String>>>,
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
@@ -61,11 +49,11 @@ async fn http_serve(
     .and(warp::filters::header::headers_cloned())
     .and(warp::filters::body::json())
     .and(warp::any().map(move || our.clone()))
-    .and(warp::any().map(move || posts.clone()))
+    .and(warp::any().map(move || connections.clone()))
     .and(warp::any().map(move || message_tx.clone()))
     .and(warp::any().map(move || print_tx.clone()))
-    .and_then(|method, path: warp::path::FullPath, headers, body, our, posts: Arc<Mutex<HashMap<String, String>>>, message_tx, print_tx| async move {
-      let target_app = posts.lock().unwrap().get(&path.as_str().to_string()).unwrap().to_string();
+    .and_then(|method, path: warp::path::FullPath, headers, body, our, connections: Arc<Mutex<HashMap<String, String>>>, message_tx, print_tx| async move {
+      let target_app = connections.lock().unwrap().get(&path.as_str().to_string()).unwrap().to_string();
       // await message loop incoming here?
 
       handler(method, path, headers, body, our, target_app, message_tx, print_tx).await

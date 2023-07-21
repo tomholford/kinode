@@ -20,33 +20,9 @@ impl bindings::MicrokernelProcess for Component {
                     ),
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
-                            "SetResponse":
-                                {
-                                    "path":"poast",
-                                    "content":"<h1>welcome to poast</h1>"
-                                }
-                            }
-                        ).to_string()),
-                        bytes: None
-                    }
-                },
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target_ship: our.as_str(),
-                            target_app: "http_server",
-                        }
-                    ),
-                    payload: &WitPayload {
-                        json: Some(serde_json::json!({
-                            "Connect":
-                                {
-                                    "path": "poast",
-                                    "app": dap
-                                }
-                            }
-                        ).to_string()),
+                                "path": "poast",
+                                "app": dap
+                        }).to_string()),
                         bytes: None
                     }
 
@@ -62,7 +38,7 @@ impl bindings::MicrokernelProcess for Component {
             };
             let message_from_loop: serde_json::Value =
                 serde_json::from_str(&message_from_loop_string).unwrap();
-            bindings::print_to_terminal(format!("poast: got POST request: {}", message_from_loop).as_str())
+            bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str())
         }
     }
 }

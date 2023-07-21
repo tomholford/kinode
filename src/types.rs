@@ -116,3 +116,11 @@ pub struct HttpConnect {
     pub app: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpResponse {
+    pub id: uuid::Uuid,
+    pub status: String, // TODO type
+    pub headers: String, // TODO type
+    pub data: String, // TODO type (probably bytes?)
+}
+

@@ -20,8 +20,8 @@ impl bindings::MicrokernelProcess for Component {
                     ),
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
-                                "path": "poast",
-                                "app": dap
+                            "path": "/poast", // TODO at some point we need URL pattern matching...later...
+                            "app": dap
                         }).to_string()),
                         bytes: None
                     }

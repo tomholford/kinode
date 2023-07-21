@@ -49,7 +49,7 @@ pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSende
                     match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
                         Command::StartOfMessageStack(messages) => {
                             to_event_loop.send(messages).await.unwrap();
-                            writeln!(stdout, "{}", line)?;
+                            // writeln!(stdout, "{}", line)?;
                         },
                         Command::Quit => {
                             break;
@@ -77,7 +77,7 @@ pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSende
 
 fn parse_command(our_name: &str, line: &str) -> Option<Command> {
     if line == "\n" { return None }
-    let (head, tail) = line.split_once(" ")?;
+    let (head, tail) = line.split_once(" ").unwrap_or((line, ""));
     match head {
         "!message" => {
             let (target_server, tail) = tail.split_once(" ")?;

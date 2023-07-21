@@ -12,6 +12,19 @@ struct Component;
 // chain types
 //
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SequencerState {
+    pub last_batch: u64,
+    pub last_batch_hash: String,
+    pub mempool: Vec<Transaction>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum SequencerMessage {
+    MakeBatch,
+    Transaction(Transaction),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Item {
     State(StateItem),
@@ -58,63 +71,36 @@ struct UqChain {
 //
 
 impl bindings::MicrokernelProcess for Component {
-    fn init(_source_ship: String, _source_app: String) -> Vec<bindings::WitMessage> {
-        bindings::set_state(serde_json::to_string(&json!([])).unwrap().as_str());
+    fn run_process(our_name: String, process_name: String) {
         bindings::print_to_terminal("sequencer: initialized");
-        vec![]
-    }
 
-    fn run_write(
-        mut message_stack: Vec<bindings::WitMessage>,
-    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
-        let message = message_stack.pop().unwrap();
-        let Some(message_from_loop) = message.payload.json else {
-            panic!("foo")
+        let mut state = SequencerState {
+            last_batch: 0,
+            last_batch_hash: "".to_string(),
+            mempool: vec![],
         };
-        let mut response_string = "\"".to_string();
-        response_string.push_str(&message_from_loop);
-        response_string.push_str(" appended by poast\"");
-        let response = bindings::component::microkernel_process::types::WitPayload {
-            json: Some(response_string.clone()),
-            bytes: None,
-        };
-        let state_string = bindings::fetch_state("");
-        let mut state = serde_json::from_str(&state_string).unwrap();
-        state = match state {
-            serde_json::Value::Array(mut vector) => {
-                vector.push(serde_json::to_value(response_string.clone()).unwrap());
-                serde_json::Value::Array(vector)
+
+        loop {
+            let mut message_stack = bindings::await_next_message();
+            let message = message_stack.pop().unwrap();
+            let Some(message_from_loop_string) = message.payload.json else {
+                bindings::print_to_terminal("sequencer: needed json payload");
+                continue;
+            };
+            let Ok(msg) = serde_json::from_str::<SequencerMessage>(&message_from_loop_string) else {
+                bindings::print_to_terminal("sequencer: couldn't parse json payload");
+                continue;
+            };
+            match msg {
+                SequencerMessage::MakeBatch => {
+                    bindings::print_to_terminal("sequencer: making batch");
+                },
+                SequencerMessage::Transaction(txn) => {
+                    bindings::print_to_terminal("sequencer: got txn");
+                    state.mempool.push(txn);
+                },
             }
-            _ => json!([response_string.clone()]), // TODO
-        };
-        bindings::set_state(serde_json::to_string(&state).unwrap().as_str());
-        // bindings::to_event_loop(
-        //     &message.wire.source_ship.clone(),
-        //     &"http_server".to_string(),
-        //     bindings::WitMessageType::Request(false),
-        //     &response
-        // );
-        vec![(
-            bindings::WitMessageTypeWithTarget::Request(WitRequestTypeWithTarget {
-                is_expecting_response: false,
-                target_ship: message.wire.source_ship.clone(),
-                target_app: "http_server".to_string(),
-            }),
-            response,
-        )]
-    }
-
-    fn run_read(
-        _message_stack: Vec<bindings::WitMessage>,
-    ) -> Vec<(bindings::WitMessageType, bindings::WitPayload)> {
-        vec![]
-    }
-
-    fn handle_response(
-        _message_stack: Vec<bindings::WitMessage>,
-    ) -> Vec<(bindings::WitMessageTypeWithTarget, bindings::WitPayload)> {
-        bindings::print_to_terminal("in handle_response");
-        vec![]
+        }
     }
 }
 

@@ -20,12 +20,13 @@ impl bindings::MicrokernelProcess for Component {
                     ),
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
-                            "path": "/poast", // TODO at some point we need URL pattern matching...later...
-                            "app": dap
+                            "HttpConnect": {
+                                "path": "/poast", // TODO at some point we need URL pattern matching...later...
+                                "app": dap
+                            }
                         }).to_string()),
                         bytes: None
                     }
-
                 },
             ].as_slice()
         );
@@ -36,9 +37,27 @@ impl bindings::MicrokernelProcess for Component {
             let Some(message_from_loop_string) = message.payload.json else {
                 panic!("foo")
             };
-            let message_from_loop: serde_json::Value =
-                serde_json::from_str(&message_from_loop_string).unwrap();
-            bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str())
+            let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
+            bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str());
+            bindings::yield_results(vec![
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Response,
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "HttpResponse": {
+                                "id": "TODO ID HERE",
+                                "status": 201,
+                                "headers": "test: header",
+                                // {
+                                //     "Content-Type": "application/json",
+                                // },
+                                "body": "{\"foo\":\"bar\"}"
+                            }
+                        }).to_string()),
+                        bytes: None
+                    }
+                }
+            ].as_slice());
         }
     }
 }

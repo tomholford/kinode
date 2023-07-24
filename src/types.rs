@@ -125,8 +125,8 @@ pub struct HttpConnect {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HttpResponse {
     pub id: String, // TODO uuid?
-    pub status: String, // TODO type
-    pub headers: String, // TODO type
+    pub status: u16,
+    pub headers: String, // TODO HashMap<String, String>?
     pub body: String, // TODO type (probably bytes?)
 }
 

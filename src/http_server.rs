@@ -1,7 +1,8 @@
 use crate::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use warp::{Reply, Filter};
+use warp::{Reply, Filter, reply::Response as ReplyResponse};
+use warp::http::{Response, StatusCode, HeaderMap};
 use serde_json::{json, Map, Value};
 use tokio::sync::oneshot;
 
@@ -47,15 +48,13 @@ async fn http_handle_connections(
         let _ = print_tx.send(format!("connected app {:?}", routes_map)).await;
       },
       HttpAction::HttpResponse(act) => {
-        // if the request is a response => send it on the channel here
-        let asdf = http_response_senders.lock().unwrap().remove("TODO ID HERE").unwrap();
-        println!("{:?}", asdf);
-        println!("got an HTTP response!");
-        let _ = asdf.send(HttpResponse {
-          id: "TODO ID HERE".to_string(),
-          status: "201".to_string(),
-          headers: "test headers".to_string(),
-          body: "<h1>this is my response</h1>".to_string(),
+        // if it is a response => send it on the channel here
+        let channel = http_response_senders.lock().unwrap().remove("TODO ID HERE").unwrap();
+        let _ = channel.send(HttpResponse {
+          id: act.id,
+          status: act.status,
+          headers: act.headers,
+          body: act.body,
         });
       }
     }
@@ -134,11 +133,19 @@ async fn handler(
   http_response_senders.lock().unwrap().insert("TODO ID HERE".to_string(), response_sender);
 
   message_tx.send(vec![message]).await.unwrap();
-  let response = response_receiver.await;
+  let json_res = response_receiver.await.unwrap();
   // TODO send repsonse to outsdie world
-  println!("RESPONSE IN HANDLER: {:?}", response);
-  Ok(warp::reply::html(format!(
-      "Received a {} request for path {} with headers: {:?} and body: {:?}",
-      method, path_str, headers, body
-  )))
+  println!("RESPONSE IN HANDLER: {:?}", json_res);
+  let mut res = Response::builder();
+  let response = warp::reply::with_status(
+    json_res.body,
+    StatusCode::from_u16(json_res.status).unwrap()
+  );
+  // TODO add headers
+  // add headers
+  // for (name, value) in headers.iter() {
+  //   builder = builder.header(name, value.clone());
+  // }
+    // .headers(json_res.headers)
+  Ok(response)
 }

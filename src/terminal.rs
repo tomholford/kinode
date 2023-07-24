@@ -21,8 +21,8 @@ pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx
                 Ok(line) => {
                     rl.add_history_entry(line.clone());
                     match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
-                        Command::StartOfMessageStack(messages) => {
-                            to_event_loop.send(messages).await.unwrap();
+                        Command::Message(message) => {
+                            to_event_loop.send(message).await.unwrap();
                             writeln!(stdout, "{}", line)?;
                         },
                         Command::Quit => {
@@ -57,19 +57,23 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
             let (target_server, tail) = tail.split_once(" ")?;
             let (target_app, payload) = tail.split_once(" ")?;
             let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
-            Some(Command::StartOfMessageStack(vec![Message {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our_name.to_string(),
-                    source_app: "terminal".to_string(),
-                    target_ship: target_server.to_string(),
-                    target_app: target_app.to_string(),
+            Some(Command::Message(WrappedMessage {
+                id: rand::random(),
+                rsvp: None,
+                message: Message {
+                    message_type: MessageType::Request(false),
+                    wire: Wire {
+                        source_ship: our_name.to_string(),
+                        source_app: "terminal".to_string(),
+                        target_ship: target_server.to_string(),
+                        target_app: target_app.to_string(),
+                    },
+                    payload: Payload {
+                        json: Some(val),
+                        bytes: None,
+                    },
                 },
-                payload: Payload {
-                    json: Some(val),
-                    bytes: None,
-                },
-            }]))
+            }))
         }
         "!quit" => Some(Command::Quit),
         "!exit" => Some(Command::Quit),

@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use ethers::prelude::*;
 
-pub type MessageSender = tokio::sync::mpsc::Sender<MessageStack>;
-pub type MessageReceiver = tokio::sync::mpsc::Receiver<MessageStack>;
+pub type MessageSender = tokio::sync::mpsc::Sender<WrappedMessage>;
+pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
 
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
@@ -29,6 +29,12 @@ pub struct AppNode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessNode {
+    pub node: String,
+    pub process: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Wire {
     pub source_ship: String,
     pub source_app:  String,
@@ -41,6 +47,18 @@ pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WrappedMessage {
+    pub id: u64,
+    pub rsvp: Rsvp,
+    pub message: Message,
+}
+
+//  kernel sets in case, e.g.,
+//   A requests response from B does not request response from C
+//   -> kernel sets `Some(A) = Rsvp` for B's request to C
+type Rsvp = Option<ProcessNode>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -62,8 +80,6 @@ pub enum NetworkingError {
     #[error("Message delivery failed due to timeout")]
     MessageTimeout
 }
-
-pub type MessageStack = Vec<Message>;
 
 impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -92,8 +108,19 @@ impl std::fmt::Display for Message {
     }
 }
 
+impl std::fmt::Display for WrappedMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "WrappedMessage {{ id: {}, message: {} }}",
+            self.id,
+            self.message,
+        )
+    }
+}
+
 pub enum Command {
-    StartOfMessageStack(MessageStack),
+    Message(WrappedMessage),
     Quit,
     Invalid,
 }

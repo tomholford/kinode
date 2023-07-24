@@ -149,16 +149,15 @@ pub async fn fs_sender(
         HashMap::new();
             //Arc::new(RwLock::new(HashMap::new()));
 
-    // //  TODO: store or back up in DB/kv?
-    while let Some(message_stack) = recv_in_fs.recv().await {
-        let stack_len = message_stack.len();
-        let source_ship = &message_stack[stack_len - 1].wire.source_ship;
-        let source_app = &message_stack[stack_len - 1].wire.source_app;
+    //  TODO: store or back up in DB/kv?
+    while let Some(message) = recv_in_fs.recv().await {
+        let source_ship = &message.message.wire.source_ship;
+        let source_app = &message.message.wire.source_app;
         if our_name != source_ship {
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
                 our_name,
-                &message_stack[stack_len - 1],
+                &message,
             );
             continue;
         }
@@ -194,7 +193,7 @@ pub async fn fs_sender(
             handle_request(
                 our_name.to_string(),
                 home_directory_path.to_string(),
-                message_stack,
+                message,
                 open_files,
                 // Arc::clone(&read_access_by_node),
                 send_to_loop.clone(),
@@ -204,18 +203,16 @@ pub async fn fs_sender(
     }
 }
 
-//  TODO: error handling: should probably send error messages to caller
+//  TODO: error handling: send error messages to caller
 async fn handle_request(
     our_name: String,
     home_directory_path: String,
-    mut messages: MessageStack,
+    message: WrappedMessage,
     open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) -> Result<(), Error> {
-    let Some(message) = messages.pop() else {
-        panic!("filesystem: filesystem must receive non-empty MessageStack, got: {:?}", messages);
-    };
+    let WrappedMessage { id, rsvp, message } = message;
     if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
     }
@@ -521,21 +518,22 @@ async fn handle_request(
         },
     };
 
-    let response = Message {
-        message_type: MessageType::Response,
-        wire: Wire {
-            source_ship: our_name.clone(),
-            source_app: "filesystem".to_string(),
-            target_ship: our_name.clone(),
-            target_app: message.wire.source_app.clone(),
+    let response = WrappedMessage {
+        id,
+        rsvp,
+        message: Message {
+            message_type: MessageType::Response,
+            wire: Wire {
+                source_ship: our_name.clone(),
+                source_app: "filesystem".to_string(),
+                target_ship: our_name.clone(),
+                target_app: message.wire.source_app.clone(),
+            },
+            payload: response_payload,
         },
-        payload: response_payload,
     };
 
-    messages.push(message);
-    messages.push(response);
-
-    let _ = send_to_loop.send(messages).await;
+    let _ = send_to_loop.send(response).await;
 
     Ok(())
 }

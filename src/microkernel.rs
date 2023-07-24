@@ -168,10 +168,15 @@ impl MicrokernelProcessImports for Process {
         match message_type {
             MessageType::Request(_) => Ok((wit_message, "".to_string())),
             MessageType::Response => {
-                let Some(ref context) = self.contexts.get(&message_id) else {
-                    panic!("awm: couldn't find context for Response");
-                };
-                Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                match self.contexts.get(&message_id) {
+                    Some(ref context) => {
+                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                    },
+                    None => {
+                        println!("awm: couldn't find context for Response");
+                        Ok((wit_message, "".to_string()))
+                    },
+                }
             },
         }
 

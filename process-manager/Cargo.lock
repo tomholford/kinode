@@ -27,8 +27,16 @@ dependencies = [
 name = "process-manager"
 version = "0.1.0"
 dependencies = [
+ "process_manager-bindings",
  "serde",
  "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "process_manager-bindings"
+version = "0.1.0"
+dependencies = [
  "wit-bindgen",
 ]
 

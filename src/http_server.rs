@@ -38,7 +38,7 @@ async fn http_handle_connections(
     let message = message_stack[stack_len - 1].clone();
     
     let Some(value) = message.payload.json.clone() else {
-      panic!("http_server: request must have JSON payload, got: {:?}", message);
+      panic!("http_server: action must have JSON payload, got: {:?}", message);
     };
     let request: HttpAction = serde_json::from_value(value).unwrap();
 
@@ -55,7 +55,7 @@ async fn http_handle_connections(
           id: act.id,
           status: act.status,
           headers: act.headers,
-          body: act.body,
+          body: message.payload.bytes,
         });
       }
     }
@@ -72,7 +72,7 @@ async fn http_serve(
   let filter = warp::filters::method::method()
     .and(warp::path::full())
     .and(warp::filters::header::headers_cloned())
-    .and(warp::filters::body::json())
+    .and(warp::filters::body::bytes())
     .and(warp::any().map(move || our.clone()))
     .and(warp::any().map(move || connections.clone()))
     .and(warp::any().map(move || http_response_senders.clone()))
@@ -89,6 +89,7 @@ async fn http_serve(
         message_tx,
         print_tx
       | async move {
+      // TODO error handling here
       let target_app = connections.lock().unwrap().get(&path.as_str().to_string()).unwrap().to_string();
       handler(method, path, headers, body, our, target_app, http_response_senders, message_tx, print_tx).await
     });
@@ -100,7 +101,7 @@ async fn handler(
   method: warp::http::Method,
   path: warp::path::FullPath,
   headers: warp::http::HeaderMap,
-  body: serde_json::Value,
+  body: warp::hyper::body::Bytes,
   our: String,
   target_app: String,
   http_response_senders: HttpResponseSenders,
@@ -124,10 +125,9 @@ async fn handler(
           "method": method.to_string(),
           "path": path_str,
           "headers": serialize_headers(&headers),
-          "body": body
         }
       )),
-      bytes: None,
+      bytes: Some(body.to_vec()), // TODO None sometimes
     },
   };
 
@@ -135,17 +135,20 @@ async fn handler(
   http_response_senders.lock().unwrap().insert(id, response_sender);
 
   message_tx.send(vec![message]).await.unwrap();
-  let json_res = response_receiver.await.unwrap();
+  let from_channel = response_receiver.await.unwrap();
   
   let reply = warp::reply::with_status(
-    json_res.body,
-    StatusCode::from_u16(json_res.status).unwrap()
+    match from_channel.body {
+      Some(val) => val,
+      None => vec![],
+    },
+    StatusCode::from_u16(from_channel.status).unwrap()
   );
   let mut response = reply.into_response();
 
   // Merge the deserialized headers into the existing headers
   let existing_headers = response.headers_mut();
-  for (header_name, header_value) in deserialize_headers(json_res.headers).iter() {
+  for (header_name, header_value) in deserialize_headers(from_channel.headers).iter() {
     existing_headers.insert(header_name.clone(), header_value.clone());
   }
   Ok(response)

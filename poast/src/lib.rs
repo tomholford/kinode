@@ -50,10 +50,9 @@ impl bindings::MicrokernelProcess for Component {
                                 "headers": {
                                     "Content-Type": "application/json",
                                 },
-                                "body": "{\"foo\":\"bar\"}"
                             }
                         }).to_string()),
-                        bytes: None
+                        bytes: Some("{\"foo\":\"bar\"}".as_bytes().to_vec())
                     }
                 }
             ].as_slice());

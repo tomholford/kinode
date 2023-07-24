@@ -126,6 +126,6 @@ pub struct HttpResponse {
     pub id: String,
     pub status: u16,
     pub headers: HashMap<String, String>,
-    pub body: String, // TODO type (probably bytes?)
+    pub body: Option<Vec<u8>>,
 }
 

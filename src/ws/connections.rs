@@ -58,7 +58,6 @@ pub async fn handle_direct_connection(
         message_tx.clone(),
     )
     .await;
-    println!("direct connection closed: {:#?}", closed);
     peers.write().await.remove(&from.name);
     return closed;
 }
@@ -92,34 +91,10 @@ pub async fn handle_forwarding_connection(
         pass_throughs.clone(),
     )
     .await;
-    println!("forwarding connection closed: {:#?}", closed);
     peers.write().await.remove(&from.name);
     // when we lose a forwarding connection, do teardown by going through
     // all pass-throughs with that peer and closing them.
     pass_throughs.write().await.remove(&from.name);
-    return closed;
-}
-
-pub async fn _handle_pass_through_connection(
-    from_1: Identity,
-    write_stream_1: WriteStream,
-    read_stream_1: SplitStream<Sock>,
-    from_2: Identity,
-    write_stream_2: WriteStream,
-    read_stream_2: SplitStream<Sock>,
-    peers: Peers,
-) -> Result<(), String> {
-    let closed = pass_through_connection(
-        from_1.clone(),
-        write_stream_1,
-        read_stream_1,
-        from_2,
-        write_stream_2,
-        read_stream_2,
-    )
-    .await;
-    println!("pass-through connection closed: {:#?}", closed);
-    peers.write().await.remove(&from_1.name);
     return closed;
 }
 
@@ -136,7 +111,7 @@ async fn aggregate_connection(
     self_message_tx: MessageSender,
     kernel_message_tx: MessageSender,
 ) -> Result<(), String> {
-    println!("aggregate connection!");
+    // println!("aggregate connection!");
     while let Some(msg) = read_stream.next().await {
         let wrapped_message = match msg {
             Ok(msg) => match serde_json::from_slice::<WrappedMessage>(&msg.clone().into_data()) {
@@ -272,7 +247,7 @@ async fn forwarding_connection(
     peers: Peers,
     pass_throughs: PassThroughs,
 ) -> Result<(), String> {
-    println!("forwarding connection!");
+    // println!("forwarding connection!");
     // may need to build new connections here at times
     while let Some(msg) = read_stream.next().await {
         let wrapped_message = match msg {
@@ -410,9 +385,64 @@ async fn forwarding_connection(
                         }
                     }
                     None => {
-                        // use a router
-                        // TODO
-                        return Err("XX".into());
+                        // connect *in*directly
+                        let router_name = target_id.allowed_routers.get(0).unwrap();
+                        let router_id: Identity = match pki.get(router_name) {
+                            Some(v) => v.clone(),
+                            None => {
+                                let _err = forward_special_message(
+                                    peers.clone(),
+                                    &from.name,
+                                    WrappedMessage::PeerOffline(handshake.target.clone()),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let (ip, port) = router_id.ws_routing.as_ref().unwrap();
+                        let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                        match connect_async(ws_url).await {
+                            Err(_) => {
+                                let _err = forward_special_message(
+                                    peers.clone(),
+                                    &from.name,
+                                    WrappedMessage::PeerOffline(handshake.target.clone()),
+                                )
+                                .await;
+                                continue;
+                            }
+                            Ok((ws_stream, _response)) => {
+                                let (mut write_stream, read_stream) = ws_stream.split();
+                                // forward the handshake
+                                let _send = match write_stream
+                                    .send(tungstenite::Message::Text(
+                                        serde_json::to_string(&handshake).unwrap(),
+                                    ))
+                                    .await
+                                {
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        let _err = forward_special_message(
+                                            peers.clone(),
+                                            &from.name,
+                                            WrappedMessage::PeerOffline(handshake.target.clone()),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                };
+
+                                map.insert(handshake.target.clone(), write_stream);
+
+                                tokio::spawn(one_way_pass_through_connection(
+                                    from.name.clone(),
+                                    target_id.name,
+                                    read_stream,
+                                    peers.clone(),
+                                    None,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -459,7 +489,7 @@ async fn direct_connection(
     nonce: Arc<Nonce>,
     message_tx: MessageSender,
 ) -> Result<(), String> {
-    println!("direct connection!");
+    // println!("direct connection!");
     while let Some(msg) = read_stream.next().await {
         match msg {
             Ok(msg) => {
@@ -497,7 +527,7 @@ pub async fn one_way_pass_through_connection(
     peers: Peers,
     init: Option<Handshake>,
 ) {
-    println!("one-way pass-through connection!");
+    // println!("one-way pass-through connection!");
     if init.is_some() {
         let hs = WrappedMessage::Handshake(init.unwrap());
         let wrapped_bytes = match serde_json::to_vec(&hs) {
@@ -555,41 +585,6 @@ pub async fn one_way_pass_through_connection(
                         None => break,
                     },
                     None => break,
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
-/// used by a routing node to receive messages from another
-/// routing node and send them to
-async fn pass_through_connection(
-    from_1: Identity,
-    write_stream_1: WriteStream,
-    read_stream_1: SplitStream<Sock>,
-    from_2: Identity,
-    write_stream_2: WriteStream,
-    read_stream_2: SplitStream<Sock>,
-) -> Result<(), String> {
-    tokio::select! {
-        _ = pass_through(from_1, read_stream_1, write_stream_2) => { Err("connection closed".into()) },
-        _ = pass_through(from_2, read_stream_2, write_stream_1) => { Err("connection closed".into()) },
-    }
-}
-
-async fn pass_through(
-    from: Identity,
-    mut read: SplitStream<Sock>,
-    mut write: SplitSink<Sock, tungstenite::Message>,
-) {
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(msg) => {
-                // convert message from RouteTo to RoutedFrom?
-                match write.send(msg).await {
-                    Ok(_) => continue,
-                    Err(_) => break,
                 }
             }
             Err(_) => break,

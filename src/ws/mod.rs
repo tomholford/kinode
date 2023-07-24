@@ -24,7 +24,7 @@ type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type Routers = Arc<RwLock<HashMap<String, Router>>>;
 type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WriteStream = SplitSink<Sock, tungstenite::Message>;
-                                    // route-to,       outside-source -- stream can be from EITHER
+// route-to,       outside-source -- stream can be from EITHER
 type PassThroughs = Arc<RwLock<HashMap<String, HashMap<String, WriteStream>>>>;
 
 pub struct Peer {
@@ -71,14 +71,12 @@ enum WrappedMessage {
     PeerOffline(String),
 }
 
-/// parsed from Binary websocket message
 #[derive(Debug, Serialize, Deserialize)]
 struct RouteTo {
     pub to: String,
     pub contents: Vec<u8>,
 }
 
-/// parsed from Binary websocket message
 #[derive(Debug, Serialize, Deserialize)]
 struct RoutedFrom {
     pub from: String,
@@ -154,6 +152,11 @@ pub async fn websockets(
     }
 }
 
+/*
+ *  handshake utils
+ */
+
+/// read one message from websocket stream and parse it as a handshake.
 async fn get_handshake(ws_stream: &mut SplitStream<Sock>) -> Result<Handshake, String> {
     let handshake_text = ws_stream
         .next()
@@ -167,6 +170,8 @@ async fn get_handshake(ws_stream: &mut SplitStream<Sock>) -> Result<Handshake, S
     Ok(handshake)
 }
 
+/// take in handshake and PKI identity, and confirm that the handshake is valid.
+/// takes in optional nonce, which must be the one that connection initiator created.
 fn validate_handshake(
     handshake: &Handshake,
     their_id: &Identity,
@@ -211,6 +216,8 @@ fn validate_handshake(
     return Ok((their_ephemeral_pk, nonce));
 }
 
+/// given an identity and networking key-pair, produces a handshake message along
+/// with an ephemeral secret to be used in a specific connection.
 fn make_secret_and_handshake(
     our: &Identity,
     keypair: Arc<Ed25519KeyPair>,

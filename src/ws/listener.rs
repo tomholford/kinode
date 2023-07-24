@@ -3,11 +3,9 @@ use crate::ws::*;
 use ring::signature::Ed25519KeyPair;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio_tungstenite::accept_async; // tungstenite::Result};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::MaybeTlsStream;
-use url::Url;
 
 /// we always have networking info in Identity
 pub async fn ws_listener(

@@ -39,6 +39,8 @@ impl bindings::MicrokernelProcess for Component {
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
             bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str());
+            bindings::print_to_terminal(format!("ID: {}", message_from_loop["id"]).as_str());
+
             bindings::yield_results(vec![
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Response,

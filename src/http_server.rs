@@ -50,6 +50,7 @@ async fn http_handle_connections(
       },
       HttpAction::HttpResponse(act) => {
         // if it is a response => send it on the channel here
+        let _ = print_tx.send(format!("GOT A RESPONSE {:?}", act.id)).await;
         let channel = http_response_senders.lock().unwrap().remove(act.id.as_str()).unwrap();
         let _ = channel.send(HttpResponse {
           id: act.id,
@@ -69,6 +70,7 @@ async fn http_serve(
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
+  let _ = print_tx.send(format!("GOT A REQUEST")).await;
   let filter = warp::filters::method::method()
     .and(warp::path::full())
     .and(warp::filters::header::headers_cloned())
@@ -106,7 +108,7 @@ async fn handler(
   target_app: String,
   http_response_senders: HttpResponseSenders,
   message_tx: MessageSender,
-  _print_tx: PrintSender
+  print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let path_str = path.as_str().to_string();
   let id = create_id();
@@ -136,7 +138,7 @@ async fn handler(
 
   message_tx.send(vec![message]).await.unwrap();
   let from_channel = response_receiver.await.unwrap();
-  
+  let _ = print_tx.send("SENDING RESPONSE".to_string()).await;
   let reply = warp::reply::with_status(
     match from_channel.body {
       Some(val) => val,
@@ -151,6 +153,7 @@ async fn handler(
   for (header_name, header_value) in deserialize_headers(from_channel.headers).iter() {
     existing_headers.insert(header_name.clone(), header_value.clone());
   }
+  let _ = print_tx.send("RIGHT BEFORE".to_string()).await;
   Ok(response)
 }
 

@@ -518,13 +518,9 @@ async fn make_event_loop(
                             &engine,
                         ).await;
                     //  XX temporary branch to assist in pure networking debugging
+                    //  can be removed when ws WASM module is ready
                     } else if to == "ws" {
-                        let _ = send_to_terminal.send(
-                            format!(
-                                "\x1b[3;32m{}: {}\x1b[0m",
-                                message.wire.source_ship, message.payload.json.unwrap()
-                            )
-                        ).await;
+                        let _ = send_to_wss.send(message_stack).await;
                     } else {
                         //  pass message to appropriate runtime/process
                         match senders.get(&to) {

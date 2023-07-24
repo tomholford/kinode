@@ -116,15 +116,13 @@ async fn aggregate_connection(
         let wrapped_message = match msg {
             Ok(msg) => match serde_json::from_slice::<WrappedMessage>(&msg.clone().into_data()) {
                 Ok(v) => v,
-                Err(_) => WrappedMessage::From(
-                    serde_json::from_slice::<RoutedFrom>(&msg.into_data()).unwrap(),
-                ),
+                Err(e) => return Err(format!("lost connection to router! error: {}", e)),
             },
             Err(e) => return Err(format!("lost connection to router! error: {}", e)),
         };
 
         match wrapped_message {
-            WrappedMessage::To(_) => return Err("this is a one-way connection".into()),
+            WrappedMessage::To { .. } => return Err("this is a one-way connection".into()),
             WrappedMessage::LostPeer(lost) => {
                 peers.write().await.remove(&lost);
             }
@@ -132,16 +130,16 @@ async fn aggregate_connection(
                 // XX propagate
                 continue;
             }
-            WrappedMessage::From(message) => {
+            WrappedMessage::From { from, contents } => {
                 let peer_read = peers.read().await;
-                let who: &Peer = match peer_read.get(&message.from) {
+                let who: &Peer = match peer_read.get(&from) {
                     Some(v) => v,
                     None => continue,
                 };
 
                 let encryption_key = who.ephemeral_secret.diffie_hellman(&who.their_ephemeral_pk);
                 let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-                let decrypted = match cipher.decrypt(&who.nonce, message.contents.as_ref()) {
+                let decrypted = match cipher.decrypt(&who.nonce, contents.as_ref()) {
                     Ok(v) => v,
                     Err(e) => return Err(format!("error decrypting message: {}", e)),
                 };
@@ -259,11 +257,11 @@ async fn forwarding_connection(
         };
 
         match wrapped_message {
-            WrappedMessage::To(msg) => {
-                if &msg.to == &our.name {
+            WrappedMessage::To { to, contents } => {
+                if &to == &our.name {
                     let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
                     let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-                    let decrypted = match cipher.decrypt(&nonce, msg.contents.as_ref()) {
+                    let decrypted = match cipher.decrypt(&nonce, contents.as_ref()) {
                         Ok(v) => v,
                         Err(e) => return Err(format!("error decrypting message: {}", e)),
                     };
@@ -282,13 +280,13 @@ async fn forwarding_connection(
                 let mut map_writer = pass_throughs.write().await;
                 let map = map_writer.get_mut(&from.name).unwrap();
 
-                let target_writer = match map.get_mut(&msg.to) {
+                let target_writer = match map.get_mut(&to) {
                     Some(v) => v,
                     None => return Err("no direct connection to forward target yet".into()),
                 };
 
                 match target_writer
-                    .send(tungstenite::Message::Binary(msg.contents))
+                    .send(tungstenite::Message::Binary(contents))
                     .await
                 {
                     Ok(_) => continue,
@@ -298,7 +296,7 @@ async fn forwarding_connection(
                         let _err = forward_special_message(
                             peers.clone(),
                             &from.name,
-                            WrappedMessage::LostPeer(msg.to.clone()),
+                            WrappedMessage::LostPeer(to.clone()),
                         )
                         .await;
                         continue;
@@ -560,10 +558,10 @@ pub async fn one_way_pass_through_connection(
                     tungstenite::Message::Text(text) => {
                         WrappedMessage::Handshake(serde_json::from_str::<Handshake>(&text).unwrap())
                     }
-                    _ => WrappedMessage::From(RoutedFrom {
+                    _ => WrappedMessage::From {
                         from: from.clone(),
                         contents: msg.into_data(),
-                    }),
+                    },
                 };
 
                 let wrapped_bytes = match serde_json::to_vec(&wrapped_message) {

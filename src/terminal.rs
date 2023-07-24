@@ -1,16 +1,22 @@
-use std::io::Write;
 use rustyline_async::{Readline, ReadlineError};
+use std::io::Write;
 
 use crate::types::*;
 
 /*
  *  terminal driver
  */
-pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSender, mut print_rx: PrintReceiver)
-    -> Result<(), ReadlineError> {
-
+pub async fn terminal(
+    our: &Identity,
+    version: &str,
+    to_event_loop: MessageSender,
+    mut print_rx: PrintReceiver,
+) -> Result<(), ReadlineError> {
     // print initial splash screen
-    println!("\x1b[38;5;128m{}\x1b[0m", format!(r#"
+    println!(
+        "\x1b[38;5;128m{}\x1b[0m",
+        format!(
+            r#"
 
                 ,,   UU
             s#  lUL  UU       !p
@@ -32,15 +38,17 @@ pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSende
             `"  lUL  UU       '^                               888
                      ""                                        888    version {}
 
-            "#, version));
-
+            "#,
+            version
+        )
+    );
 
     let (mut rl, mut stdout) = Readline::new(format!("{} > ", our.name))?;
 
     loop {
         tokio::select! {
             prints = print_rx.recv() => match prints {
-                Some(print) => { writeln!(stdout, "{}", print)?; },
+                Some(print) => { writeln!(stdout, "\x1b[38;5;238m{}\x1b[0m", print)?; },
                 None => { break; }
             },
             cmd = rl.readline() => match cmd {
@@ -76,13 +84,16 @@ pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSende
 }
 
 fn parse_command(our_name: &str, line: &str) -> Option<Command> {
-    if line == "\n" { return None }
+    if line == "\n" {
+        return None;
+    }
     let (head, tail) = line.split_once(" ").unwrap_or((line, ""));
     match head {
         "!message" => {
             let (target_server, tail) = tail.split_once(" ")?;
             let (target_app, payload) = tail.split_once(" ")?;
-            let val = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+            let val = serde_json::from_str::<serde_json::Value>(payload)
+                .unwrap_or(serde_json::to_value(payload).ok()?);
             Some(Command::StartOfMessageStack(vec![Message {
                 message_type: MessageType::Request(false),
                 wire: Wire {

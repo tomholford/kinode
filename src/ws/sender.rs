@@ -62,11 +62,38 @@ pub async fn ws_sender(
     }
 
     while let Some(message_stack) = message_rx.recv().await {
-        let _ = print_tx
-            .send(format!("known peers: {:?}", peers.read().await.keys()))
-            .await;
         let stack_len = message_stack.len();
         let message = &message_stack[stack_len - 1];
+
+        // interpret message: if directed to us, just print for now.
+        // otherwise send to target.
+        // can perform debug commands if we are the sender
+        if message.wire.target_ship == our.name {
+            if message.wire.source_ship != our.name {
+                let _ = print_tx
+                    .send(format!(
+                        "\x1b[3;32m{}: {}\x1b[0m",
+                        message.wire.source_ship,
+                        message.payload.json.as_ref().unwrap()
+                    ))
+                    .await;
+            } else {
+                // available commands: peers
+                match message.payload.json.as_ref().unwrap() {
+                    serde_json::Value::String(s) => {
+                        if s == "peers" {
+                            let peer_read = peers.read().await;
+                            let peers: Vec<(&String, &Peer)> = peer_read.iter().collect();
+                            let _ = print_tx.send(format!("{:#?}", peers)).await;
+                        }
+                    }
+                    _ => {
+                        let _ = print_tx.send("ws: got unknown command".into()).await;
+                    }
+                }
+            }
+            continue
+        }
 
         let result = match our.ws_routing {
             Some(_) => {
@@ -256,7 +283,7 @@ async fn send_message(
                         None => encrypted,
                         Some(their_router) => {
                             if their_router == &our.name {
-                                match serde_json::to_vec(&RoutedFrom {
+                                match serde_json::to_vec(&WrappedMessage::From {
                                     from: our.name.clone(),
                                     contents: encrypted,
                                 }) {
@@ -483,10 +510,10 @@ async fn send_message_routed(
                 Err(_) => return Err(NetworkingError::NetworkingBug),
             };
 
-            let wrapped: WrappedMessage = WrappedMessage::To(RouteTo {
+            let wrapped: WrappedMessage = WrappedMessage::To {
                 to: target.clone(),
                 contents: encrypted,
-            });
+            };
 
             let wrapped_bytes = serde_json::to_vec(&wrapped).unwrap();
 

@@ -10,7 +10,7 @@ use futures::stream::{SplitSink, SplitStream};
 use ring::signature::{self, Ed25519KeyPair};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::{self};
@@ -35,6 +35,18 @@ pub struct Peer {
     // must have exactly one of these two
     pub router: Option<String>,
     pub direct_write_stream: Option<WriteStream>,
+}
+
+impl fmt::Debug for Peer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "pubkey: {}, router: {:?}, has_direct_stream: {}",
+            self.networking_address,
+            self.router,
+            self.direct_write_stream.is_some()
+        )
+    }
 }
 
 pub struct Router {
@@ -64,23 +76,11 @@ enum SuccessOrTimeout {
 /// parsed from Binary websocket message
 #[derive(Debug, Serialize, Deserialize)]
 enum WrappedMessage {
-    From(RoutedFrom),
-    To(RouteTo),
+    From { from: String, contents: Vec<u8> },
+    To { to: String, contents: Vec<u8> },
     Handshake(Handshake),
     LostPeer(String),
     PeerOffline(String),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct RouteTo {
-    pub to: String,
-    pub contents: Vec<u8>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct RoutedFrom {
-    pub from: String,
-    pub contents: Vec<u8>,
 }
 
 /// websockets driver.
@@ -97,7 +97,6 @@ pub async fn websockets(
 ) {
     // initialize peer-connection-map as empty -- can pre-populate as optimization?
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
-
     let keypair = Arc::new(keypair);
 
     // if we have networking info published in the pki,

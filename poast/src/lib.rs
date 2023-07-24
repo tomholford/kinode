@@ -45,7 +45,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
                             "HttpResponse": {
-                                "id": "TODO ID HERE",
+                                "id": message_from_loop["id"],
                                 "status": 201,
                                 "headers": "test: header",
                                 // {

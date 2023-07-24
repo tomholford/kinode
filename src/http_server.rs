@@ -5,10 +5,13 @@ use warp::{Reply, Filter, reply::Response as ReplyResponse};
 use warp::http::{Response, StatusCode, HeaderMap};
 use serde_json::{json, Map, Value};
 use tokio::sync::oneshot;
+use rand::{Rng, distributions::Alphanumeric};
 
 pub type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
 pub type HttpReceiver = tokio::sync::oneshot::Receiver<HttpResponse>;
 pub type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>; // TODO uuid?
+
+const ID_LENGTH: usize = 20;
 
 /// http driver
 pub async fn http_server(
@@ -49,7 +52,7 @@ async fn http_handle_connections(
       },
       HttpAction::HttpResponse(act) => {
         // if it is a response => send it on the channel here
-        let channel = http_response_senders.lock().unwrap().remove("TODO ID HERE").unwrap();
+        let channel = http_response_senders.lock().unwrap().remove(act.id.as_str()).unwrap();
         let _ = channel.send(HttpResponse {
           id: act.id,
           status: act.status,
@@ -108,8 +111,9 @@ async fn handler(
 
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let path_str = path.as_str().to_string();
+  let id = create_id();
   let message = Message {
-    message_type: MessageType::Request(true), // TODO no idea what this actually does...
+    message_type: MessageType::Request(true),
     wire: Wire {
       source_ship: our.clone().to_string(),
       source_app: "http_server".to_string(),
@@ -119,6 +123,7 @@ async fn handler(
     payload: Payload {
       json: Some(serde_json::json!(
         {
+          "id": id,
           "method": method.to_string(),
           "path": path_str,
           // "headers": headers, // TODO serialize to json not working
@@ -130,13 +135,13 @@ async fn handler(
   };
 
   let (response_sender, response_receiver) = oneshot::channel();
-  http_response_senders.lock().unwrap().insert("TODO ID HERE".to_string(), response_sender);
+  http_response_senders.lock().unwrap().insert(id, response_sender);
 
   message_tx.send(vec![message]).await.unwrap();
   let json_res = response_receiver.await.unwrap();
   // TODO send repsonse to outsdie world
   println!("RESPONSE IN HANDLER: {:?}", json_res);
-  let mut res = Response::builder();
+  // let mut res = Response::builder();
   let response = warp::reply::with_status(
     json_res.body,
     StatusCode::from_u16(json_res.status).unwrap()
@@ -148,4 +153,12 @@ async fn handler(
   // }
     // .headers(json_res.headers)
   Ok(response)
+}
+
+fn create_id() -> String {
+  rand::thread_rng()
+    .sample_iter(&Alphanumeric)
+    .take(ID_LENGTH)
+    .map(char::from)
+    .collect()
 }

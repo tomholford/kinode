@@ -35,7 +35,7 @@ pub async fn terminal(our: &Identity, version: &str, to_event_loop: MessageSende
             "#, version));
 
 
-    let (mut rl, mut stdout) = Readline::new("> ".into())?;
+    let (mut rl, mut stdout) = Readline::new(format!("{} > ", our.name))?;
 
     loop {
         tokio::select! {

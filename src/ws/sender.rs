@@ -202,6 +202,8 @@ async fn connect_to_router(
             );
 
             tokio::spawn(handle_aggregate_connection(
+                our.clone(),
+                keypair.clone(),
                 router.name.clone(),
                 routers.clone(),
                 read_stream,
@@ -247,6 +249,7 @@ async fn send_message(
             };
 
             match peer.direct_write_stream.as_mut() {
+                None => Err(NetworkingError::PeerOffline),
                 Some(stream) => {
                     // if we're their router, wrap in a RoutedFrom
                     let wrapped = match &peer.router {
@@ -268,29 +271,6 @@ async fn send_message(
                     match stream.send(tungstenite::Message::Binary(wrapped)).await {
                         Ok(_) => return Ok(SuccessOrTimeout::Success),
                         Err(_) => return Err(NetworkingError::MessageTimeout),
-                    }
-                }
-                None => {
-                    // use router to send message
-                    let router = match peer.router.clone() {
-                        Some(v) => v,
-                        None => return Err(NetworkingError::PeerOffline),
-                    };
-                    match peer_write.get_mut(&router) {
-                        Some(router) => match router.direct_write_stream.as_mut() {
-                            Some(stream) => {
-                                match stream.send(tungstenite::Message::Binary(encrypted)).await {
-                                    Ok(_) => return Ok(SuccessOrTimeout::Success),
-                                    Err(_) => return Err(NetworkingError::MessageTimeout),
-                                }
-                            }
-                            None => {
-                                return Err(NetworkingError::PeerOffline);
-                            }
-                        },
-                        None => {
-                            return Err(NetworkingError::PeerOffline);
-                        }
                     }
                 }
             }
@@ -339,7 +319,7 @@ async fn send_message(
                                 Err(_) => return Err(NetworkingError::PeerOffline),
                             };
 
-                            // get the router's handshake
+                            // get the target's handshake
                             let their_handshake: Handshake =
                                 match get_handshake(&mut read_stream).await {
                                     Ok(v) => v,
@@ -384,8 +364,90 @@ async fn send_message(
                 }
                 None => {
                     // use a router
-                    // TODO
-                    return Err(NetworkingError::NetworkingBug);
+                    // for now, just try the first one
+                    let router_name = target_id.allowed_routers.get(0).unwrap();
+
+                    // find the router
+                    let router: &Identity = match pki.get(router_name) {
+                        Some(v) => v,
+                        None => return Err(NetworkingError::PeerOffline),
+                    };
+
+                    let (ip, port) = match &router.ws_routing {
+                        Some(v) => v,
+                        None => return Err(NetworkingError::PeerOffline),
+                    };
+
+                    // connect to router
+                    let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                    match connect_async(ws_url).await {
+                        Err(_) => {
+                            return Err(NetworkingError::PeerOffline);
+                        }
+                        Ok((ws_stream, _response)) => {
+                            let (mut write_stream, mut read_stream) = ws_stream.split();
+
+                            // create our handshake
+                            let (ephemeral_secret, our_handshake) = match make_secret_and_handshake(
+                                our,
+                                keypair.clone(),
+                                target.into(),
+                                None,
+                                false,
+                            ) {
+                                Ok(v) => v,
+                                Err(_) => return Err(NetworkingError::NetworkingBug),
+                            };
+                            // send our handshake
+                            let _ = match write_stream
+                                .send(tungstenite::Message::Text(
+                                    serde_json::to_string(&our_handshake).unwrap(),
+                                ))
+                                .await
+                            {
+                                Ok(_) => (),
+                                Err(_) => return Err(NetworkingError::PeerOffline),
+                            };
+                            // get the target's handshake
+                            // XX NEED A MANUAL TIMEOUT HERE?
+                            let their_handshake: Handshake =
+                                match get_handshake(&mut read_stream).await {
+                                    Ok(v) => v,
+                                    Err(_) => return Err(NetworkingError::PeerOffline),
+                                };
+                            // verify handshake
+                            let (their_ephemeral_pk, nonce) = match validate_handshake(
+                                &their_handshake,
+                                &target_id,
+                                our_handshake.nonce.clone(),
+                            ) {
+                                Ok(v) => v,
+                                Err(_) => return Err(NetworkingError::PeerOffline),
+                            };
+                            peers.write().await.insert(
+                                target.clone(),
+                                Peer {
+                                    networking_address: target_id.address,
+                                    ephemeral_secret: ephemeral_secret.clone(),
+                                    their_ephemeral_pk: their_ephemeral_pk.clone(),
+                                    nonce: nonce.clone(),
+                                    router: Some(router_name.into()),
+                                    direct_write_stream: Some(write_stream),
+                                },
+                            );
+                            tokio::spawn(handle_direct_connection(
+                                target_id.clone(),
+                                read_stream,
+                                peers.clone(),
+                                ephemeral_secret.clone(),
+                                their_ephemeral_pk,
+                                nonce,
+                                kernel_message_tx.clone(),
+                            ));
+
+                            Ok(SuccessOrTimeout::TryAgain)
+                        }
+                    }
                 }
             }
         }

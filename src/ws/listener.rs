@@ -19,6 +19,8 @@ pub async fn ws_listener(
     _print_tx: PrintSender,
     tcp: TcpListener,
 ) {
+    let pass_throughs: PassThroughs = Arc::new(RwLock::new(HashMap::new()));
+
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         let stream = accept_async(MaybeTlsStream::Plain(stream)).await;
         match stream {
@@ -30,6 +32,7 @@ pub async fn ws_listener(
                     stream,
                     peers.clone(),
                     message_tx.clone(),
+                    pass_throughs.clone(),
                 )
                 .await;
                 // match closed {
@@ -53,6 +56,7 @@ async fn create_connection(
     ws_stream: Sock,
     peers: Peers,
     message_tx: MessageSender,
+    pass_throughs: PassThroughs,
 ) -> Result<(), String> {
     let (mut write_stream, mut read_stream) = ws_stream.split();
     // receive handshake, parse handshake
@@ -112,6 +116,7 @@ async fn create_connection(
                 message_tx.clone(),
                 pki.clone(),
                 peers.clone(),
+                pass_throughs.clone(),
             ));
         } else {
             // else,
@@ -146,66 +151,30 @@ async fn create_connection(
         // try to make a matching pass-through
         match pki.get(&handshake.target) {
             Some(target_id) => {
-                let from_1: Identity = their_id;
-                let mut write_stream_1 = write_stream;
-                let read_stream_1 = read_stream;
-                if target_id.ws_routing.is_some() {
-                    // try to connect directly to them and create a pass-through
-                    let (ip, port) = target_id.ws_routing.as_ref().unwrap();
-                    let ws_url: Url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
-                    match connect_async(ws_url).await {
-                        Err(_) => {
-                            return Err("error: failed to connect to router".into());
-                        }
-                        Ok((ws_stream_2, _response)) => {
-                            let (mut write_stream_2, mut read_stream_2) = ws_stream_2.split();
-                            // send handshake on behalf of initiator
-                            let _ = match write_stream_2
-                                .send(tungstenite::Message::Text(
-                                    serde_json::to_string(&handshake)
-                                        .map_err(|_| "failed to serialize handshake")?,
-                                ))
-                                .await
-                            {
-                                Ok(_) => (),
-                                Err(e) => return Err(format!("failed to send handshake: {}", e)),
-                            };
+                let from: Identity = their_id;
+                if target_id.ws_routing.is_none()
+                    && target_id.allowed_routers.contains(&our.name)
+                    && peers.read().await.contains_key(&handshake.target)
+                {
+                    // ok, we can route to them!
+                    let mut pt_writer = pass_throughs.write().await;
+                    match pt_writer.get_mut(&target_id.name) {
+                        None => return Err("target not routable".into()),
+                        Some(map) => map.insert(from.name.clone(), write_stream),
+                    };
 
-                            // get the other handshake
-                            let their_handshake: Handshake =
-                                get_handshake(&mut read_stream_2).await?;
+                    // spawn a new one-way pass-through
+                    tokio::spawn(one_way_pass_through_connection(
+                        handshake.target.clone(),
+                        from.name,
+                        read_stream,
+                        peers.clone(),
+                        Some(handshake),
+                    ));
 
-                            // FORWARD it back to the initiator
-                            let _ = match write_stream_1
-                                .send(tungstenite::Message::Text(
-                                    serde_json::to_string(&their_handshake)
-                                        .map_err(|_| "failed to serialize handshake")?,
-                                ))
-                                .await
-                            {
-                                Ok(_) => (),
-                                Err(e) => return Err(format!("failed to send handshake: {}", e)),
-                            };
-
-                            // finally, create the pass-through
-                            tokio::spawn(handle_pass_through_connection(
-                                from_1,
-                                write_stream_1,
-                                read_stream_1,
-                                target_id.clone(),
-                                write_stream_2,
-                                read_stream_2,
-                                peers.clone(),
-                            ));
-                            Ok(())
-                        }
-                    }
-                } else if !target_id.allowed_routers.is_empty() {
-                    // try to connect to one of their routers and create a pass-through
-                    println!("XX");
-                    return Ok(());
+                    Ok(())
                 } else {
-                    return Err("target unreachable via pki".into());
+                    return Err("target not routable".into());
                 }
             }
             None => return Err("target not found in onchain pki".into()),

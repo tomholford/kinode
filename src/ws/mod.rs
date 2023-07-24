@@ -24,6 +24,8 @@ type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type Routers = Arc<RwLock<HashMap<String, Router>>>;
 type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WriteStream = SplitSink<Sock, tungstenite::Message>;
+                                    // route-to,       outside-source -- stream can be from EITHER
+type PassThroughs = Arc<RwLock<HashMap<String, HashMap<String, WriteStream>>>>;
 
 pub struct Peer {
     pub networking_address: H256,
@@ -43,7 +45,7 @@ pub struct Router {
 /// contains identity and encryption keys, used in initial handshake.
 /// parsed from Text websocket message
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Handshake {
+pub struct Handshake {
     from: String,
     target: String,
     routing_request: bool,

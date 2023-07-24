@@ -517,6 +517,14 @@ async fn make_event_loop(
                             &mut process_handles,
                             &engine,
                         ).await;
+                    //  XX temporary branch to assist in pure networking debugging
+                    } else if to == "ws" {
+                        let _ = send_to_terminal.send(
+                            format!(
+                                "\x1b[3;32m{}: {}\x1b[0m",
+                                message.wire.source_ship, message.payload.json.unwrap()
+                            )
+                        ).await;
                     } else {
                         //  pass message to appropriate runtime/process
                         match senders.get(&to) {

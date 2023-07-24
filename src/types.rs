@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 use serde::{Serialize, Deserialize};
-use warp::{Filter};
 use thiserror::Error;
 
 use ethers::prelude::*;

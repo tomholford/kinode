@@ -1,14 +1,12 @@
 use crate::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use warp::{Reply, Filter, reply::Response as ReplyResponse};
-use warp::http::{Response, StatusCode, HeaderMap, header::HeaderName, header::HeaderValue};
-use serde_json::{json, Map, Value};
+use warp::{Reply, Filter};
+use warp::http::{StatusCode, HeaderMap, header::HeaderName, header::HeaderValue};
 use tokio::sync::oneshot;
 use rand::{Rng, distributions::Alphanumeric};
 
 pub type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
-pub type HttpReceiver = tokio::sync::oneshot::Receiver<HttpResponse>;
 pub type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>;
 
 const ID_LENGTH: usize = 20;
@@ -107,8 +105,7 @@ async fn handler(
   target_app: String,
   http_response_senders: HttpResponseSenders,
   message_tx: MessageSender,
-  print_tx: PrintSender
-
+  _print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let path_str = path.as_str().to_string();
   let id = create_id();
@@ -139,19 +136,15 @@ async fn handler(
 
   message_tx.send(vec![message]).await.unwrap();
   let json_res = response_receiver.await.unwrap();
-  // TODO send repsonse to outsdie world
-  println!("RESPONSE IN HANDLER: {:?}", json_res);
-  // let mut res = Response::builder();
+  
   let reply = warp::reply::with_status(
     json_res.body,
     StatusCode::from_u16(json_res.status).unwrap()
   );
-  // TODO add headers
   let mut response = reply.into_response();
 
-  let existing_headers = response.headers_mut();
-
   // Merge the deserialized headers into the existing headers
+  let existing_headers = response.headers_mut();
   for (header_name, header_value) in deserialize_headers(json_res.headers).iter() {
     existing_headers.insert(header_name.clone(), header_value.clone());
   }

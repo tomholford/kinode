@@ -2,14 +2,14 @@ use crate::types::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use warp::{Reply, Filter, reply::Response as ReplyResponse};
-use warp::http::{Response, StatusCode, HeaderMap};
+use warp::http::{Response, StatusCode, HeaderMap, header::HeaderName, header::HeaderValue};
 use serde_json::{json, Map, Value};
 use tokio::sync::oneshot;
 use rand::{Rng, distributions::Alphanumeric};
 
 pub type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
 pub type HttpReceiver = tokio::sync::oneshot::Receiver<HttpResponse>;
-pub type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>; // TODO uuid?
+pub type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>;
 
 const ID_LENGTH: usize = 20;
 
@@ -126,7 +126,7 @@ async fn handler(
           "id": id,
           "method": method.to_string(),
           "path": path_str,
-          // "headers": headers, // TODO serialize to json not working
+          "headers": serialize_headers(&headers),
           "body": body
         }
       )),
@@ -142,18 +142,25 @@ async fn handler(
   // TODO send repsonse to outsdie world
   println!("RESPONSE IN HANDLER: {:?}", json_res);
   // let mut res = Response::builder();
-  let response = warp::reply::with_status(
+  let reply = warp::reply::with_status(
     json_res.body,
     StatusCode::from_u16(json_res.status).unwrap()
   );
   // TODO add headers
-  // add headers
-  // for (name, value) in headers.iter() {
-  //   builder = builder.header(name, value.clone());
-  // }
-    // .headers(json_res.headers)
+  let mut response = reply.into_response();
+
+  let existing_headers = response.headers_mut();
+
+  // Merge the deserialized headers into the existing headers
+  for (header_name, header_value) in deserialize_headers(json_res.headers).iter() {
+    existing_headers.insert(header_name.clone(), header_value.clone());
+  }
   Ok(response)
 }
+
+//
+//  helpers
+//
 
 fn create_id() -> String {
   rand::thread_rng()
@@ -161,4 +168,25 @@ fn create_id() -> String {
     .take(ID_LENGTH)
     .map(char::from)
     .collect()
+}
+
+fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
+  let mut hashmap = HashMap::new();
+  for (key, value) in headers.iter() {
+      let key_str = key.to_string();
+      let value_str = value.to_str().unwrap_or("").to_string();
+      hashmap.insert(key_str, value_str);
+  }
+  hashmap
+}
+
+fn deserialize_headers(hashmap: HashMap<String, String>) -> HeaderMap {
+  let mut header_map = HeaderMap::new();
+  for (key, value) in hashmap {
+    let key_bytes = key.as_bytes();
+    let key_name = HeaderName::from_bytes(key_bytes).unwrap();
+    let value_header = HeaderValue::from_str(&value).unwrap();
+    header_map.insert(key_name, value_header);
+  }
+  header_map
 }

@@ -47,10 +47,9 @@ impl bindings::MicrokernelProcess for Component {
                             "HttpResponse": {
                                 "id": message_from_loop["id"],
                                 "status": 201,
-                                "headers": "test: header",
-                                // {
-                                //     "Content-Type": "application/json",
-                                // },
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                },
                                 "body": "{\"foo\":\"bar\"}"
                             }
                         }).to_string()),

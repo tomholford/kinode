@@ -182,7 +182,7 @@ async fn aggregate_connection(
                 }
             }
             WrappedMessage::Handshake(handshake) => {
-                println!("getting that sweet handshake data");
+                // println!("getting that sweet handshake data");
                 let their_id: Identity = match pki.get(&handshake.from) {
                     Some(v) => v.clone(),
                     None => continue,

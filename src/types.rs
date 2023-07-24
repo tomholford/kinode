@@ -109,6 +109,12 @@ pub enum FileSystemRequest {
 
 // http_server commands
 //
+#[derive(Debug, Serialize, Deserialize)]
+pub enum HttpAction {
+    HttpConnect(HttpConnect),
+    HttpResponse(HttpResponse),
+}
+
 // all incoming requests to http://<url>/<path> will get sent to app
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HttpConnect {
@@ -118,9 +124,9 @@ pub struct HttpConnect {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HttpResponse {
-    pub id: uuid::Uuid,
+    pub id: String, // TODO uuid?
     pub status: String, // TODO type
     pub headers: String, // TODO type
-    pub data: String, // TODO type (probably bytes?)
+    pub body: String, // TODO type (probably bytes?)
 }
 

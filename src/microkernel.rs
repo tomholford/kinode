@@ -478,19 +478,19 @@ async fn make_event_loop(
                 let message_stack = recv_in_loop.recv().await.unwrap();
                 let stack_len = message_stack.len();
                 let message = message_stack[stack_len - 1].clone();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
-                            message.wire.source_ship,
-                            message.wire.source_app,
-                            message.wire.target_ship,
-                            message.wire.target_app,
-                            message.payload.json,
-                        )
-                    )
-                    .await
-                    .unwrap();
+                // send_to_terminal
+                //     .send(
+                //         format!(
+                //             "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
+                //             message.wire.source_ship,
+                //             message.wire.source_app,
+                //             message.wire.target_ship,
+                //             message.wire.target_app,
+                //             message.payload.json,
+                //         )
+                //     )
+                //     .await
+                //     .unwrap();
                 if our_name != message.wire.target_ship {
                     match send_to_wss.send(message_stack).await {
                         Ok(()) => {

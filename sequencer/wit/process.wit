@@ -1,0 +1,59 @@
+package component:microkernel-process
+
+interface types {
+    record wit-wire {
+        source-ship: string,
+        source-app:  string,
+        target-ship: string,
+        target-app:  string,
+    }
+    
+    record wit-payload {
+        json: option<string>,
+        bytes: option<list<u8>>,
+    }
+
+    variant wit-message-type {
+        request(bool),
+        response,
+    }
+
+    record wit-request-type-with-target {
+        is-expecting-response: bool,
+        target-ship: string,
+        target-app: string,
+    }
+
+    variant wit-protomessage-type {
+        request(wit-request-type-with-target),
+        response,
+    }
+    
+    record wit-message {
+        message-type: wit-message-type,
+        wire: wit-wire,
+        payload: wit-payload,
+    }
+
+    record wit-protomessage {
+        protomessage-type: wit-protomessage-type,
+        payload: wit-payload,
+    }
+}
+
+world microkernel-process {
+    use types.{
+        wit-wire,
+        wit-message-type,
+        wit-payload,
+        wit-message,
+        wit-request-type-with-target,
+        wit-protomessage-type,
+        wit-protomessage,
+    }
+
+    import print-to-terminal: func(message: string)
+    import yield-results: func(results: list<wit-protomessage>)
+    import await-next-message: func() -> list<wit-message>
+    export run-process: func(our-name: string, process-name: string)
+}

@@ -89,6 +89,7 @@ struct Process {
     contexts: HashMap<u64, ProcessContext>,
 }
 
+#[derive(Debug)]
 struct ProcessContext {
     proximate: WrappedMessage,         //  kernel only
     ultimate: Option<WrappedMessage>,  //  kernel only
@@ -127,6 +128,7 @@ impl Host for Process {
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
     async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
+        println!("yr: results {:?}", results);
         send_process_results_to_loop(
             results,
             self.metadata.our_name.clone(),
@@ -232,6 +234,7 @@ async fn send_process_results_to_loop(
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) -> () {
+    println!("sprtl: prompting_message, results: {:?}, {:?}", prompting_message, results);
     for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
         let new_context = match serde_json::from_str(new_context_string) {
             Ok(r) => Some(r),
@@ -294,6 +297,7 @@ async fn send_process_results_to_loop(
                                     println!("couldn't find context to route response");
                                     continue;
                                 };
+                                println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
                                 let Some(ref ultimate_message) = context.ultimate else {
                                     println!("couldn't find ultimate cause to route response");
                                     continue;
@@ -303,8 +307,8 @@ async fn send_process_results_to_loop(
                                     MessageType::Request(is_expecting_response) => {
                                         if is_expecting_response {
                                             (
-                                                ultimate_message.message.wire.target_ship.clone(),
-                                                ultimate_message.message.wire.target_app.clone(),
+                                                ultimate_message.message.wire.source_ship.clone(),
+                                                ultimate_message.message.wire.source_app.clone(),
                                             )
                                         } else {
                                             let Some(rsvp) = ultimate_message.rsvp.clone() else {
@@ -353,6 +357,11 @@ async fn send_process_results_to_loop(
             }
         };
 
+        println!("contexts before modification");
+        for (key, val) in contexts.iter() {
+            println!("{}: {:?}", key, val);
+        }
+
         //  modify contexts if necessary
         //   note that this could be rolled into the `match` making Message above;
         //   if performance is bad here, roll into above
@@ -375,20 +384,53 @@ async fn send_process_results_to_loop(
                             );
                         },
                         MessageType::Response => {
-                            //  ultimate is the ultimate of the prompt of Response
-                            let Some(context) = contexts.get(&prompting_message.id) else {
-                                println!("no response context found");
-                                continue;
-                            };
+                            // let Some(context) = contexts.get(&prompting_message.id) else {
+                            //     println!("no response context found");
+                            //     continue;
+                            // };
 
-                            contexts.insert(
-                                wrapped_message.id,
-                                ProcessContext::new(
-                                    wrapped_message.clone(),
-                                    context.ultimate.clone(),
-                                    new_context,
-                                )
-                            );
+                            // contexts.insert(
+                            //     wrapped_message.id,
+                            //     ProcessContext::new(
+                            //         wrapped_message.clone(),
+                            //         context.ultimate.clone(),
+                            //         new_context,
+                            //     )
+                            // );
+                            match contexts.get(&prompting_message.id) {
+                                Some(context) => {
+                                    //  ultimate is the ultimate of the prompt of Response
+                                    contexts.insert(
+                                        wrapped_message.id,
+                                        ProcessContext::new(
+                                            wrapped_message.clone(),
+                                            context.ultimate.clone(),
+                                            new_context,
+                                        )
+                                    );
+                                },
+                                None => {
+                                    //  should this even be allowed?
+                                    contexts.insert(
+                                        wrapped_message.id,
+                                        ProcessContext::new(
+                                            wrapped_message.clone(),
+                                            Some(prompting_message.clone()),
+                                            new_context,
+                                        )
+                                    );
+                                },
+                            }
+                            // if let Some(context) = contexts.get(&prompting_message.id) {
+                            //     contexts.insert(
+                            //         wrapped_message.id,
+                            //         ProcessContext::new(
+                            //             wrapped_message.clone(),
+                            //             context.ultimate.clone(),
+                            //             new_context,
+                            //         )
+                            //     );
+                            // }
                         },
                     }
                 },
@@ -404,6 +446,15 @@ async fn send_process_results_to_loop(
                 },
             }
         }
+
+        println!("contexts after modification");
+        for (key, val) in contexts.iter() {
+            println!("{}: {:?}", key, val);
+        }
+
+        // println!("sprtl: prompting_message, results, contexts: {:?}, {:?}, {:?}", prompting_message, results, contexts);
+        let Some(prompting_message) = prompting_message else {panic!("oops")};
+        println!("sprtl: prompting_message, resulting_message: {}, {}", prompting_message, wrapped_message);
 
         send_to_loop
             .send(wrapped_message)
@@ -721,6 +772,9 @@ async fn make_event_loop(
             let mut process_handles: ProcessHandles = HashMap::new();
             loop {
                 let wrapped_message = recv_in_loop.recv().await.unwrap();
+                send_to_terminal.send(format!("event loop: got message: {}", wrapped_message))
+                    .await
+                    .unwrap();
                 // print_stack_to_terminal(
                 //     "event loop: got message stack",
                 //     &message_stack,

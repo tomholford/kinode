@@ -212,6 +212,7 @@ async fn handle_request(
     send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) -> Result<(), Error> {
+    println!("filesystem: got {}", message);
     let WrappedMessage { id, rsvp, message } = message;
     if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
@@ -220,7 +221,12 @@ async fn handle_request(
         panic!("filesystem: request must have JSON payload, got: {:?}", message);
     };
 
-    let request: FileSystemRequest = serde_json::from_value(value).unwrap();
+    let request: FileSystemRequest = match serde_json::from_value(value) {
+        Ok(r) => r,
+        Err(e) => {
+            panic!("filesystem: couldn't parse Request: {:?}, with error: {}", message.payload.json, e)
+        },
+    };
 
     let source_app = &message.wire.source_app;
     // let file_path = get_file_path(&request.uri_string).await;

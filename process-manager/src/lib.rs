@@ -80,7 +80,7 @@ struct ProcessMetadata {
 type ProcessMetadatas = HashMap<String, ProcessMetadata>;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FileSystemResponseContext {
+struct FileSystemReadContext {
     process_name: String,
     wasm_bytes_uri: String,
 }
@@ -178,7 +178,7 @@ impl bindings::MicrokernelProcess for Component {
                                     bytes: None,
                                 },
                             };
-                            let context = serde_json::to_string(&FileSystemResponseContext{
+                            let context = serde_json::to_string(&FileSystemReadContext {
                                 process_name: start.process_name,
                                 wasm_bytes_uri: start.wasm_bytes_uri,
                             }).unwrap();
@@ -220,7 +220,7 @@ impl bindings::MicrokernelProcess for Component {
                             "filesystem",
                             Some(wasm_bytes),
                         ) => {
-                            let context: FileSystemResponseContext =
+                            let context: FileSystemReadContext =
                                 serde_json::from_str(&context).unwrap();
 
                             let kernel_start_process_request = bindings::WitProtomessage {

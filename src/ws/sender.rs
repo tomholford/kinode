@@ -74,12 +74,21 @@ pub async fn ws_sender(
                     .send(format!(
                         "\x1b[3;32m{}: {}\x1b[0m",
                         message.wire.source_ship,
-                        message.payload.json.as_ref().unwrap()
+                        message
+                            .payload
+                            .json
+                            .as_ref()
+                            .unwrap_or(&serde_json::Value::Null)
                     ))
                     .await;
             } else {
                 // available commands: peers
-                match message.payload.json.as_ref().unwrap() {
+                match message
+                    .payload
+                    .json
+                    .as_ref()
+                    .unwrap_or(&serde_json::Value::Null)
+                {
                     serde_json::Value::String(s) => {
                         if s == "peers" {
                             let peer_read = peers.read().await;
@@ -201,7 +210,12 @@ async fn connect_to_router(
         .get(router_name)
         .ok_or("error: router not found in PKI")?;
     let router_ws_url: Url = match &router.ws_routing {
-        Some((ip, port)) => Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap(),
+        Some((ip, port)) => match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err("error: failed to parse router websocket address".into());
+            }
+        },
         None => {
             return Err("error: router has no websocket address".into());
         }
@@ -335,7 +349,10 @@ async fn send_message(
             match &target_id.ws_routing {
                 Some((ip, port)) => {
                     // connect directly
-                    let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                    let ws_url = match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+                        Ok(v) => v,
+                        Err(_) => return Err(NetworkingError::PeerOffline),
+                    };
                     match connect_async(ws_url).await {
                         Err(_) => {
                             return Err(NetworkingError::PeerOffline);
@@ -426,7 +443,10 @@ async fn send_message(
                     };
 
                     // connect to router
-                    let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                    let ws_url = match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+                        Ok(v) => v,
+                        Err(_) => return Err(NetworkingError::PeerOffline),
+                    };
                     match connect_async(ws_url).await {
                         Err(_) => {
                             return Err(NetworkingError::PeerOffline);

@@ -120,7 +120,6 @@ async fn aggregate_connection(
     self_message_tx: MessageSender,
     kernel_message_tx: MessageSender,
 ) -> Result<(), String> {
-    // println!("aggregate connection!");
     while let Some(msg) = read_stream.next().await {
         let wrapped_message = match msg {
             Ok(msg) => match serde_json::from_slice::<WrappedMessage>(&msg.clone().into_data()) {
@@ -156,15 +155,12 @@ async fn aggregate_connection(
                     Ok(v) => v,
                     Err(e) => return Err(format!("error deserializing message: {}", e)),
                 };
-
-                // println!("\x1b[3;32m got message: {:?} \x1b[0m\n", message);
                 match kernel_message_tx.send(vec![message]).await {
                     Ok(_) => {}
                     Err(e) => return Err(format!("error sending message: {}", e)),
                 }
             }
             WrappedMessage::Handshake(handshake) => {
-                // println!("getting that sweet handshake data");
                 let their_id: Identity = match pki.get(&handshake.from) {
                     Some(v) => v.clone(),
                     None => continue,
@@ -254,7 +250,6 @@ async fn forwarding_connection(
     peers: Peers,
     pass_throughs: PassThroughs,
 ) -> Result<(), String> {
-    // println!("forwarding connection!");
     // may need to build new connections here at times
     while let Some(msg) = read_stream.next().await {
         let wrapped_message = match msg {
@@ -278,7 +273,6 @@ async fn forwarding_connection(
                         Ok(v) => v,
                         Err(e) => return Err(format!("error deserializing message: {}", e)),
                     };
-                    // println!("\x1b[3;32m got message: {:?} \x1b[0m\n", message);
                     match message_tx.send(vec![message]).await {
                         Ok(_) => {}
                         Err(e) => return Err(format!("error sending message: {}", e)),
@@ -504,7 +498,6 @@ async fn direct_connection(
     nonce: Arc<Nonce>,
     message_tx: MessageSender,
 ) -> Result<(), String> {
-    // println!("direct connection!");
     while let Some(msg) = read_stream.next().await {
         match msg {
             Ok(msg) => {
@@ -518,7 +511,6 @@ async fn direct_connection(
                     Ok(v) => v,
                     Err(e) => return Err(format!("error deserializing message: {}", e)),
                 };
-                // println!("\x1b[3;32m got message: {:?} \x1b[0m\n", message);
                 match message_tx.send(vec![message]).await {
                     Ok(_) => {}
                     Err(e) => return Err(format!("error sending message: {}", e)),
@@ -542,10 +534,6 @@ pub async fn one_way_pass_through_connection(
     peers: Peers,
     init: Option<Handshake>,
 ) {
-    println!(
-        "opened one-way pass-through connection {} -> {}",
-        from, forward_to
-    );
     if init.is_some() {
         let hs = WrappedMessage::Handshake(init.unwrap());
         let wrapped_bytes = match serde_json::to_vec(&hs) {
@@ -615,8 +603,4 @@ pub async fn one_way_pass_through_connection(
         &forward_to,
         WrappedMessage::LostPeer(from.clone()),
     ).await;
-    println!(
-        "lost one-way pass-through connection {} -> {}",
-        from, forward_to
-    );
 }

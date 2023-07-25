@@ -85,10 +85,6 @@ async fn main() {
     assert!(hex_pubkey == our.networking_key);
 
     /*  we are currently running 4 I/O modules:
-    let _ = print_sender.send(format!("{}.. now online", our_name)).await;
-    let _ = print_sender.send(format!("our networking public key: {}", hex_pubkey)).await;
-
-    /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,

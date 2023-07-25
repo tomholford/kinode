@@ -8,28 +8,29 @@ struct Component;
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
         bindings::print_to_terminal("poast: start");
-        bindings::yield_results(
-            vec![
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target_ship: our.as_str(),
-                            target_app: "http_server",
-                        }
-                    ),
-                    payload: &WitPayload {
-                        json: Some(serde_json::json!({
-                            "HttpConnect": {
-                                "path": "/poast", // TODO at some point we need URL pattern matching...later...
-                                "app": dap
-                            }
-                        }).to_string()),
-                        bytes: None
-                    }
-                },
-            ].as_slice()
-        );
+        // TODO make this real
+        // bindings::yield_results(
+        //     vec![
+        //         bindings::WitProtomessage {
+        //             protomessage_type: WitProtomessageType::Request(
+        //                 WitRequestTypeWithTarget {
+        //                     is_expecting_response: false,
+        //                     target_ship: our.as_str(),
+        //                     target_app: "http_server",
+        //                 }
+        //             ),
+        //             payload: &WitPayload {
+        //                 json: Some(serde_json::json!({
+        //                     "HttpConnect": {
+        //                         "path": "/poast", // TODO at some point we need URL pattern matching...later...
+        //                         "app": dap
+        //                     }
+        //                 }).to_string()),
+        //                 bytes: None
+        //             }
+        //         },
+        //     ].as_slice()
+        // );
 
         loop {
             let mut message_stack = bindings::await_next_message();
@@ -46,13 +47,12 @@ impl bindings::MicrokernelProcess for Component {
                     protomessage_type: WitProtomessageType::Response,
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
-                            "HttpResponse": {
-                                "id": message_from_loop["id"],
-                                "status": 201,
-                                "headers": {
-                                    "Content-Type": "application/json",
-                                },
-                            }
+                            "action": "response",
+                            "id": message_from_loop["id"],
+                            "status": 201,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
                         }).to_string()),
                         bytes: Some("{\"foo\":\"bar\"}".as_bytes().to_vec())
                     }

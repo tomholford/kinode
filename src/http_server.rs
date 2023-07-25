@@ -18,17 +18,15 @@ pub async fn http_server(
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
-  let connections: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
   let http_response_senders = Arc::new(Mutex::new(HashMap::new()));
 
   tokio::join!(
-    http_serve(our.clone(), connections.clone(), http_response_senders.clone(), message_tx.clone(), print_tx.clone()),
-    http_handle_connections(connections, http_response_senders, message_rx, print_tx)
+    http_serve(our.clone(), http_response_senders.clone(), message_tx.clone(), print_tx.clone()),
+    http_handle_messages(http_response_senders, message_rx, print_tx)
   );
 }
 
-async fn http_handle_connections(
-  connections: Arc<Mutex<HashMap<String, String>>>,
+async fn http_handle_messages(
   http_response_senders: HttpResponseSenders,
   mut message_rx: MessageReceiver,
   print_tx: PrintSender,
@@ -40,32 +38,20 @@ async fn http_handle_connections(
     let Some(value) = message.payload.json.clone() else {
       panic!("http_server: action must have JSON payload, got: {:?}", message);
     };
-    let request: HttpAction = serde_json::from_value(value).unwrap();
-
-    match request {
-      HttpAction::HttpConnect(act) => {
-        let mut routes_map = connections.lock().unwrap();
-        routes_map.insert(act.path, act.app);
-        let _ = print_tx.send(format!("connected app {:?}", routes_map)).await;
-      },
-      HttpAction::HttpResponse(act) => {
-        // if it is a response => send it on the channel here
-        let _ = print_tx.send(format!("GOT A RESPONSE {:?}", act.id)).await;
-        let channel = http_response_senders.lock().unwrap().remove(act.id.as_str()).unwrap();
-        let _ = channel.send(HttpResponse {
-          id: act.id,
-          status: act.status,
-          headers: act.headers,
-          body: message.payload.bytes,
-        });
-      }
+    let request: HttpResponse = serde_json::from_value(value).unwrap();
+    let _ = print_tx.send(format!("GOT A RESPONSE {:?}", request.id)).await;
+    let channel = http_response_senders.lock().unwrap().remove(request.id.as_str()).unwrap();
+    let _ = channel.send(HttpResponse {
+      id: request.id,
+      status: request.status,
+      headers: request.headers,
+      body: message.payload.bytes,
+    });
     }
   }
-}
 
 async fn http_serve(
   our: String,
-  connections: Arc<Mutex<HashMap<String, String>>>,
   http_response_senders: HttpResponseSenders,
   message_tx: MessageSender,
   print_tx: PrintSender,
@@ -76,25 +62,22 @@ async fn http_serve(
     .and(warp::filters::header::headers_cloned())
     .and(warp::filters::body::bytes())
     .and(warp::any().map(move || our.clone()))
-    .and(warp::any().map(move || connections.clone()))
     .and(warp::any().map(move || http_response_senders.clone()))
     .and(warp::any().map(move || message_tx.clone()))
     .and(warp::any().map(move || print_tx.clone()))
-    .and_then(|
-        method,
-        path: warp::path::FullPath,
-        headers,
-        body,
-        our,
-        connections: Arc<Mutex<HashMap<String, String>>>,
-        http_response_senders,
-        message_tx,
-        print_tx
-      | async move {
-      // TODO error handling here
-      let target_app = connections.lock().unwrap().get(&path.as_str().to_string()).unwrap().to_string();
-      handler(method, path, headers, body, our, target_app, http_response_senders, message_tx, print_tx).await
-    });
+    .and_then(handler);
+    // .and_then(|
+    //     method,
+    //     path: warp::path::FullPath,
+    //     headers,
+    //     body,
+    //     our,
+    //     http_response_senders,
+    //     message_tx,
+    //     print_tx
+    //   | async move {
+    //   handler(method, path, headers, body, our, http_response_senders, message_tx, print_tx).await
+    // });
 
   warp::serve(filter).run(([127, 0, 0, 1], 8080)).await;
 }
@@ -105,7 +88,6 @@ async fn handler(
   headers: warp::http::HeaderMap,
   body: warp::hyper::body::Bytes,
   our: String,
-  target_app: String,
   http_response_senders: HttpResponseSenders,
   message_tx: MessageSender,
   print_tx: PrintSender
@@ -118,11 +100,12 @@ async fn handler(
       source_ship: our.clone().to_string(),
       source_app: "http_server".to_string(),
       target_ship: our.clone().to_string(),
-      target_app: target_app,
+      target_app: "http_bindings".to_string(),
     },
     payload: Payload {
       json: Some(serde_json::json!(
         {
+          "action": "request".to_string(),
           "id": id,
           "method": method.to_string(),
           "path": path_str,

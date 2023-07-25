@@ -42,6 +42,7 @@ cd ..
 # Terminal A: add some test apps to process_manager and run a simple test
 
 cargo r process_manager.wasm tuna
+!message tuna process_manager {"type": "Start", "process_name": "http_bindings", "wasm_bytes_uri": "fs://http_bindings.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 

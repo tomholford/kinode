@@ -149,7 +149,6 @@ async fn create_connection(
         // try to make a matching pass-through
         match pki.get(&handshake.target) {
             Some(target_id) => {
-                let from: Identity = their_id;
                 if target_id.ws_routing.is_none()
                     && target_id.allowed_routers.contains(&our.name)
                     && peers.read().await.contains_key(&handshake.target)
@@ -158,13 +157,13 @@ async fn create_connection(
                     let mut pt_writer = pass_throughs.write().await;
                     match pt_writer.get_mut(&target_id.name) {
                         None => return Err("target not routable".into()),
-                        Some(map) => map.insert(from.name.clone(), write_stream),
+                        Some(map) => map.insert(their_id.name.clone(), write_stream),
                     };
 
                     // spawn a new one-way pass-through
                     tokio::spawn(one_way_pass_through_connection(
                         handshake.target.clone(),
-                        from.name,
+                        their_id.name,
                         read_stream,
                         peers.clone(),
                         Some(handshake),

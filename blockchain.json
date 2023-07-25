@@ -11,7 +11,7 @@
         "name": "loach",
         "address": "0x00000000000000000000000000000000000000000000000000000000cafebabe",
         "networking_key": "4ba6e48623ff21713aebee37230d39641bd86a871e548955237daa7b93a71ce7",
-        "ws_routing": ["localhost", 9090],
+        "ws_routing": ["147.135.114.167", 9090],
         "allowed_routers": [],
         "routing_for": ["squid"]
     },
@@ -19,7 +19,7 @@
         "name": "tuna",
         "address": "0x00000000000000000000000000000000000000000000000000000000faceface",
         "networking_key": "d7449f10932c8beb05d5251560862bad81b7803810d7be70d3be1e04903316f4",
-        "ws_routing": ["localhost", 9002],
+        "ws_routing": ["147.135.114.167", 9002],
         "allowed_routers": [],
         "routing_for": ["dolph"]
     },

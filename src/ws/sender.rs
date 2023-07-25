@@ -171,7 +171,6 @@ pub async fn ws_sender(
                             },
                         }])
                         .await;
-                    let _ = print_tx.send(format!("message sent")).await;
                 }
             },
             Err(e) => {

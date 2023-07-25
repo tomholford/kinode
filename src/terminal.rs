@@ -49,23 +49,31 @@ pub async fn terminal(
         tokio::select! {
             prints = print_rx.recv() => match prints {
                 Some(print) => { writeln!(stdout, "\x1b[38;5;238m{}\x1b[0m", print)?; },
-                None => { break; }
+                None => {
+                    writeln!(stdout, "terminal: lost print channel, crashing")?;
+                    break;
+                }
             },
             cmd = rl.readline() => match cmd {
                 Ok(line) => {
                     rl.add_history_entry(line.clone());
-                    match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
-                        Command::StartOfMessageStack(messages) => {
-                            to_event_loop.send(messages).await.unwrap();
-                            // writeln!(stdout, "{}", line)?;
-                        },
-                        Command::Quit => {
-                            break;
-                        },
-                        Command::Invalid => {
-                            writeln!(stdout, "invalid command: {}", line)?;
-                        }
-                    }
+                    let _err = to_event_loop.send(
+                        vec![
+                            Message {
+                                message_type: MessageType::Request(false),
+                                wire: Wire {
+                                    source_ship: our.name.clone(),
+                                    source_app: "terminal".into(),
+                                    target_ship: our.name.clone(),
+                                    target_app: "terminal".into(),
+                                },
+                                payload: Payload {
+                                    json: Some(serde_json::Value::String(line)),
+                                    bytes: None,
+                                },
+                            }
+                        ]
+                    ).await;
                 }
                 Err(ReadlineError::Eof) => {
                     writeln!(stdout, "<EOF>")?;
@@ -73,7 +81,7 @@ pub async fn terminal(
                 }
                 Err(ReadlineError::Interrupted) => { break; }
                 Err(e) => {
-                    writeln!(stdout, "Error: {e:?}")?;
+                    writeln!(stdout, "terminal error: {e:?}")?;
                     break;
                 }
             }
@@ -81,35 +89,4 @@ pub async fn terminal(
     }
     rl.flush()?;
     Ok(())
-}
-
-fn parse_command(our_name: &str, line: &str) -> Option<Command> {
-    if line == "\n" {
-        return None;
-    }
-    let (head, tail) = line.split_once(" ").unwrap_or((line, ""));
-    match head {
-        "!message" => {
-            let (target_server, tail) = tail.split_once(" ")?;
-            let (target_app, payload) = tail.split_once(" ")?;
-            let val = serde_json::from_str::<serde_json::Value>(payload)
-                .unwrap_or(serde_json::to_value(payload).ok()?);
-            Some(Command::StartOfMessageStack(vec![Message {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our_name.to_string(),
-                    source_app: "terminal".to_string(),
-                    target_ship: target_server.to_string(),
-                    target_app: target_app.to_string(),
-                },
-                payload: Payload {
-                    json: Some(val),
-                    bytes: None,
-                },
-            }]))
-        }
-        "!quit" => Some(Command::Quit),
-        "!exit" => Some(Command::Quit),
-        _ => None,
-    }
 }

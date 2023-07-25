@@ -145,7 +145,24 @@ pub async fn ws_sender(
                     let _ = self_message_tx.send(vec![message.clone()]).await;
                 }
                 SuccessOrTimeout::Success => {
-                    continue;
+                    let _ = kernel_message_tx
+                        .send(vec![Message {
+                            message_type: MessageType::Response,
+                            wire: Wire {
+                                source_ship: our.name.clone(),
+                                source_app: "ws".into(),
+                                target_ship: our.name.clone(),
+                                target_app: message.wire.source_app.clone(),
+                            },
+                            payload: Payload {
+                                json: Some(
+                                    serde_json::to_value(SuccessOrTimeout::Success).unwrap(),
+                                ),
+                                bytes: None,
+                            },
+                        }])
+                        .await;
+                    let _ = print_tx.send(format!("message sent")).await;
                 }
             },
             Err(e) => {

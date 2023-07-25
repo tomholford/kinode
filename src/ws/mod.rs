@@ -68,6 +68,7 @@ pub struct Handshake {
     nonce: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 enum SuccessOrTimeout {
     Success,
     Timeout,

@@ -105,14 +105,3 @@ pub enum FileSystemRequest {
     Append(String),
     AlterReadPermissions(Vec<String>)
 }
-
-// http_server commands
-//
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpResponse {
-    pub id: String,
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>, // TODO might need this
-}
-

@@ -79,7 +79,7 @@ impl bindings::MicrokernelProcess for Component {
                         );
                     }
                 },
-                WitMessageType::Response => {
+                WitMessageType::Response => { // TODO might be able to get rid of this if we structure it as a Request(false)?
                     bindings::yield_results(vec![
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,

@@ -5,9 +5,18 @@ use warp::{Reply, Filter};
 use warp::http::{StatusCode, HeaderMap, header::HeaderName, header::HeaderValue};
 use tokio::sync::oneshot;
 use rand::{Rng, distributions::Alphanumeric};
+use serde::{Serialize, Deserialize};
 
-pub type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
-pub type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>;
+// types and constants
+#[derive(Debug, Serialize, Deserialize)]
+struct HttpResponse {
+    pub id: String,
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
+}
+type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
+type HttpResponseSenders = Arc<Mutex<HashMap<String, HttpSender>>>;
 
 const ID_LENGTH: usize = 20;
 

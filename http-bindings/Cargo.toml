@@ -13,7 +13,7 @@ wit-bindgen = { version = "0.8.0", default_features = false }
 crate-type = ["cdylib"]
 
 [package.metadata.component]
-# package = "component:poast"
+# package = "component:http-bindings"
 package = "component:microkernel-process"
 
 [package.metadata.component.target]

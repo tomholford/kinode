@@ -35,7 +35,7 @@ impl bindings::MicrokernelProcess for Component {
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Request(
                                             WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
+                                                is_expecting_response: false,
                                                 target_ship: our.as_str(),
                                                 target_app: app,
                                             }
@@ -79,21 +79,7 @@ impl bindings::MicrokernelProcess for Component {
                         );
                     }
                 },
-                WitMessageType::Response => { // TODO might be able to get rid of this if we structure it as a Request(false)?
-                    bindings::yield_results(vec![
-                        bindings::WitProtomessage {
-                            protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
-                                json: Some(serde_json::json!({
-                                    "id": message_json["id"],
-                                    "status": message_json["status"],
-                                    "headers": message_json["headers"],
-                                }).to_string()),
-                                bytes: message.payload.bytes,
-                            },
-                        }
-                    ].as_slice());
-                },
+                WitMessageType::Response => bindings::print_to_terminal("http_bindings: got unexpected response"),
             }
         }
     }

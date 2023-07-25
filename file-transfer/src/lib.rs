@@ -94,7 +94,7 @@ enum FileTransferRequest {
     //  actions
     GetFile(FileTransferGetFile),
     Start(FileTransferStart),
-    Cancel(FileTransferCancel),  //  uri_string to derive key
+    Cancel(FileTransferCancel),
     GetPiece(FileTransferGetPiece),
     //  updates
     FilePiece(FileTransferFilePiece),
@@ -159,7 +159,7 @@ struct FileTransferPieceContext {
     piece_number: u32,
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct FileTransferRequesterContext {
+struct FileTransferNodeContext {
     node: String,
 }
 
@@ -175,7 +175,6 @@ impl bindings::MicrokernelProcess for Component {
         let mut downloads: HashMap<FileTransferKey, Downloading> = HashMap::new();
         let mut uploads: HashMap<FileTransferKey, Uploading> = HashMap::new();
 
-        //  TODO
         loop {
             let (message, context) = bindings::await_next_message();
             let Some(ref payload_json_string) = message.payload.json else {
@@ -190,9 +189,6 @@ impl bindings::MicrokernelProcess for Component {
                     //   only GetFile and Cancel allowed from non file_transfer
                     //   and Cancel should probably only be allowed from same
                     //   process as GetFile came from
-                    // if message.wire.source_app != process_name {
-                    //     panic!("file_transfer: requests");
-                    // }
                     print_to_terminal("Request");
                     let request: FileTransferRequest =
                         match serde_json::from_str(payload_json_string) {
@@ -205,6 +201,7 @@ impl bindings::MicrokernelProcess for Component {
                     match request {
                         FileTransferRequest::GetFile(get_file) => {
                             print_to_terminal("GetFile");
+
                             bindings::yield_results(vec![
                                 (
                                     bindings::WitProtomessage {
@@ -270,6 +267,7 @@ impl bindings::MicrokernelProcess for Component {
                         },
                         FileTransferRequest::FilePiece(file_piece) => {
                             print_to_terminal("FilePiece");
+
                             let Some(bytes) = message.payload.bytes.clone() else {
                                 panic!("bytes");
                             };
@@ -324,7 +322,7 @@ impl bindings::MicrokernelProcess for Component {
 
                             let uploading = uploads.get(&key).unwrap();
 
-                            let context = serde_json::to_string(&FileTransferRequesterContext {
+                            let context = serde_json::to_string(&FileTransferNodeContext {
                                 node: message.wire.source_ship.clone(),
                             }).unwrap();
                             bindings::yield_results(vec![
@@ -357,6 +355,7 @@ impl bindings::MicrokernelProcess for Component {
                 },
                 WitMessageType::Response => {
                     print_to_terminal("Response");
+
                     if "filesystem" == message.wire.source_app {
                         let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                         match response {
@@ -390,7 +389,7 @@ impl bindings::MicrokernelProcess for Component {
                                     }
                                 );
 
-                                let context = serde_json::to_string(&FileTransferRequesterContext {
+                                let context = serde_json::to_string(&FileTransferNodeContext {
                                     node: context.node,
                                 }).unwrap();
                                 bindings::yield_results(vec![
@@ -431,61 +430,11 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileSystemResponse::OpenRead(_uri_string) => {
                                 print_to_terminal("Successfully opened Read");
-                                // print_to_terminal("OpenRead");
-
-                                // let context_string = context.clone();
-                                // let context: FileTransferRequesterContext = serde_json::from_str(&context).unwrap();
-
-                                // let key = FileTransferKey {
-                                //     requester: context.node,
-                                //     server: our_name.clone(),
-                                //     uri_string: uri_string.clone(),
-                                // };
-
-                                // let uploading = uploads.get_mut(&key).unwrap();
-
-                                // bindings::yield_results(vec![
-                                //     (
-                                //         bindings::WitProtomessage {
-                                //             protomessage_type: WitProtomessageType::Request(
-                                //                 WitRequestTypeWithTarget {
-                                //                     is_expecting_response: true,
-                                //                     target_ship: &our_name,
-                                //                     target_app: "filesystem",
-                                //                 },
-                                //             ),
-                                //             payload: &WitPayload {
-                                //                 json: Some(serde_json::to_string(
-                                //                     &FileSystemRequest {
-                                //                         uri_string,
-                                //                         action: FileSystemAction::ReadChunkFromOpen(
-                                //                             uploading.metadata.chunk_size,
-                                //                         ),
-                                //                     }
-                                //                 ).unwrap()),
-                                //                 bytes: None,
-                                //             },
-                                //         },
-                                //         context_string.as_str(),
-                                //     )
-                                // ].as_slice());
                             },
                             FileSystemResponse::OpenAppend(uri_string) => {
                                 print_to_terminal("OpenAppend");
-                                // let context_string = context.clone();
-                                let context: FileTransferRequesterContext = serde_json::from_str(&context).unwrap();
-                                print_to_terminal(format!("OpenAppend 1; {:?}", context).as_str());
 
-                                // let key = FileTransferKey {
-                                //     requester: our_name.clone(),
-                                //     server: context.node.clone(),
-                                //     // requester: context.node,
-                                //     // server: our_name.clone(),
-                                //     uri_string: uri_string.clone(),
-                                // };
-                                println!("ftr::rtr: {:?}", FileTransferRequest::ReadyToReceive(FileTransferReadyToReceive { uri_string: uri_string.clone() } ));
-                                println!("ftr::rtr: {:?}", serde_json::to_string(&FileTransferRequest::ReadyToReceive(FileTransferReadyToReceive { uri_string: uri_string.clone() } )));
-
+                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
                                 bindings::yield_results(vec![
                                     (
                                         bindings::WitProtomessage {
@@ -503,11 +452,6 @@ impl bindings::MicrokernelProcess for Component {
                                                             uri_string,
                                                         }
                                                     )
-                                                    //     uri_string,
-                                                    //     action: FileSystemAction::ReadChunkFromOpen(
-                                                    //         uploading.metadata.chunk_size,
-                                                    //     ),
-                                                    // }
                                                 ).unwrap()),
                                                 bytes: None,
                                             },
@@ -519,29 +463,23 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
                                 print_to_terminal("ReadChunkFromOpen");
-                                print_to_terminal(format!("ReadChunkFromOpen context: {}", context).as_str());
 
-                                let context: FileTransferRequesterContext = serde_json::from_str(&context).unwrap();
-                                print_to_terminal("ReadChunkFromOpen 1");
-
+                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
                                 let Some(bytes) = message.payload.bytes.clone() else {
                                     panic!("bytes");
                                 };
-                                print_to_terminal("ReadChunkFromOpen 2");
 
                                 let key = FileTransferKey {
                                     requester: context.node.clone(),
                                     server: our_name.clone(),
                                     uri_string: uri_hash.uri_string.clone(),
                                 };
-                                print_to_terminal("ReadChunkFromOpen 3");
 
                                 let uploading = uploads.get_mut(&key).unwrap();
                                 uploading.sent_pieces.push(IsConfirmedPiece {
                                     piece_hash: uri_hash.hash.clone(),
                                     is_confirmed: false,
                                 });
-                                print_to_terminal("ReadChunkFromOpen 4");
 
                                 bindings::yield_results(vec![
                                     (
@@ -569,32 +507,20 @@ impl bindings::MicrokernelProcess for Component {
                                         "",
                                     )
                                 ].as_slice());
-                                print_to_terminal("ReadChunkFromOpen 5");
                             },
                             FileSystemResponse::Append(uri_string) => {
                                 print_to_terminal("Append");
-                                print_to_terminal(format!("Append context: {}", context).as_str());
                                 
                                 let context: FileTransferPieceContext =
                                     serde_json::from_str(&context).unwrap();
-                                print_to_terminal("Append 1");
 
                                 let key = FileTransferKey {
                                     requester: our_name.clone(),
                                     server: context.node,
                                     uri_string: uri_string.clone(),
                                 };
-                                print_to_terminal("Append 2");
-                                print_to_terminal(
-                                    format!(
-                                        "Append key: {:?} downloads keys: {:?}",
-                                        key,
-                                        downloads.keys().collect::<Vec<_>>(),
-                                    ).as_str()
-                                );
 
                                 let downloading = downloads.remove(&key).unwrap();
-                                print_to_terminal("Append 3");
                                 if downloading.received_pieces.len() == downloading.metadata.number_pieces as usize {
                                     //  received all file pieces
                                     bindings::yield_results(vec![
@@ -673,7 +599,7 @@ impl bindings::MicrokernelProcess for Component {
                                     ).as_str()
                                 );
 
-                                let context = serde_json::to_string(&FileTransferRequesterContext {
+                                let context = serde_json::to_string(&FileTransferNodeContext {
                                     node: message.wire.source_ship,
                                 }).unwrap();
                                 bindings::yield_results(vec![
@@ -718,7 +644,7 @@ impl bindings::MicrokernelProcess for Component {
 
                                 uploading.sent_pieces[piece_received.piece_number as usize].is_confirmed = true;
 
-                                let context = serde_json::to_string(&FileTransferRequesterContext {
+                                let context = serde_json::to_string(&FileTransferNodeContext {
                                     node: message.wire.source_ship,
                                 }).unwrap();
 
@@ -750,6 +676,7 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileTransferResponse::FileReceived(uri_string) => {
                                 print_to_terminal("FileReceived");
+
                                 let key = FileTransferKey {
                                     requester: message.wire.source_ship.clone(),
                                     server: our_name.clone(),

@@ -129,14 +129,13 @@ pub async fn ws_sender(
             }
         };
 
-        if let MessageType::Request(false) = message.message_type {
-            return;
-        }
-
         match result {
             Ok(res) => match res {
                 SuccessOrTimeout::Timeout => {
                     let _ = print_tx.send("ws: message timed out".into()).await;
+                    if let MessageType::Request(false) = message.message_type {
+                        continue
+                    }
                     message_stack.push(Message {
                         message_type: MessageType::Response,
                         wire: Wire {
@@ -158,6 +157,9 @@ pub async fn ws_sender(
                     let _ = self_message_tx.send(vec![message.clone()]).await;
                 }
                 SuccessOrTimeout::Success => {
+                    if let MessageType::Request(false) = message.message_type {
+                        continue
+                    }
                     message_stack.push(Message {
                         message_type: MessageType::Response,
                         wire: Wire {
@@ -176,6 +178,9 @@ pub async fn ws_sender(
             },
             Err(e) => {
                 let _ = print_tx.send(format!("{}", e)).await;
+                if let MessageType::Request(false) = message.message_type {
+                    continue
+                }
                 let _ = kernel_message_tx
                     .send(vec![Message {
                         message_type: MessageType::Response,

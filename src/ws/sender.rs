@@ -92,7 +92,7 @@ pub async fn ws_sender(
                     }
                 }
             }
-            continue
+            continue;
         }
 
         let result = match our.ws_routing {
@@ -121,8 +121,8 @@ pub async fn ws_sender(
         };
 
         match result {
-            Ok(res) => {
-                if let SuccessOrTimeout::Timeout = res {
+            Ok(res) => match res {
+                SuccessOrTimeout::Timeout => {
                     let _ = kernel_message_tx
                         .send(vec![Message {
                             message_type: MessageType::Response,
@@ -140,11 +140,14 @@ pub async fn ws_sender(
                             },
                         }])
                         .await;
-                } else if let SuccessOrTimeout::TryAgain = res {
+                }
+                SuccessOrTimeout::TryAgain => {
                     let _ = self_message_tx.send(vec![message.clone()]).await;
                 }
-                continue;
-            }
+                SuccessOrTimeout::Success => {
+                    continue;
+                }
+            },
             Err(e) => {
                 let _ = print_tx.send(format!("{}", e)).await;
                 let _ = kernel_message_tx

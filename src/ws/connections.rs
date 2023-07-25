@@ -35,7 +35,6 @@ pub async fn handle_aggregate_connection(
         kernel_message_tx.clone(),
     )
     .await;
-    println!("aggregate connection closed: {:#?}", closed);
     peers.write().await.remove(&this_router);
     return closed;
 }
@@ -49,7 +48,6 @@ pub async fn handle_direct_connection(
     nonce: Arc<Nonce>,
     message_tx: MessageSender,
 ) -> Result<(), String> {
-    println!("opened direct connection to {}", from.name);
     let closed = direct_connection(
         from.clone(),
         read_stream,
@@ -60,7 +58,6 @@ pub async fn handle_direct_connection(
     )
     .await;
     peers.write().await.remove(&from.name);
-    println!("lost direct connection to {}", from.name);
     return closed;
 }
 
@@ -80,7 +77,6 @@ pub async fn handle_forwarding_connection(
         .write()
         .await
         .insert(from.name.clone(), HashMap::new());
-    println!("opening a forwarding connection to {}", from.name);
     let closed = forwarding_connection(
         our,
         from.clone(),
@@ -98,17 +94,16 @@ pub async fn handle_forwarding_connection(
     // when we lose a forwarding connection, do teardown by going through
     // all pass-throughs with that peer and closing them.
     // abort pass-through connection handlers as needed.
-    pass_throughs
-        .write()
-        .await
-        .get_mut(&from.name)
+    let mut pt_writer = pass_throughs.write().await;
+    // XX is this necessary?
+    pt_writer.get_mut(&from.name)
         .unwrap_or(&mut HashMap::<String, (WriteStream, JoinHandle<()>)>::new())
         .iter_mut()
         .for_each(|(_, (writer, handle))| {
             let _ = writer.close();
             let _ = handle.abort();
         });
-    println!("lost forwarding connection to {}", from.name);
+    pt_writer.remove(&from.name);
     return closed;
 }
 
@@ -613,6 +608,13 @@ pub async fn one_way_pass_through_connection(
             Err(_) => break,
         }
     }
+    // when we lose a pass-through, notify the forwarding target
+    // that they no longer have a connection to that peer
+    let _err = forward_special_message(
+        peers.clone(),
+        &forward_to,
+        WrappedMessage::LostPeer(from.clone()),
+    ).await;
     println!(
         "lost one-way pass-through connection {} -> {}",
         from, forward_to

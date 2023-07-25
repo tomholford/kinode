@@ -128,7 +128,7 @@ async fn create_connection(
                     ephemeral_secret: ephemeral_secret.clone(),
                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                     nonce: nonce.clone(),
-                    router: None,
+                    router: None, // could actually be routed, but irrelevant to us
                     direct_write_stream: Some(write_stream),
                 },
             );

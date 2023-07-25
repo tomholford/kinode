@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::{fmt, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -25,7 +26,7 @@ type Routers = Arc<RwLock<HashMap<String, Router>>>;
 type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WriteStream = SplitSink<Sock, tungstenite::Message>;
 // route-to,       outside-source -- stream can be from EITHER
-type PassThroughs = Arc<RwLock<HashMap<String, HashMap<String, WriteStream>>>>;
+type PassThroughs = Arc<RwLock<HashMap<String, HashMap<String, (WriteStream, JoinHandle<()>)>>>>;
 
 pub struct Peer {
     pub networking_address: H256,

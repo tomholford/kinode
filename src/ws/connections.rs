@@ -49,6 +49,7 @@ pub async fn handle_direct_connection(
     nonce: Arc<Nonce>,
     message_tx: MessageSender,
 ) -> Result<(), String> {
+    println!("opened direct connection to {}", from.name);
     let closed = direct_connection(
         from.clone(),
         read_stream,
@@ -59,6 +60,7 @@ pub async fn handle_direct_connection(
     )
     .await;
     peers.write().await.remove(&from.name);
+    println!("lost direct connection to {}", from.name);
     return closed;
 }
 
@@ -78,6 +80,7 @@ pub async fn handle_forwarding_connection(
         .write()
         .await
         .insert(from.name.clone(), HashMap::new());
+    println!("opening a forwarding connection to {}", from.name);
     let closed = forwarding_connection(
         our,
         from.clone(),
@@ -94,7 +97,18 @@ pub async fn handle_forwarding_connection(
     peers.write().await.remove(&from.name);
     // when we lose a forwarding connection, do teardown by going through
     // all pass-throughs with that peer and closing them.
-    pass_throughs.write().await.remove(&from.name);
+    // abort pass-through connection handlers as needed.
+    pass_throughs
+        .write()
+        .await
+        .get_mut(&from.name)
+        .unwrap_or(&mut HashMap::<String, (WriteStream, JoinHandle<()>)>::new())
+        .iter_mut()
+        .for_each(|(_, (writer, handle))| {
+            let _ = writer.close();
+            let _ = handle.abort();
+        });
+    println!("lost forwarding connection to {}", from.name);
     return closed;
 }
 
@@ -280,7 +294,7 @@ async fn forwarding_connection(
                 let mut map_writer = pass_throughs.write().await;
                 let map = map_writer.get_mut(&from.name).unwrap();
 
-                let target_writer = match map.get_mut(&to) {
+                let (target_writer, _) = match map.get_mut(&to) {
                     Some(v) => v,
                     None => return Err("no direct connection to forward target yet".into()),
                 };
@@ -309,8 +323,8 @@ async fn forwarding_connection(
                 let mut map_writer = pass_throughs.write().await;
                 let map = map_writer.get_mut(&from.name).unwrap();
                 match map.get_mut(&handshake.target) {
-                    Some(v) => {
-                        let _ = v
+                    Some((writer, _)) => {
+                        let _ = writer
                             .send(tungstenite::Message::Text(
                                 serde_json::to_string(&handshake).unwrap(),
                             ))
@@ -370,15 +384,19 @@ async fn forwarding_connection(
                                     }
                                 };
 
-                                map.insert(handshake.target.clone(), write_stream);
+                                let pass_through_handle =
+                                    tokio::spawn(one_way_pass_through_connection(
+                                        from.name.clone(),
+                                        target_id.name,
+                                        read_stream,
+                                        peers.clone(),
+                                        None,
+                                    ));
 
-                                tokio::spawn(one_way_pass_through_connection(
-                                    from.name.clone(),
-                                    target_id.name,
-                                    read_stream,
-                                    peers.clone(),
-                                    None,
-                                ));
+                                map.insert(
+                                    handshake.target.clone(),
+                                    (write_stream, pass_through_handle),
+                                );
                             }
                         }
                     }
@@ -430,15 +448,19 @@ async fn forwarding_connection(
                                     }
                                 };
 
-                                map.insert(handshake.target.clone(), write_stream);
+                                let pass_through_handle =
+                                    tokio::spawn(one_way_pass_through_connection(
+                                        from.name.clone(),
+                                        target_id.name,
+                                        read_stream,
+                                        peers.clone(),
+                                        None,
+                                    ));
 
-                                tokio::spawn(one_way_pass_through_connection(
-                                    from.name.clone(),
-                                    target_id.name,
-                                    read_stream,
-                                    peers.clone(),
-                                    None,
-                                ));
+                                map.insert(
+                                    handshake.target.clone(),
+                                    (write_stream, pass_through_handle),
+                                );
                             }
                         }
                     }
@@ -525,7 +547,10 @@ pub async fn one_way_pass_through_connection(
     peers: Peers,
     init: Option<Handshake>,
 ) {
-    // println!("one-way pass-through connection!");
+    println!(
+        "opened one-way pass-through connection {} -> {}",
+        from, forward_to
+    );
     if init.is_some() {
         let hs = WrappedMessage::Handshake(init.unwrap());
         let wrapped_bytes = match serde_json::to_vec(&hs) {
@@ -588,4 +613,8 @@ pub async fn one_way_pass_through_connection(
             Err(_) => break,
         }
     }
+    println!(
+        "lost one-way pass-through connection {} -> {}",
+        from, forward_to
+    );
 }

@@ -154,20 +154,23 @@ async fn create_connection(
                     && peers.read().await.contains_key(&handshake.target)
                 {
                     // ok, we can route to them!
-                    let mut pt_writer = pass_throughs.write().await;
-                    match pt_writer.get_mut(&target_id.name) {
-                        None => return Err("target not routable".into()),
-                        Some(map) => map.insert(their_id.name.clone(), write_stream),
-                    };
 
                     // spawn a new one-way pass-through
-                    tokio::spawn(one_way_pass_through_connection(
+                    let pass_through_handle = tokio::spawn(one_way_pass_through_connection(
                         handshake.target.clone(),
-                        their_id.name,
+                        their_id.name.clone(),
                         read_stream,
                         peers.clone(),
                         Some(handshake),
                     ));
+
+                    let mut pt_writer = pass_throughs.write().await;
+                    match pt_writer.get_mut(&target_id.name) {
+                        None => return Err("target not routable".into()),
+                        Some(map) => {
+                            map.insert(their_id.name, (write_stream, pass_through_handle))
+                        }
+                    };
 
                     Ok(())
                 } else {

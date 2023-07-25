@@ -29,7 +29,7 @@ pub async fn http_server(
 async fn http_handle_messages(
   http_response_senders: HttpResponseSenders,
   mut message_rx: MessageReceiver,
-  print_tx: PrintSender,
+  _print_tx: PrintSender,
 ) {
   while let Some(message_stack) = message_rx.recv().await {
     let stack_len = message_stack.len();
@@ -39,7 +39,6 @@ async fn http_handle_messages(
       panic!("http_server: action must have JSON payload, got: {:?}", message);
     };
     let request: HttpResponse = serde_json::from_value(value).unwrap();
-    let _ = print_tx.send(format!("GOT A RESPONSE {:?}", request.id)).await;
     let channel = http_response_senders.lock().unwrap().remove(request.id.as_str()).unwrap();
     let _ = channel.send(HttpResponse {
       id: request.id,
@@ -56,7 +55,6 @@ async fn http_serve(
   message_tx: MessageSender,
   print_tx: PrintSender,
 ) {
-  let _ = print_tx.send(format!("GOT A REQUEST")).await;
   let filter = warp::filters::method::method()
     .and(warp::path::full())
     .and(warp::filters::header::headers_cloned())
@@ -78,7 +76,7 @@ async fn handler(
   our: String,
   http_response_senders: HttpResponseSenders,
   message_tx: MessageSender,
-  print_tx: PrintSender
+  _print_tx: PrintSender
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let path_str = path.as_str().to_string();
   let id = create_id();
@@ -109,7 +107,6 @@ async fn handler(
 
   message_tx.send(vec![message]).await.unwrap();
   let from_channel = response_receiver.await.unwrap();
-  let _ = print_tx.send("SENDING RESPONSE".to_string()).await;
   let reply = warp::reply::with_status(
     match from_channel.body {
       Some(val) => val,
@@ -124,7 +121,6 @@ async fn handler(
   for (header_name, header_value) in deserialize_headers(from_channel.headers).iter() {
     existing_headers.insert(header_name.clone(), header_value.clone());
   }
-  let _ = print_tx.send("RIGHT BEFORE".to_string()).await;
   Ok(response)
 }
 

@@ -19,19 +19,13 @@ impl bindings::MicrokernelProcess for Component {
                 panic!("foo")
             };
             let message_json: serde_json::Value = serde_json::from_str(&message_json_text).unwrap();
-
-            bindings::print_to_terminal(format!("http_bindings: got request: {}", message_json).as_str());
-            bindings::print_to_terminal(format!("ID: {}", message_json["id"]).as_str());
             
             match message.message_type {
                 WitMessageType::Request(_) => {
-                    bindings::print_to_terminal("http_bindings: got request");
                     let action = &message_json["action"];
                     if action == "bind-app" {
-                        bindings::print_to_terminal("http_bindings: got bind-app");
                         bindings.insert(message_json["path"].as_str().unwrap().to_string(), message_json["app"].as_str().unwrap().to_string());
                     } else if action == "request" {
-                        bindings::print_to_terminal("http_bindings: forwarding to poast");
                         let app = bindings.get(message_json["path"].as_str().unwrap()).unwrap();
                         bindings::yield_results(vec![
                             bindings::WitProtomessage {
@@ -63,7 +57,6 @@ impl bindings::MicrokernelProcess for Component {
                     }
                 },
                 WitMessageType::Response => {
-                    bindings::print_to_terminal("http_bindings: got response");
                     bindings::yield_results(vec![
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,

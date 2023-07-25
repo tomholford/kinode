@@ -39,23 +39,61 @@ impl bindings::MicrokernelProcess for Component {
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
             bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str());
             bindings::print_to_terminal(format!("ID: {}", message_from_loop["id"]).as_str());
-
-            bindings::yield_results(vec![
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Response,
-                    payload: &WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "response",
-                            "id": message_from_loop["id"],
-                            "status": 201,
-                            "headers": {
-                                "Content-Type": "application/json",
-                            },
-                        }).to_string()),
-                        bytes: Some("{\"foo\":\"bar\"}".as_bytes().to_vec())
+            bindings::print_to_terminal(format!("METHOD: {}", message_from_loop["method"]).as_str());
+            if message_from_loop["method"] == "GET" {
+                bindings::yield_results(vec![
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "id": message_from_loop["id"],
+                                "status": 201,
+                                "headers": {
+                                    "Content-Type": "application/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("<h1>you just performed a GET to poast</h1>".as_bytes().to_vec())
+                        }
                     }
-                }
-            ].as_slice());
+                ].as_slice());
+            } else if message_from_loop["method"] == "POST" {
+                bindings::yield_results(vec![
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "id": message_from_loop["id"],
+                                "status": 201,
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                },
+                            }).to_string()),
+                            bytes: Some(format!(
+                                "you just performed a POST with body: {:?}", String::from_utf8(message.payload.bytes.unwrap_or(vec![])
+                            )).as_bytes().to_vec())
+                        }
+                    }
+                ].as_slice());
+            } else {
+                bindings::yield_results(vec![
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "id": message_from_loop["id"],
+                                "status": 201,
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                },
+                            }).to_string()),
+                            bytes: Some("you made a request that was not GET or POST".as_bytes().to_vec())
+                        }
+                    }
+                ].as_slice());
+            }
         }
     }
 }

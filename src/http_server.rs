@@ -66,18 +66,6 @@ async fn http_serve(
     .and(warp::any().map(move || message_tx.clone()))
     .and(warp::any().map(move || print_tx.clone()))
     .and_then(handler);
-    // .and_then(|
-    //     method,
-    //     path: warp::path::FullPath,
-    //     headers,
-    //     body,
-    //     our,
-    //     http_response_senders,
-    //     message_tx,
-    //     print_tx
-    //   | async move {
-    //   handler(method, path, headers, body, our, http_response_senders, message_tx, print_tx).await
-    // });
 
   warp::serve(filter).run(([127, 0, 0, 1], 8080)).await;
 }

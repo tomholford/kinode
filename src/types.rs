@@ -60,7 +60,9 @@ pub enum NetworkingError {
     #[error("Peer is offline or otherwise unreachable")]
     PeerOffline,
     #[error("Message delivery failed due to timeout")]
-    MessageTimeout
+    MessageTimeout,
+    #[error("Some bug in the networking code")]
+    NetworkingBug,
 }
 
 pub type MessageStack = Vec<Message>;

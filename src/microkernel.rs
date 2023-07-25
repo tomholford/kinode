@@ -517,6 +517,10 @@ async fn make_event_loop(
                             &mut process_handles,
                             &engine,
                         ).await;
+                    //  XX temporary branch to assist in pure networking debugging
+                    //  can be removed when ws WASM module is ready
+                    } else if to == "ws" {
+                        let _ = send_to_wss.send(message_stack).await;
                     } else {
                         //  pass message to appropriate runtime/process
                         match senders.get(&to) {

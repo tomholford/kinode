@@ -5,8 +5,6 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use ethers::prelude::*;
-
 use crate::types::*;
 
 mod engine;
@@ -14,7 +12,7 @@ mod filesystem;
 mod microkernel;
 mod terminal;
 mod types;
-mod websockets;
+mod ws;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
@@ -112,14 +110,14 @@ async fn main() {
             wss_message_sender.clone(),
             fs_message_sender.clone(),
         ) => { "microkernel died".to_string() },
-        _ = websockets::websockets(
+        _ = ws::websockets(
             our.clone(),
             networking_keypair,
             pki.clone(),
-            wss_message_receiver,
-            wss_message_sender.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
+            wss_message_receiver,
+            wss_message_sender.clone(),
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,

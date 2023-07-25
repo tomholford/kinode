@@ -8,29 +8,27 @@ struct Component;
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
         bindings::print_to_terminal("poast: start");
-        // TODO make this real
-        // bindings::yield_results(
-        //     vec![
-        //         bindings::WitProtomessage {
-        //             protomessage_type: WitProtomessageType::Request(
-        //                 WitRequestTypeWithTarget {
-        //                     is_expecting_response: false,
-        //                     target_ship: our.as_str(),
-        //                     target_app: "http_server",
-        //                 }
-        //             ),
-        //             payload: &WitPayload {
-        //                 json: Some(serde_json::json!({
-        //                     "HttpConnect": {
-        //                         "path": "/poast", // TODO at some point we need URL pattern matching...later...
-        //                         "app": dap
-        //                     }
-        //                 }).to_string()),
-        //                 bytes: None
-        //             }
-        //         },
-        //     ].as_slice()
-        // );
+        bindings::yield_results(
+            vec![
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: our.as_str(),
+                            target_app: "http_bindings",
+                        }
+                    ),
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/poast", // TODO at some point we need URL pattern matching...later...
+                            "app": dap
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+            ].as_slice()
+        );
 
         loop {
             let mut message_stack = bindings::await_next_message();

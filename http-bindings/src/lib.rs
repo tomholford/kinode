@@ -6,14 +6,11 @@ use std::collections::HashMap;
 
 struct Component;
 
-
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
         bindings::print_to_terminal("http_bindings: start");
         // TODO needs to be some kind of HttpPath => String
         let mut bindings: HashMap<String, String> = HashMap::new();
-        // TODO unhardcode this
-        bindings.insert("/poast".to_string(), "poast".to_string());
         
         loop {
             let mut message_stack = bindings::await_next_message();
@@ -31,39 +28,39 @@ impl bindings::MicrokernelProcess for Component {
                     bindings::print_to_terminal("http_bindings: got request");
                     let action = &message_json["action"];
                     if action == "bind-app" {
-                        bindings::print_to_terminal("http_bindings: got bind-app TODO logic");
+                        bindings::print_to_terminal("http_bindings: got bind-app");
+                        bindings.insert(message_json["path"].as_str().unwrap().to_string(), message_json["app"].as_str().unwrap().to_string());
                     } else if action == "request" {
                         bindings::print_to_terminal("http_bindings: forwarding to poast");
-                        // TODO get app from bindings here
+                        let app = bindings.get(message_json["path"].as_str().unwrap()).unwrap();
                         bindings::yield_results(vec![
                             bindings::WitProtomessage {
                                 protomessage_type: WitProtomessageType::Request(
                                     WitRequestTypeWithTarget {
                                         is_expecting_response: true,
                                         target_ship: our.as_str(),
-                                        target_app: "poast", // TODO unhardcode
+                                        target_app: app,
                                     }
                                 ),
                                 payload: &WitPayload {
                                     json: Some(serde_json::json!({
-                                        "action": "http-request", // TODO might not need this
                                         "path": message_json["path"],
                                         "method": message_json["method"],
                                         "headers": message_json["headers"],
                                         "id": message_json["id"],
                                     }).to_string()),
-                                    bytes: None, // TODO grab from message bytes
+                                    bytes: message.payload.bytes,
                                 },
                             }
                         ].as_slice());
-                        } else {
-                            bindings::print_to_terminal(
-                                format!(
-                                    "http_bindings: unexpected action: {:?}",
-                                    &message_json["action"],
-                                ).as_str()
-                            );
-                        }
+                    } else {
+                        bindings::print_to_terminal(
+                            format!(
+                                "http_bindings: unexpected action: {:?}",
+                                &message_json["action"],
+                            ).as_str()
+                        );
+                    }
                 },
                 WitMessageType::Response => {
                     bindings::print_to_terminal("http_bindings: got response");

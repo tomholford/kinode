@@ -26,27 +26,50 @@ impl bindings::MicrokernelProcess for Component {
                     if action == "bind-app" {
                         bindings.insert(message_json["path"].as_str().unwrap().to_string(), message_json["app"].as_str().unwrap().to_string());
                     } else if action == "request" {
-                        let app = bindings.get(message_json["path"].as_str().unwrap()).unwrap();
-                        bindings::yield_results(vec![
-                            bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: our.as_str(),
-                                        target_app: app,
+                        bindings::print_to_terminal("http_bindings: got request");
+                        // let app = bindings.get(message_json["path"].as_str().unwrap()).unwrap();
+                        match bindings.get(message_json["path"].as_str().unwrap()) {
+                            Some(app) => {
+                                bindings::print_to_terminal("http_bindings: properly unwrapped");
+                                bindings::yield_results(vec![
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Request(
+                                            WitRequestTypeWithTarget {
+                                                is_expecting_response: true,
+                                                target_ship: our.as_str(),
+                                                target_app: app,
+                                            }
+                                        ),
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::json!({
+                                                "path": message_json["path"],
+                                                "method": message_json["method"],
+                                                "headers": message_json["headers"],
+                                                "id": message_json["id"],
+                                            }).to_string()),
+                                            bytes: message.payload.bytes,
+                                        },
                                     }
-                                ),
-                                payload: &WitPayload {
-                                    json: Some(serde_json::json!({
-                                        "path": message_json["path"],
-                                        "method": message_json["method"],
-                                        "headers": message_json["headers"],
-                                        "id": message_json["id"],
-                                    }).to_string()),
-                                    bytes: message.payload.bytes,
-                                },
-                            }
-                        ].as_slice());
+                                ].as_slice());
+                            },
+                            None => {
+                                bindings::print_to_terminal("http_bindings: failed to unwrap");
+                                bindings::yield_results(vec![
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Response,
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::json!({
+                                                "id": message_json["id"],
+                                                "status": 404,
+                                                "headers": {"Content-Type": "text/plain"},
+                                                
+                                            }).to_string()),
+                                            bytes: Some("404 Not Found".as_bytes().to_vec()),
+                                        },
+                                    }
+                                ].as_slice());
+                            },
+                        }
                     } else {
                         bindings::print_to_terminal(
                             format!(

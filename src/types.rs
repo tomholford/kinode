@@ -10,6 +10,9 @@ pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
 pub type PrintSender = tokio::sync::mpsc::Sender<String>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
 
+pub type DebugSender = tokio::sync::mpsc::Sender<DebugCommand>;
+pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
+
 pub type OnchainPKI = Arc<HashMap<String, Identity>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,8 +122,15 @@ impl std::fmt::Display for WrappedMessage {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub enum DebugCommand {
+    Mode(bool),
+    Step,
+}
+
 pub enum Command {
     Message(WrappedMessage),
+    Debug(DebugCommand),
     Quit,
     Invalid,
 }

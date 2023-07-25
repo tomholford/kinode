@@ -6,8 +6,12 @@ use crate::types::*;
 /*
  *  terminal driver
  */
-pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx: PrintReceiver)
-    -> Result<(), ReadlineError> {
+pub async fn terminal(
+    our: &Identity,
+    to_event_loop: MessageSender,
+    to_debug_event_loop: DebugSender,
+    mut print_rx: PrintReceiver,
+) -> Result<(), ReadlineError> {
 
     let (mut rl, mut stdout) = Readline::new("> ".into())?;
 
@@ -23,6 +27,10 @@ pub async fn terminal(our: &Identity, to_event_loop: MessageSender, mut print_rx
                     match parse_command(our.name.as_str(), &line).unwrap_or(Command::Invalid) {
                         Command::Message(message) => {
                             to_event_loop.send(message).await.unwrap();
+                            writeln!(stdout, "{}", line)?;
+                        },
+                        Command::Debug(debug) => {
+                            to_debug_event_loop.send(debug).await.unwrap();
                             writeln!(stdout, "{}", line)?;
                         },
                         Command::Quit => {
@@ -74,7 +82,15 @@ fn parse_command(our_name: &str, line: &str) -> Option<Command> {
                     },
                 },
             }))
-        }
+        },
+        "!debug" => {
+            match tail {
+                "true" => Some(Command::Debug(DebugCommand::Mode(true))),
+                "false" => Some(Command::Debug(DebugCommand::Mode(false))),
+                _ => None
+            }
+        },
+        "!step" => Some(Command::Debug(DebugCommand::Step)),
         "!quit" => Some(Command::Quit),
         "!exit" => Some(Command::Quit),
         _ => None,

@@ -759,6 +759,7 @@ async fn handle_kernel_request(
 async fn make_event_loop(
     our_name: String,
     mut recv_in_loop: MessageReceiver,
+    mut recv_debug_in_loop: DebugReceiver,
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
@@ -770,65 +771,98 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             let mut process_handles: ProcessHandles = HashMap::new();
+            let mut is_debug = false;
             loop {
-                let wrapped_message = recv_in_loop.recv().await.unwrap();
-                send_to_terminal.send(format!("event loop: got message: {}", wrapped_message))
-                    .await
-                    .unwrap();
-                // print_stack_to_terminal(
-                //     "event loop: got message stack",
-                //     &message_stack,
-                //     send_to_terminal.clone(),
-                // ).await;
-                if our_name != wrapped_message.message.wire.target_ship {
-                    match send_to_wss.send(wrapped_message).await {
-                        Ok(()) => {
-                            send_to_terminal
-                                .send("event loop: sent to wss".to_string())
-                                .await
-                                .unwrap();
+                println!("mk: entering select");
+                tokio::select! {
+                    // biased;
+                    debug = recv_debug_in_loop.recv() => {
+                        println!("mk: got debug");
+                        if let Some(DebugCommand::Mode(is_debug_msg)) = debug {
+                            is_debug = is_debug_msg;
+                            println!("mk: set is_debug: {}", is_debug);
                         }
-                        Err(e) => {
-                            send_to_terminal
-                                .send(format!("event loop: failed to send to wss: {}", e))
-                                .await
-                                .unwrap();
-                        }
-                    }
-                } else {
-                    let to = wrapped_message.message.wire.target_app.clone();
-                    if to == "kernel" {
-                        handle_kernel_request(
-                            our_name.clone(),
-                            wrapped_message,
-                            send_to_loop.clone(),
-                            send_to_terminal.clone(),
-                            &mut senders,
-                            &mut process_handles,
-                            &engine,
-                        ).await;
-                    } else {
-                        //  pass message to appropriate runtime/process
-                        match senders.get(&to) {
-                            Some(sender) => {
-                                let _result = sender
-                                    .send(wrapped_message)
-                                    .await;
-                            }
-                            None => {
-                                send_to_terminal
-                                    .send(
-                                        format!(
-                                            "event loop: don't have {} amongst registered processes: {:?}",
-                                            to,
-                                            senders.keys().collect::<Vec<_>>()
-                                        )
-                                    )
-                                    .await
-                                    .unwrap();
+                    },
+                    wrapped_message = recv_in_loop.recv() => {
+                        println!("mk: got message; is_debug: {}", is_debug);
+                        while is_debug {
+                            println!("mk: iter inside is_debug loop start");
+                            let debug = recv_debug_in_loop.recv().await.unwrap();
+                            println!("mk: iter inside is_debug loop got debug");
+                            match debug {
+                                DebugCommand::Mode(is_debug_msg) => is_debug = is_debug_msg,
+                                DebugCommand::Step => break,
                             }
                         }
-                    }
+
+                        let Some(wrapped_message) = wrapped_message else {
+                            send_to_terminal.send(
+                                "event loop: got None for message".to_string()
+                            ).await.unwrap();
+                            continue;
+                        };
+                        // let wrapped_message = recv_in_loop.recv().await.unwrap();
+                        send_to_terminal.send(
+                            format!("event loop: got message: {}", wrapped_message)
+                        ).await.unwrap();
+                        // print_stack_to_terminal(
+                        //     "event loop: got message stack",
+                        //     &message_stack,
+                        //     send_to_terminal.clone(),
+                        // ).await;
+                        if our_name != wrapped_message.message.wire.target_ship {
+                            match send_to_wss.send(wrapped_message).await {
+                                Ok(()) => {
+                                    send_to_terminal
+                                        .send("event loop: sent to wss".to_string())
+                                        .await
+                                        .unwrap();
+                                }
+                                Err(e) => {
+                                    send_to_terminal
+                                        .send(
+                                            format!("event loop: failed to send to wss: {}", e)
+                                        ).await.unwrap();
+                                }
+                            }
+                        } else {
+                            let to = wrapped_message.message.wire.target_app.clone();
+                            if to == "kernel" {
+                                handle_kernel_request(
+                                    our_name.clone(),
+                                    wrapped_message,
+                                    send_to_loop.clone(),
+                                    send_to_terminal.clone(),
+                                    &mut senders,
+                                    &mut process_handles,
+                                    &engine,
+                                ).await;
+                            } else {
+                                //  pass message to appropriate runtime/process
+                                match senders.get(&to) {
+                                    Some(sender) => {
+                                        let _result = sender
+                                            .send(wrapped_message)
+                                            .await;
+                                    }
+                                    None => {
+                                        send_to_terminal
+                                            .send(
+                                                format!(
+                                                    "event loop: don't have {} amongst registered processes: {:?}",
+                                                    to,
+                                                    senders.keys().collect::<Vec<_>>()
+                                                )
+                                            )
+                                            .await
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                        }
+
+
+                    },
                 }
             }
         }
@@ -842,6 +876,7 @@ pub async fn kernel(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
+    recv_debug_in_loop: DebugReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
 ) {
@@ -854,6 +889,7 @@ pub async fn kernel(
         make_event_loop(
             our.name.clone(),
             recv_in_loop,
+            recv_debug_in_loop,
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,

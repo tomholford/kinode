@@ -328,7 +328,7 @@ async fn handle_request(
                         })
                     ).unwrap()
                 ),  //  TODO: error propagation to caller
-                bytes: Some(file_contents),
+                bytes: None,
             }
         },
         FileSystemAction::OpenRead => {

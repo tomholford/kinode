@@ -50,7 +50,7 @@ impl bindings::MicrokernelProcess for Component {
                                 "id": message_from_loop["id"],
                                 "status": 201,
                                 "headers": {
-                                    "Content-Type": "application/html",
+                                    "Content-Type": "text/html",
                                 },
                             }).to_string()),
                             bytes: Some("<h1>you just performed a GET to poast</h1>".as_bytes().to_vec())

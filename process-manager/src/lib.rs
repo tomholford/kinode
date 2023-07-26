@@ -79,28 +79,13 @@ struct ProcessMetadata {
 
 type ProcessMetadatas = HashMap<String, ProcessMetadata>;
 
-fn print_stack_to_terminal(
-    context_string: &str,
-    message_stack: &Vec<bindings::WitMessage>,
-) {
-    print_to_terminal(format!("{}: [", context_string).as_str());
-    for m in message_stack {
-        let payload_bytes_string = match m.payload.bytes {
-            Some(_) => "Some(<elided>)",
-            None => "None",
-        };
-        print_to_terminal(format!(
-            "    WitMessage {{ message_type: {:?}, wire: {:?}, payload: Payload {{ json: {:?}, bytes: {} }} }}",
-            m.message_type,
-            m.wire,
-            m.payload.json,
-            payload_bytes_string,
-        ).as_str());
-    }
-    print_to_terminal("]");
+#[derive(Debug, Serialize, Deserialize)]
+struct FileSystemReadContext {
+    process_name: String,
+    wasm_bytes_uri: String,
 }
 
-fn send_process_manager_results_to_loop(
+fn send_stop_to_loop(
     our_name: String,
     process_name: String,
     is_expecting_response: bool,
@@ -123,7 +108,7 @@ fn send_process_manager_results_to_loop(
         },
     };
 
-    bindings::yield_results(vec![kernel_stop_process_request].as_slice());
+    bindings::yield_results(vec![(kernel_stop_process_request, "")].as_slice());
 }
 
 impl bindings::MicrokernelProcess for Component {
@@ -140,12 +125,7 @@ impl bindings::MicrokernelProcess for Component {
             .collect();
         let mut metadatas: ProcessMetadatas = HashMap::new();
         loop {
-            let message_stack = bindings::await_next_message();
-            let stack_len = message_stack.len();
-            print_to_terminal(
-                format!("{}: got stack of len: {}", process_name, stack_len).as_str()
-            );
-            let message = message_stack[stack_len - 1].clone();
+            let (message, context) = bindings::await_next_message();
             //  TODO: validate source/target?
             let Some(s) = message.payload.json else {
                 print_to_terminal(
@@ -198,7 +178,11 @@ impl bindings::MicrokernelProcess for Component {
                                     bytes: None,
                                 },
                             };
-                            bindings::yield_results(vec![get_bytes_request].as_slice());
+                            let context = serde_json::to_string(&FileSystemReadContext {
+                                process_name: start.process_name,
+                                wasm_bytes_uri: start.wasm_bytes_uri,
+                            }).unwrap();
+                            bindings::yield_results(vec![(get_bytes_request, context.as_str())].as_slice());
                         },
                         ProcessManagerCommand::Stop(stop) => {
                             print_to_terminal("process manager: stop");
@@ -206,7 +190,7 @@ impl bindings::MicrokernelProcess for Component {
                                 .remove(&stop.process_name)
                                 .unwrap();
 
-                            send_process_manager_results_to_loop(
+                            send_stop_to_loop(
                                 our_name.clone(),
                                 stop.process_name,
                                 false,
@@ -217,7 +201,7 @@ impl bindings::MicrokernelProcess for Component {
                         ProcessManagerCommand::Restart(restart) => {
                             print_to_terminal("process manager: restart");
 
-                            send_process_manager_results_to_loop(
+                            send_stop_to_loop(
                                 our_name.clone(),
                                 restart.process_name,
                                 true,
@@ -236,26 +220,8 @@ impl bindings::MicrokernelProcess for Component {
                             "filesystem",
                             Some(wasm_bytes),
                         ) => {
-                            //  get process_name out of stack
-                            let start_message = message_stack[stack_len - 3]
-                                .clone();
-                            let Some(s) = start_message.payload.json else {
-                                //  TODO: handle error or bail?
-                                print_stack_to_terminal(
-                                    "process_manager: couldnt access start message from stack while handling filesystem reponse; stack",
-                                    &message_stack,
-                                );
-                                continue;
-                            };
-                            let ProcessManagerCommand::Start(start) =
-                                serde_json::from_str(&s).unwrap() else {
-                                //  TODO: handle error or bail?
-                                print_stack_to_terminal(
-                                    "process_manager: couldnt parse start message from stack while handling filesystem reponse; stack",
-                                    &message_stack,
-                                );
-                                continue;
-                            };
+                            let context: FileSystemReadContext =
+                                serde_json::from_str(&context).unwrap();
 
                             let kernel_start_process_request = bindings::WitProtomessage {
                                 protomessage_type: WitProtomessageType::Request(
@@ -269,8 +235,8 @@ impl bindings::MicrokernelProcess for Component {
                                     json: Some(
                                         serde_json::to_string(
                                             &KernelRequest::StartProcess(ProcessStart {
-                                                process_name: start.process_name.clone(),
-                                                wasm_bytes_uri: start.wasm_bytes_uri.clone(),
+                                                process_name: context.process_name,
+                                                wasm_bytes_uri: context.wasm_bytes_uri,
                                             })
                                         ).unwrap()
                                     ),
@@ -279,7 +245,7 @@ impl bindings::MicrokernelProcess for Component {
                             };
 
                             bindings::yield_results(
-                                vec![kernel_start_process_request].as_slice(),
+                                vec![(kernel_start_process_request, "")].as_slice(),
                             );
                         },
                         (
@@ -296,30 +262,9 @@ impl bindings::MicrokernelProcess for Component {
                                     //  TODO: response?
                                     continue;
                                 },
-                                Ok(KernelResponse::StopProcess(_stop)) => {
-                                    //  if in response to a Restart, send new Start
-                                    let restart_message = message_stack[stack_len - 3]
-                                        .clone();
-                                    let Some(s) = restart_message.payload.json else {
-                                        //  TODO: handle error or bail?
-                                        print_stack_to_terminal(
-                                            "process_manager: couldnt access restart message from stack while handling filesystem reponse; stack",
-                                            &message_stack,
-                                        );
-                                        continue;
-                                    };
-                                    let ProcessManagerCommand::Restart(restart) =
-                                        serde_json::from_str(&s).unwrap() else {
-                                        //  TODO: handle error or bail?
-                                        print_stack_to_terminal(
-                                            "process_manager: couldnt parse restart message from stack while handling filesystem reponse; stack",
-                                            &message_stack,
-                                        );
-                                        continue;
-                                    };
-
+                                Ok(KernelResponse::StopProcess(stop)) => {
                                     let removed = metadatas
-                                        .remove(&restart.process_name)
+                                        .remove(&stop.process_name)
                                         .unwrap();
 
                                     let pm_start_request = bindings::WitProtomessage {
@@ -343,17 +288,16 @@ impl bindings::MicrokernelProcess for Component {
                                         },
                                     };
 
-                                    bindings::yield_results(vec![pm_start_request].as_slice());
+                                    bindings::yield_results(vec![(pm_start_request, "")].as_slice());
                                     continue;
                                 },
                                 Err(e) => {
-                                    print_stack_to_terminal(
+                                    print_to_terminal(
                                         format!(
                                             "{}: kernel response unexpected case; error: {} stack",
                                             process_name,
                                             e,
                                             ).as_str(),
-                                        &message_stack,
                                     );
                                     continue;
                                 },
@@ -361,9 +305,8 @@ impl bindings::MicrokernelProcess for Component {
                         },
                         _ => {
                             //  TODO: handle error or bail?
-                            print_stack_to_terminal(
+                            print_to_terminal(
                                 "process_manager: response unexpected case; stack",
-                                &message_stack,
                             );
                             continue;
                         },

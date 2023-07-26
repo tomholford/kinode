@@ -85,7 +85,55 @@ struct Process {
     recv_in_process: MessageReceiver,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
-    current_message_stack: MessageStack,
+    prompting_message: Option<WrappedMessage>,
+    contexts: HashMap<u64, ProcessContext>,
+}
+
+#[derive(Clone, Debug)]
+struct CauseMetadata {
+    process_node: ProcessNode,
+    rsvp: Rsvp,
+    message_type: MessageType,
+}
+
+#[derive(Debug)]
+struct ProcessContext {
+    proximate: CauseMetadata,         //  kernel only: for routing responses  TODO: needed?
+    ultimate: Option<CauseMetadata>,  //  kernel only: for routing responses
+    context: serde_json::Value,       //  input/output from process
+}
+
+impl CauseMetadata {
+    fn new(wrapped_message: &WrappedMessage) -> Self {
+        CauseMetadata {
+            process_node: ProcessNode {
+                node: wrapped_message.message.wire.source_ship.clone(),
+                process: wrapped_message.message.wire.source_app.clone(),
+            },
+            rsvp: wrapped_message.rsvp.clone(),
+            message_type: wrapped_message.message.message_type.clone(),
+        }
+    }
+}
+
+impl ProcessContext {
+    fn new(
+        proximate: &WrappedMessage,
+        ultimate: Option<&WrappedMessage>,
+        context: Option<serde_json::Value>,
+    ) -> Self {
+        ProcessContext {
+            proximate: CauseMetadata::new(proximate),
+            ultimate: match ultimate {
+                Some(ultimate) => Some(CauseMetadata::new(ultimate)),
+                None => None,
+            },
+            context: match context {
+                Some(c) => c,
+                None => serde_json::Value::Null,
+            },
+        }
+    }
 }
 
 //  live in event loop
@@ -101,53 +149,53 @@ impl Host for Process {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
-    async fn yield_results(&mut self, results: Vec<WitProtomessage>) -> Result<()> {
+    async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
         send_process_results_to_loop(
             results,
-            &mut self.current_message_stack,
             self.metadata.our_name.clone(),
             self.metadata.process_name.clone(),
             self.send_to_loop.clone(),
+            &self.prompting_message,
+            &mut self.contexts,
         ).await;
         Ok(())
     }
 
-    async fn await_next_message(&mut self) -> Result<Vec<WitMessage>> {
-        let mut next_message_stack = self.recv_in_process.recv().await.unwrap();
+    async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
+        let wrapped_message = self.recv_in_process.recv().await.unwrap();
 
-        print_stack_to_terminal(
-            format!(
-                "{}: got message_stack",
-                self.metadata.process_name,
-            ).as_str(),
-            &next_message_stack,
-            self.send_to_terminal.clone(),
-        ).await;
+        // print_stack_to_terminal(
+        //     format!(
+        //         "{}: got message_stack",
+        //         self.metadata.process_name,
+        //     ).as_str(),
+        //     &next_message_stack,
+        //     self.send_to_terminal.clone(),
+        // ).await;
 
-        let next_wit_message_stack =
-            convert_message_stack_to_wit_message_stack(&next_message_stack).await;
+        let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
 
-        let stack_len = next_message_stack.len();
-        self.current_message_stack = match next_message_stack[stack_len - 1].message_type.clone() {
-            MessageType::Request(is_expecting_response) => {
-                //  pop off requests that dont expect responses
-                //   UNLESS they are the request that started the chain
-                if !is_expecting_response & (1 < stack_len) {
-                    next_message_stack.truncate(stack_len - 1);
-                    next_message_stack
-                } else {
-                    next_message_stack
+        let message_id = wrapped_message.id.clone();
+        let message_type = wrapped_message.message.message_type.clone();
+        self.prompting_message = Some(wrapped_message);
+
+        match message_type {
+            MessageType::Request(_) => Ok((wit_message, "".to_string())),
+            MessageType::Response => {
+                match self.contexts.get(&message_id) {
+                    Some(ref context) => {
+                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                    },
+                    None => {
+                        self.send_to_terminal
+                            .send("awm: couldn't find context for Response".into())
+                            .await
+                            .unwrap();
+                        Ok((wit_message, "".to_string()))
+                    },
                 }
             },
-            MessageType::Response => {
-                //  pop message_stack twice: once for response message,
-                //   and once for request message
-                next_message_stack.truncate(stack_len - 2);
-                next_message_stack
-            },
-        };
-
-        Ok(next_wit_message_stack)
+        }
     }
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
@@ -157,59 +205,130 @@ impl MicrokernelProcessImports for Process {
             .expect("print_to_terminal: error sending");
         Ok(())
     }
+
+    async fn get_current_unix_time(&mut self) -> Result<u64> {
+        Ok(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        )
+    }
+
+    async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
+        Ok(rand::random())
+    }
 }
 
 async fn send_process_results_to_loop(
-    results: Vec<WitProtomessage>,
-    message_stack: &mut MessageStack,
+    results: Vec<(WitProtomessage, String)>,
     source_ship: String,
     source_app: String,
     send_to_loop: MessageSender,
+    prompting_message: &Option<WrappedMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
 ) -> () {
-    let stack_len = message_stack.len();
-    let is_expecting_response =
-        if stack_len == 0 {
-            false
-        } else {
-            match message_stack[stack_len - 1].message_type {
-                MessageType::Request(is_expecting_response) => is_expecting_response,
-                MessageType::Response => false,
-            }
+    // println!("sprtl: prompting_message, results: {:?}, {:?}", prompting_message, results);
+    for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
+        let new_context = match serde_json::from_str(new_context_string) {
+            Ok(r) => Some(r),
+            Err(_) => None,
         };
-    for WitProtomessage { protomessage_type, payload } in &results {
-        let mut message_stack = message_stack.clone();
-        let (target_ship, target_app, message_type) =
+        let (id, rsvp, target_ship, target_app, message_type) =
             match protomessage_type {
                 WitProtomessageType::Request(type_with_target) => {
-                    //  set target based on request type
+                    let (id, rsvp) =
+                        if type_with_target.is_expecting_response {
+                            (rand::random(), None)
+                        } else {
+                            //  rsvp is set if there was a Request expecting Response
+                            //   followed by Request(s) not expecting Response;
+                            //   could also be None if entire chain of Requests are
+                            //   not expecting Response
+                            match prompting_message {
+                                Some(ref prompting_message) => {
+                                    (
+                                        prompting_message.id.clone(),
+                                        prompting_message.rsvp.clone(),
+                                    )
+                                },
+                                None => {
+                                    (rand::random(), None)
+                                },
+                            }
+                        };
                     (
+                        id,
+                        rsvp,
                         type_with_target.target_ship.clone(),
                         type_with_target.target_app.clone(),
-                        MessageType::Request(
-                            type_with_target.is_expecting_response
-                        ),
+                        MessageType::Request(type_with_target.is_expecting_response),
                     )
                 },
                 WitProtomessageType::Response => {
-                    //  if at chain start & dont want response, continue;
-                    //   else target is most recent message source
-                    if !is_expecting_response & (1 >= stack_len) {
+                    let Some(ref prompting_message) = prompting_message else {
+                        println!("need non-None prompting_message to handle Response");
                         continue;
-                    } else {
-                        (
-                            message_stack[stack_len - 1]
-                                .wire
-                                .source_ship
-                                .clone(),
-                            message_stack[stack_len - 1]
-                                .wire
-                                .source_app
-                                .clone(),
-                            MessageType::Response,
-                        )
-                    }
+                    };
+                    let (target_ship, target_app) =
+                        match prompting_message.message.message_type {
+                            MessageType::Request(is_expecting_response) => {
+                                if is_expecting_response {
+                                    (
+                                        prompting_message.message.wire.target_ship.clone(),
+                                        prompting_message.message.wire.target_app.clone(),
+                                    )
+                                } else {
+                                    let Some(rsvp) = prompting_message.rsvp.clone() else {
+                                        println!("no rsvp set for response (prompting)");
+                                        continue;
+                                    };
+                                    (rsvp.node.clone(), rsvp.process.clone())
+                                }
+                            },
+                            MessageType::Response => {
+                                let Some(context) = contexts.get(&prompting_message.id) else {
+                                    println!("couldn't find context to route response");
+                                    continue;
+                                };
+                                println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+                                let Some(ref ultimate) = context.ultimate else {
+                                    println!("couldn't find ultimate cause to route response");
+                                    continue;
+                                };
+
+                                match ultimate.message_type {
+                                    MessageType::Request(is_expecting_response) => {
+                                        if is_expecting_response {
+                                            (
+                                                ultimate.process_node.node.clone(),
+                                                ultimate.process_node.process.clone(),
+                                            )
+                                        } else {
+                                            let Some(rsvp) = ultimate.rsvp.clone() else {
+                                                println!("no rsvp set for response (ultimate)");
+                                                continue;
+                                            };
+                                            (rsvp.node.clone(), rsvp.process.clone())
+                                        }
+                                    },
+                                    MessageType::Response => {
+                                        println!("ultimate as response unexpected case");
+                                        continue;
+                                    },
+                                }
+                            },
+                        };
+                    (
+                        prompting_message.id.clone(),
+                        None,
+                        target_ship,
+                        target_app,
+                        MessageType::Response,
+                    )
                 },
             };
+
         let payload = Payload {
             json: match payload.json {
                 Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
@@ -217,69 +336,136 @@ async fn send_process_results_to_loop(
             },
             bytes: payload.bytes.clone(),
         };
-        let message = Message {
-            message_type,
-            wire: Wire {
-                source_ship: source_ship.clone(),
-                source_app: source_app.clone(),
-                target_ship,
-                target_app,
-            },
-            payload,
+        let wrapped_message = WrappedMessage {
+            id,
+            rsvp,
+            message: Message {
+                message_type,
+                wire: Wire {
+                    source_ship: source_ship.clone(),
+                    source_app: source_app.clone(),
+                    target_ship,
+                    target_app,
+                },
+                payload,
+            }
         };
 
-        message_stack.push(message);
+        // println!("contexts before modification");
+        // for (key, val) in contexts.iter() {
+        //     println!("{}: {:?}", key, val);
+        // }
+
+        //  modify contexts if necessary
+        //   note that this could be rolled into the `match` making Message above;
+        //   if performance is bad here, roll into above
+        match wrapped_message.message.message_type {
+            MessageType::Request(_) => {
+                //  add context, as appropriate
+                match prompting_message {
+                    Some(ref prompting_message) => {
+                        match prompting_message.message.message_type {
+                            MessageType::Request(_prompting_message_is_expecting_response) => {
+                                //  case: prompting_message_is_expecting_response
+                                //   ultimate stored for source
+                                //  case: !prompting_message_is_expecting_response
+                                //   ultimate stored for rsvp
+                                contexts.insert(
+                                    wrapped_message.id,
+                                    ProcessContext::new(
+                                        &wrapped_message,
+                                        Some(&prompting_message),
+                                        new_context,
+                                    )
+                                );
+                            },
+                            MessageType::Response => {
+                                match contexts.get(&prompting_message.id) {
+                                    Some(context) => {
+                                        //  ultimate is the ultimate of the prompt of Response
+                                        contexts.insert(
+                                            wrapped_message.id,
+                                            ProcessContext {
+                                                proximate: CauseMetadata::new(&wrapped_message),
+                                                ultimate: context.ultimate.clone(),
+                                                context: match new_context {
+                                                    Some(new_context) => new_context,
+                                                    None => serde_json::Value::Null,
+                                                },
+                                            },
+                                        );
+                                    },
+                                    None => {
+                                        //  should this even be allowed?
+                                        contexts.insert(
+                                            wrapped_message.id,
+                                            ProcessContext::new(
+                                                &wrapped_message,
+                                                Some(&prompting_message),
+                                                new_context,
+                                            )
+                                        );
+                                    },
+                                }
+                            },
+                        }
+                    },
+                    None => {
+                        contexts.insert(
+                            wrapped_message.id,
+                            ProcessContext::new(
+                                &wrapped_message,
+                                None,
+                                new_context,
+                            )
+                        );
+                    },
+                }
+            },
+            MessageType::Response => {
+                //  clean up context we just used
+                contexts.remove(&wrapped_message.id);
+            },
+        }
+
+        // println!("contexts after modification");
+        // for (key, val) in contexts.iter() {
+        //     println!("{}: {:?}", key, val);
+        // }
+
+        let Some(prompting_message) = prompting_message else {panic!("oops")};
+
         send_to_loop
-            .send(message_stack)
+            .send(wrapped_message)
             .await
             .unwrap();
     }
 }
 
-async fn print_stack_to_terminal(
-    context_string: &str,
-    message_stack: &MessageStack,
-    send_to_terminal: PrintSender,
-) {
-    send_to_terminal
-        .send(format!("{}: [", context_string))
-        .await
-        .unwrap();
-    for m in message_stack {
-        send_to_terminal.send(format!("    {}", m)).await.unwrap();
+async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
+    let wit_payload = WitPayload {
+        json: match m.payload.json.clone() {
+            Some(value) => Some(json_to_string(&value)),
+            None => None,
+        },
+        bytes: m.payload.bytes.clone(),
+    };
+    let wit_message_type = match m.message_type {
+        MessageType::Request(is_expecting_response) => {
+            WitMessageType::Request(is_expecting_response)
+        },
+        MessageType::Response => WitMessageType::Response,
+    };
+    WitMessage {
+        message_type: wit_message_type,
+        wire: WitWire {
+            source_ship: m.wire.source_ship.clone(),
+            source_app: m.wire.source_app.clone(),
+            target_ship: m.wire.target_ship.clone(),
+            target_app: m.wire.target_app.clone(),
+        },
+        payload: wit_payload,
     }
-    send_to_terminal
-        .send("]".to_string())
-        .await
-        .unwrap();
-}
-
-async fn convert_message_stack_to_wit_message_stack(message_stack: &Vec<Message>) -> Vec<WitMessage> {
-    message_stack.iter().map(|m: &Message| {
-        let wit_payload = WitPayload {
-            json: match m.payload.json.clone() {
-                Some(value) => Some(json_to_string(&value)),
-                None => None,
-            },
-            bytes: m.payload.bytes.clone(),
-        };
-        let wit_message_type = match m.message_type {
-            MessageType::Request(is_expecting_response) => {
-                WitMessageType::Request(is_expecting_response)
-            },
-            MessageType::Response => WitMessageType::Response,
-        };
-        WitMessage {
-            message_type: wit_message_type,
-            wire: WitWire {
-                source_ship: m.wire.source_ship.clone(),
-                source_app: m.wire.source_app.clone(),
-                target_ship: m.wire.target_ship.clone(),
-                target_app: m.wire.target_app.clone(),
-            },
-            payload: wit_payload,
-        }
-    }).collect()
 }
 
 async fn make_process_loop(
@@ -306,7 +492,8 @@ async fn make_process_loop(
             recv_in_process,
             send_to_loop,
             send_to_terminal: send_to_terminal.clone(),
-            current_message_stack: vec![],
+            prompting_message: None,
+            contexts: HashMap::new(),
         },
     );
 
@@ -333,21 +520,20 @@ async fn make_process_loop(
 
 async fn handle_kernel_request(
     our_name: String,
-    stack_len: usize,
-    mut message_stack: MessageStack,
-    message: Message,
+    wrapped_message: WrappedMessage,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
     engine: &Engine,
 ) {
+    let message = wrapped_message.message;
     let Some(value) = message.payload.json else {
-        print_stack_to_terminal(
-            "kernel: got kernel command with no json source, stack",
-            &message_stack,
-            send_to_terminal.clone(),
-        ).await;
+        // print_stack_to_terminal(
+        //     "kernel: got kernel command with no json source, stack",
+        //     &message_stack,
+        //     send_to_terminal.clone(),
+        // ).await;
         return;
     };
     let kernel_request: KernelRequest =
@@ -356,15 +542,15 @@ async fn handle_kernel_request(
     match kernel_request {
         KernelRequest::StartProcess(cmd) => {
             let Some(wasm_bytes) = message.payload.bytes else {
-                print_stack_to_terminal(
-                    "kernel: StartProcess requires bytes; stack",
-                    &message_stack,
-                    send_to_terminal.clone(),
-                ).await;
+                // print_stack_to_terminal(
+                //     "kernel: StartProcess requires bytes; stack",
+                //     &message_stack,
+                //     send_to_terminal.clone(),
+                // ).await;
                 return;
             };
             let (send_to_process, recv_in_process) =
-                mpsc::channel::<MessageStack>(PROCESS_CHANNEL_CAPACITY);
+                mpsc::channel::<WrappedMessage>(PROCESS_CHANNEL_CAPACITY);
             senders.insert(cmd.process_name.clone(), send_to_process);
             let metadata = ProcessMetadata {
                 our_name: our_name.to_string(),
@@ -385,27 +571,30 @@ async fn handle_kernel_request(
                 ),
             );
 
-            let start_completed_message = Message {
-                message_type: MessageType::Response,
-                wire: Wire {
-                    source_ship: our_name.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our_name.clone(),
-                    target_app: "process_manager".to_string(),
-                },
-                payload: Payload {
-                    json: Some(
-                        serde_json::to_value(
-                            KernelResponse::StartProcess(metadata)
-                        ).unwrap()
-                    ),
-                    bytes: None,
-                },
+            let start_completed_message = WrappedMessage {
+                id: wrapped_message.id,
+                rsvp: None,
+                message: Message {
+                    message_type: MessageType::Response,
+                    wire: Wire {
+                        source_ship: our_name.clone(),
+                        source_app: "kernel".to_string(),
+                        target_ship: our_name.clone(),
+                        target_app: "process_manager".to_string(),
+                    },
+                    payload: Payload {
+                        json: Some(
+                            serde_json::to_value(
+                                KernelResponse::StartProcess(metadata)
+                            ).unwrap()
+                        ),
+                        bytes: None,
+                    },
+                }
             };
-            message_stack.push(start_completed_message);
             if let Some(send_to_process_manager) = senders.get("process_manager") {
                 send_to_process_manager
-                    .send(message_stack)
+                    .send(start_completed_message)
                     .await
                     .unwrap();
             }
@@ -419,12 +608,13 @@ async fn handle_kernel_request(
             let MessageType::Request(
                 is_expecting_response
             ) = message.message_type else {
-                println!("kernel: StopProcess unexpected response instead of request");
+                send_to_terminal
+                    .send("kernel: StopProcess requires Request, got Response".into())
+                    .await
+                    .unwrap();
                 return;
             };
-            if !is_expecting_response & (1 < stack_len) {
-                //  pop off requests that dont expect responses
-                //   UNLESS they are the request that started the chain
+            if !is_expecting_response {
                 return;
             }
             let json_payload = serde_json::to_value(
@@ -432,23 +622,27 @@ async fn handle_kernel_request(
                     process_name: cmd.process_name.clone(),
                 })
             ).unwrap();
-            let stop_completed_message = Message {
-                message_type: MessageType::Response,
-                wire: Wire {
-                    source_ship: our_name.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our_name.clone(),
-                    target_app: "process_manager".to_string(),
-                },
-                payload: Payload {
-                    json: Some(json_payload),
-                    bytes: None,
-                },
+
+            let stop_completed_message = WrappedMessage {
+                id: wrapped_message.id,
+                rsvp: None,
+                message: Message {
+                    message_type: MessageType::Response,
+                    wire: Wire {
+                        source_ship: our_name.clone(),
+                        source_app: "kernel".to_string(),
+                        target_ship: our_name.clone(),
+                        target_app: "process_manager".to_string(),
+                    },
+                    payload: Payload {
+                        json: Some(json_payload),
+                        bytes: None,
+                    },
+                }
             };
-            message_stack.push(stop_completed_message);
             if let Some(send_to_process_manager) = senders.get("process_manager") {
                 send_to_process_manager
-                    .send(message_stack)
+                    .send(stop_completed_message)
                     .await
                     .unwrap();
             }
@@ -460,6 +654,7 @@ async fn handle_kernel_request(
 async fn make_event_loop(
     our_name: String,
     mut recv_in_loop: MessageReceiver,
+    mut recv_debug_in_loop: DebugReceiver,
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
@@ -471,74 +666,91 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             let mut process_handles: ProcessHandles = HashMap::new();
+            let mut is_debug = false;
             loop {
-                let message_stack = recv_in_loop.recv().await.unwrap();
-                let stack_len = message_stack.len();
-                let message = message_stack[stack_len - 1].clone();
-                send_to_terminal
-                    .send(
-                        format!(
-                            "event loop: got json message: source, target, payload.json: {:?} {:?}, {:?} {:?}, {:?}",
-                            message.wire.source_ship,
-                            message.wire.source_app,
-                            message.wire.target_ship,
-                            message.wire.target_app,
-                            message.payload.json,
-                        )
-                    )
-                    .await
-                    .unwrap();
-                if our_name != message.wire.target_ship {
-                    match send_to_wss.send(message_stack).await {
-                        Ok(()) => {
-                            send_to_terminal
-                                .send("event loop: sent to wss".to_string())
-                                .await
-                                .unwrap();
+                tokio::select! {
+                    debug = recv_debug_in_loop.recv() => {
+                        if let Some(DebugCommand::Mode(is_debug_msg)) = debug {
+                            is_debug = is_debug_msg;
                         }
-                        Err(e) => {
-                            send_to_terminal
-                                .send(format!("event loop: failed to send to wss: {}", e))
-                                .await
-                                .unwrap();
-                        }
-                    }
-                } else {
-                    let to = message.wire.target_app.clone();
-                    if to == "kernel" {
-                        handle_kernel_request(
-                            our_name.clone(),
-                            stack_len,
-                            message_stack,
-                            message,
-                            send_to_loop.clone(),
-                            send_to_terminal.clone(),
-                            &mut senders,
-                            &mut process_handles,
-                            &engine,
-                        ).await;
-                    } else {
-                        //  pass message to appropriate runtime/process
-                        match senders.get(&to) {
-                            Some(sender) => {
-                                let _result = sender
-                                    .send(message_stack)
-                                    .await;
-                            }
-                            None => {
-                                send_to_terminal
-                                    .send(
-                                        format!(
-                                            "event loop: don't have {} amongst registered processes: {:?}",
-                                            to,
-                                            senders.keys().collect::<Vec<_>>()
-                                        )
-                                    )
-                                    .await
-                                    .unwrap();
+                    },
+                    wrapped_message = recv_in_loop.recv() => {
+                        while is_debug {
+                            let debug = recv_debug_in_loop.recv().await.unwrap();
+                            match debug {
+                                DebugCommand::Mode(is_debug_msg) => is_debug = is_debug_msg,
+                                DebugCommand::Step => break,
                             }
                         }
-                    }
+
+                        let Some(wrapped_message) = wrapped_message else {
+                            send_to_terminal.send(
+                                "event loop: got None for message".to_string()
+                            ).await.unwrap();
+                            continue;
+                        };
+                        // let wrapped_message = recv_in_loop.recv().await.unwrap();
+                        send_to_terminal.send(
+                            format!("event loop: got message: {}", wrapped_message)
+                        ).await.unwrap();
+                        // print_stack_to_terminal(
+                        //     "event loop: got message stack",
+                        //     &message_stack,
+                        //     send_to_terminal.clone(),
+                        // ).await;
+                        if our_name != wrapped_message.message.wire.target_ship {
+                            match send_to_wss.send(wrapped_message).await {
+                                Ok(()) => {
+                                    send_to_terminal
+                                        .send("event loop: sent to wss".to_string())
+                                        .await
+                                        .unwrap();
+                                }
+                                Err(e) => {
+                                    send_to_terminal
+                                        .send(
+                                            format!("event loop: failed to send to wss: {}", e)
+                                        ).await.unwrap();
+                                }
+                            }
+                        } else {
+                            let to = wrapped_message.message.wire.target_app.clone();
+                            if to == "kernel" {
+                                handle_kernel_request(
+                                    our_name.clone(),
+                                    wrapped_message,
+                                    send_to_loop.clone(),
+                                    send_to_terminal.clone(),
+                                    &mut senders,
+                                    &mut process_handles,
+                                    &engine,
+                                ).await;
+                            } else {
+                                //  pass message to appropriate runtime/process
+                                match senders.get(&to) {
+                                    Some(sender) => {
+                                        let _result = sender
+                                            .send(wrapped_message)
+                                            .await;
+                                    }
+                                    None => {
+                                        send_to_terminal
+                                            .send(
+                                                format!(
+                                                    "event loop: don't have {} amongst registered processes: {:?}",
+                                                    to,
+                                                    senders.keys().collect::<Vec<_>>()
+                                                )
+                                            )
+                                            .await
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                        }
+
+
+                    },
                 }
             }
         }
@@ -552,6 +764,7 @@ pub async fn kernel(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
+    recv_debug_in_loop: DebugReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
 ) {
@@ -564,6 +777,7 @@ pub async fn kernel(
         make_event_loop(
             our.name.clone(),
             recv_in_loop,
+            recv_debug_in_loop,
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
@@ -573,8 +787,10 @@ pub async fn kernel(
     );
 
     let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
-    let start_process_manager_message: MessageStack = vec![
-        Message {
+    let start_process_manager_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
             message_type: MessageType::Request(false),
             wire: Wire {
                 source_ship: our.name.clone(),
@@ -594,7 +810,7 @@ pub async fn kernel(
                 bytes: Some(process_manager_wasm_bytes),
             },
         },
-    ];
+    };
     send_to_loop.send(start_process_manager_message).await.unwrap();
 
     let _ = event_loop_handle.await;

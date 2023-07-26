@@ -178,9 +178,8 @@ pub async fn ws_sender(
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    while let Some(message_stack) = message_rx.recv().await {
-        let stack_len = message_stack.len();
-        let message = &message_stack[stack_len - 1];
+    while let Some(message) = message_rx.recv().await {
+        let id = message.id.clone();
 
         let result = send_message(
             &our,
@@ -199,19 +198,23 @@ pub async fn ws_sender(
             Ok(res) => {
                 if let SuccessOrTimeout::Timeout = res {
                     let _ = kernel_message_tx
-                        .send(vec![Message {
-                            message_type: MessageType::Response,
-                            wire: Wire {
-                                source_ship: our.name.clone(),
-                                source_app: "ws".into(),
-                                target_ship: our.name.clone(),
-                                target_app: message.wire.source_app.clone(),
+                        .send(WrappedMessage {
+                            id,
+                            rsvp: None,
+                            message: Message {
+                                message_type: MessageType::Response,
+                                wire: Wire {
+                                    source_ship: our.name.clone(),
+                                    source_app: "ws".into(),
+                                    target_ship: our.name.clone(),
+                                    target_app: message.message.wire.source_app.clone(),
+                                },
+                                payload: Payload {
+                                    json: Some(serde_json::to_value(NetworkingError::MessageTimeout).unwrap()),
+                                    bytes: None,
+                                },
                             },
-                            payload: Payload {
-                                json: Some(serde_json::to_value(NetworkingError::MessageTimeout).unwrap()),
-                                bytes: None,
-                            },
-                        }])
+                        })
                         .await;
                 }
                 continue;
@@ -219,19 +222,23 @@ pub async fn ws_sender(
             Err(e) => {
                 let _ = print_tx.send(format!("{}", e)).await;
                 let _ = kernel_message_tx
-                    .send(vec![Message {
-                        message_type: MessageType::Response,
-                        wire: Wire {
-                            source_ship: our.name.to_string(),
-                            source_app: "ws".into(),
-                            target_ship: our.name.clone(),
-                            target_app: message.wire.source_app.clone(),
+                    .send(WrappedMessage {
+                        id,
+                        rsvp: None,
+                        message: Message {
+                            message_type: MessageType::Response,
+                            wire: Wire {
+                                source_ship: our.name.to_string(),
+                                source_app: "ws".into(),
+                                target_ship: our.name.clone(),
+                                target_app: message.message.wire.source_app.clone(),
+                            },
+                            payload: Payload {
+                                json: Some(serde_json::to_value(NetworkingError::PeerOffline).unwrap()),
+                                bytes: None,
+                            },
                         },
-                        payload: Payload {
-                            json: Some(serde_json::to_value(NetworkingError::PeerOffline).unwrap()),
-                            bytes: None,
-                        },
-                    }])
+                    })
                     .await;
             }
         }
@@ -244,18 +251,20 @@ async fn send_message(
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
-    message: Message,
+    message: WrappedMessage,
     self_message_tx: MessageSender,
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) -> Result<SuccessOrTimeout, String> {
+    let target_ship = message.message.wire.target_ship.clone();
+
     let message_bytes = match serde_json::to_vec(&message) {
         Ok(v) => v,
         Err(e) => return Err(format!("error serializing message: {}", e)),
     };
 
     let mut edit = peers.write().await;
-    match edit.get_mut(&message.wire.target_ship) {
+    match edit.get_mut(&target_ship) {
         Some(peer) => {
             // we have an active connection with this peer, encrypt and send message
             let encryption_key = peer
@@ -275,7 +284,7 @@ async fn send_message(
                 Ok(_) => return Ok(SuccessOrTimeout::Success),
                 Err(_) => {
                     //  TODO handle this actual websocket error better
-                    edit.remove(&message.wire.target_ship);
+                    edit.remove(&target_ship);
                     return Ok(SuccessOrTimeout::Timeout)
                 }
             }
@@ -284,9 +293,9 @@ async fn send_message(
             // we do not have an active connection, try to open a new connection
             // then re-send the original message
             drop(edit);
-            let id = match pki.get(&message.wire.target_ship) {
+            let id = match pki.get(&target_ship) {
                 Some(v) => v,
-                None => return Err(format!("error: {} not in PKI", &message.wire.target_ship)),
+                None => return Err(format!("error: {} not in PKI", &target_ship)),
             };
             // if their identity does not include direct websocket
             // routing info, try to go through a router
@@ -298,7 +307,7 @@ async fn send_message(
                         None => {
                             return Err(format!(
                                 "error: {} has no allowed routers",
-                                &message.wire.target_ship
+                                &target_ship
                             ))
                         }
                     };
@@ -319,7 +328,7 @@ async fn send_message(
                 Err(e) => {
                     return Err(format!(
                         "error connecting to {}: {}",
-                        &message.wire.target_ship, e
+                        &target_ship, e
                     ));
                     // try again to send message?
                     // TODO route this back through kernel or something?
@@ -328,7 +337,7 @@ async fn send_message(
                     let conn = handle_connection(
                         our.clone(),
                         our_url.clone(),
-                        HandshakeOrTarget::Target(message.wire.target_ship.clone()),
+                        HandshakeOrTarget::Target(target_ship.clone()),
                         keypair.clone(),
                         pki.clone(),
                         stream,
@@ -340,7 +349,7 @@ async fn send_message(
                     .await;
                     match conn {
                         Ok(_) => {
-                            let _ = self_message_tx.send(vec![message.clone()]).await;
+                            let _ = self_message_tx.send(message.clone()).await;
                             return Ok(SuccessOrTimeout::TryAgain);
                         }
                         Err(e) => return Err(format!("error opening new conn: {}", e)),
@@ -606,7 +615,7 @@ async fn active_reader(
                         continue;
                     }
                 };
-                let message = match serde_json::from_slice::<Message>(&plaintext) {
+                let message = match serde_json::from_slice::<WrappedMessage>(&plaintext) {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = print_tx
@@ -667,20 +676,20 @@ async fn forwarder(
 }
 
 /// take in a decrypted message received over network and send it to kernel
-async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: Message) {
+async fn ingest_peer_msg(message_tx: MessageSender, print_tx: PrintSender, msg: WrappedMessage) {
     // if payload is just a string, print it as a "message"
     // otherwise forward to kernel for processing
-    match (&msg.payload.json, &msg.payload.bytes) {
+    match (&msg.message.payload.json, &msg.message.payload.bytes) {
         (Some(serde_json::Value::String(s)), None) => {
             let _ = print_tx
                 .send(format!(
                     "\x1b[3;32m {}: {:?} \x1b[0m",
-                    msg.wire.source_ship, s
+                    msg.message.wire.source_ship, s
                 ))
                 .await;
         }
         _ => {
-            let _ = message_tx.send(vec![msg]).await;
+            let _ = message_tx.send(msg).await;
         }
     }
 }

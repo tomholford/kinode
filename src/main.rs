@@ -17,6 +17,7 @@ mod types;
 mod websockets;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
+const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
@@ -34,6 +35,9 @@ async fn main() {
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(EVENT_LOOP_CHANNEL_CAPACITY);
+    // kernel receives debug messages via this channel, terminal sends messages
+    let (kernel_debug_message_sender, kernel_debug_message_receiver): (DebugSender, DebugReceiver) =
+        mpsc::channel(EVENT_LOOP_DEBUG_CHANNEL_CAPACITY);
     // websocket sender receives send messages via this channel, kernel send messages
     let (wss_message_sender, wss_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
@@ -94,6 +98,7 @@ async fn main() {
         term = terminal::terminal(
             &our,
             kernel_message_sender.clone(),
+            kernel_debug_message_sender,
             print_receiver,
         ) => match term {
             Ok(_) => "graceful shutdown".to_string(),
@@ -105,6 +110,7 @@ async fn main() {
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,
+            kernel_debug_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
         ) => { "microkernel died".to_string() },

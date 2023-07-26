@@ -60,8 +60,9 @@ impl CommandHistory {
 pub async fn terminal(
     our: &Identity,
     version: &str,
-    to_event_loop: MessageSender,
-    to_debug_event_loop: DebugSender,  // TODO
+    event_loop: MessageSender,
+    debug_event_loop: DebugSender,
+    print_tx: PrintSender,
     mut print_rx: PrintReceiver,
 ) -> std::io::Result<()> {
     execute!(stdout(), terminal::Clear(ClearType::All))?;
@@ -104,6 +105,7 @@ pub async fn terminal(
     let prompt_len: u16 = (our.name.len() + 3).try_into().unwrap();
     let (_win_cols, win_rows) = terminal::size().unwrap();
     let mut cursor_col = prompt_len;
+    let mut is_debug: bool = false;
 
     // TODO set a max history length
     let mut command_history = CommandHistory::new(1000);
@@ -134,6 +136,7 @@ pub async fn terminal(
                 Some(Ok(event)) => {
                     let mut stdout = stdout.lock();
                     match event {
+                        // turn off the node
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('c'),
                             modifiers: KeyModifiers::CONTROL,
@@ -141,6 +144,32 @@ pub async fn terminal(
                         }) => {
                             break;
                         },
+                        // CTRL+J: toggle debug mode -- makes system-level event loop step-through
+                        // CTRL+S: step through system-level event loop
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('j'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            let _ = print_tx.send(
+                                match is_debug {
+                                    true => "debug mode: off".into(),
+                                    false => "debug mode: on \r\nuse CTRL+S to step through events".into(),
+                                }
+                            ).await;
+                            let _ = debug_event_loop.send(DebugCommand::Toggle).await;
+                            is_debug = !is_debug;
+                        },
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('s'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            let _ = debug_event_loop.send(DebugCommand::Step).await;
+                        },
+                        //
+                        //  handle keypress events
+                        //
                         Event::Key(k) => {
                             match k.code {
                                 KeyCode::Char(c) => {
@@ -218,7 +247,7 @@ pub async fn terminal(
                                     )?;
                                     command_history.add(command.clone());
                                     cursor_col = prompt_len;
-                                    let _err = to_event_loop.send(
+                                    let _err = event_loop.send(
                                         WrappedMessage {
                                             id: rand::random(),
                                             rsvp: None,

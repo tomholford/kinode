@@ -106,6 +106,7 @@ async fn main() {
             VERSION,
             kernel_message_sender.clone(),
             kernel_debug_message_sender,
+            print_sender.clone(),
             print_receiver,
         ) => match term {
             Ok(_) => "graceful shutdown".to_string(),

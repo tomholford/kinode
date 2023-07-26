@@ -670,15 +670,15 @@ async fn make_event_loop(
             loop {
                 tokio::select! {
                     debug = recv_debug_in_loop.recv() => {
-                        if let Some(DebugCommand::Mode(is_debug_msg)) = debug {
-                            is_debug = is_debug_msg;
+                        if let Some(DebugCommand::Toggle) = debug {
+                            is_debug = !is_debug;
                         }
                     },
                     wrapped_message = recv_in_loop.recv() => {
                         while is_debug {
                             let debug = recv_debug_in_loop.recv().await.unwrap();
                             match debug {
-                                DebugCommand::Mode(is_debug_msg) => is_debug = is_debug_msg,
+                                DebugCommand::Toggle => is_debug = !is_debug,
                                 DebugCommand::Step => break,
                             }
                         }

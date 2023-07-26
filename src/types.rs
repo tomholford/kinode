@@ -126,16 +126,9 @@ impl std::fmt::Display for WrappedMessage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum DebugCommand {
-    Mode(bool),
+    Toggle,
     Step,
 }
-
-// pub enum Command {
-//     Message(WrappedMessage),
-//     Debug(DebugCommand),  // TODO
-//     Quit,
-//     Invalid,
-// }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {

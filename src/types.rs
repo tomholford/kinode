@@ -94,12 +94,6 @@ impl std::fmt::Display for Message {
     }
 }
 
-pub enum Command {
-    StartOfMessageStack(MessageStack),
-    Quit,
-    Invalid,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemRequest {
     Read(String),

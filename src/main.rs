@@ -77,8 +77,12 @@ async fn main() {
     let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
     assert!(hex_pubkey == our.networking_key);
 
-    let _ = print_sender.send(format!("{}.. now online", our_name)).await;
-    let _ = print_sender.send(format!("our networking public key: {}", hex_pubkey)).await;
+    let _ = print_sender
+        .send(format!("{}.. now online", our_name))
+        .await;
+    let _ = print_sender
+        .send(format!("our networking public key: {}", hex_pubkey))
+        .await;
 
     /*  we are currently running 3 I/O modules:
      *      terminal,
@@ -126,6 +130,6 @@ async fn main() {
             fs_message_receiver
         ) => { "".to_string() },
     };
-
+    println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

@@ -4045,6 +4045,7 @@ dependencies = [
  "bincode",
  "bytes",
  "cita_trie",
+ "digest 0.10.7",
  "elliptic-curve",
  "ethers",
  "futures",

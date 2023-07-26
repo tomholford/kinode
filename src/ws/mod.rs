@@ -1,5 +1,8 @@
 // use crate::types::*;
-use crate::types::{WrappedMessage as KernelWrappedMessage, Identity, OnchainPKI, MessageSender, MessageReceiver, PrintSender};
+use crate::types::{
+    Identity, MessageReceiver, MessageSender, OnchainPKI, PrintSender, Printout,
+    WrappedMessage as KernelWrappedMessage,
+};
 use crate::ws::connections::*;
 use aes_gcm_siv::Nonce;
 use elliptic_curve::ecdh::EphemeralSecret;
@@ -53,7 +56,14 @@ impl fmt::Debug for Peer {
 
 pub struct Router {
     name: String,
-    pending_peers: HashMap<String, (Arc<EphemeralSecret<Secp256k1>>, Vec<u8>, KernelWrappedMessage)>,
+    pending_peers: HashMap<
+        String,
+        (
+            Arc<EphemeralSecret<Secp256k1>>,
+            Vec<u8>,
+            KernelWrappedMessage,
+        ),
+    >,
 }
 
 /// contains identity and encryption keys, used in initial handshake.
@@ -124,7 +134,10 @@ pub async fn websockets(
                 .expect(format!("fatal error: can't listen on port {}", port).as_str());
 
             let _ = print_tx
-                .send(format!("now listening on port {}", port))
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!("now listening on port {}", port),
+                })
                 .await;
 
             // listen on our port for new connections, and

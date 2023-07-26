@@ -56,7 +56,7 @@ async fn create_dir_if_dne(path: &str) -> Result<()> {
 //         .unwrap()
 //         .to_string()
 // }
-// 
+//
 // async fn get_file_path_2(base_path: String, uri_string: &str) -> String {
 //     let uri = uri_string.parse::<Uri>().unwrap();
 //     if Some("fs") != uri.scheme_str() {
@@ -264,12 +264,15 @@ async fn handle_request(
             let file_contents = fs::read(&file_path).await?;
             let hash = compute_truncated_hash(&file_contents);
             let _ = send_to_terminal.send(
-                format!(
-                    "filesystem: got file at {} of size {} with hash {}",
-                    file_path,
-                    file_contents.len(),
-                    hash,
-                )
+                Printout {
+                    verbosity: 0,
+                    content: format!(
+                        "filesystem: got file at {} of size {} with hash {}",
+                        file_path,
+                        file_contents.len(),
+                        hash,
+                    )
+                }
             ).await;
 
             Payload {

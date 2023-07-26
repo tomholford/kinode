@@ -231,8 +231,8 @@ pub async fn terminal(
                                                     target_app: "terminal".into(),
                                                 },
                                                 payload: Payload {
-                                                    json: Some(serde_json::Value::String(command)),
-                                                    bytes: None,
+                                                    json: None,
+                                                    bytes: Some(command.as_bytes().to_vec()),
                                                 },
                                             }
                                         }

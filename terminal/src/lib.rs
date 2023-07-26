@@ -23,9 +23,7 @@ fn parse_command(line: String) {
                     return;
                 }
             };
-            //  since payload is a string, key/value double quotes are escaped:
-            //   remove the escaping `\`s
-            let payload = payload.replace("\\\"", "\"");
+
             bindings::yield_results(vec![
                 (
                     WitProtomessage {
@@ -57,8 +55,8 @@ impl bindings::MicrokernelProcess for Component {
 
         loop {
             let (message, _) = bindings::await_next_message();
-            let stringy = message.payload.json.unwrap_or("".into());
-            parse_command(stringy);
+            let stringy = message.payload.bytes.unwrap_or(vec![]);
+            parse_command(String::from_utf8(stringy).unwrap_or("".into())); // gross
         }
     }
 }

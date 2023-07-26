@@ -4,7 +4,7 @@ use crate::types::*;
 use serde_json::json;
 use ring::{digest, pbkdf2};
 use ring::signature;
-use ring::rand;
+use ring::rand as RingRand;
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
@@ -18,7 +18,7 @@ enum KeygenAction {
   GenerateDiskKey(GenerateDiskKey),
   GenerateNetworkingKey,
   // TODO this is just the format of the return from fs...we should probably change that format
-  uri_string(String),
+  Write(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,11 +33,7 @@ pub async fn keygen(
   mut recv_in_kg: MessageReceiver,
   print_tx: PrintSender,
 ) {
-  while let Some(mut messages) = recv_in_kg.recv().await {
-    let Some(message) = messages.pop() else {
-      panic!("keygen: keygen must receive non-empty MessageStack, got: {:?}", messages);
-    };
-
+  while let Some(message) = recv_in_kg.recv().await {
     tokio::spawn(
       handle_request(
         our_name.to_string(),
@@ -52,18 +48,18 @@ pub async fn keygen(
 async fn handle_request(
   our: String,
   send_to_loop: MessageSender,
-  message: Message,
+  wm: WrappedMessage,
   print_tx: PrintSender,
 ) {
-  let Some(value) = message.payload.json.clone() else {
-    panic!("keygen: request must have JSON payload, got: {:?}", message);
+  let Some(value) = wm.message.payload.json.clone() else {
+    panic!("keygen: request must have JSON payload, got: {:?}", wm.message);
   };
   let act: KeygenAction = serde_json::from_value(value).unwrap();
 
   match act {
     KeygenAction::GenerateDiskKey(action) => {
-      if message.wire.source_ship != our {
-        panic!("keygen: source_ship must be our ship, got: {:?}", message.wire.source_ship)
+      if wm.message.wire.source_ship != our {
+        panic!("keygen: source_ship must be our ship, got: {:?}", wm.message.wire.source_ship)
       };
       if action.salt.as_bytes().len() != 32 {
         panic!("salt must be 32 bytes long")
@@ -76,21 +72,25 @@ async fn handle_request(
       pbkdf2::derive(PBKDF2_ALG, NonZeroU32::new(ITERATIONS).unwrap(), action.salt.as_bytes(), action.password.as_bytes(), &mut to_store);
       // store them in fs
       //
-      let _ = send_to_loop.send(vec![
-        Message {
-          message_type: MessageType::Request(true),
-          wire: Wire {
-            source_ship: our.clone(),
-            source_app: "keygen".to_string(),
-            target_ship: our.clone(),
-            target_app: "filesystem".to_string(),
-          },
-          payload: Payload {
-            json: Some(json!({"Write": "fs://disk.keys"})),
-            bytes: Some(to_store.to_vec())
+      let _ = send_to_loop.send(
+        WrappedMessage {
+          id: rand::random(),
+          rsvp: None, // TODO what is this
+          message: Message {
+            message_type: MessageType::Request(true),
+            wire: Wire {
+              source_ship: our.clone(),
+              source_app: "keygen".to_string(),
+              target_ship: our.clone(),
+              target_app: "filesystem".to_string(),
+            },
+            payload: Payload {
+              json: Some(json!({"uri_string": "fs://disk.keys", "action": "Write"})),
+              bytes: Some(to_store.to_vec())
+            }
           }
         }
-      ]).await;
+      ).await;
     },
     KeygenAction::GenerateNetworkingKey => {
       let _ = print_tx.send(format!("generating network.keys...")).await;
@@ -98,30 +98,49 @@ async fn handle_request(
       // if message.wire.source_app != "ws" {
       //   panic!("keygen: source_app must be ws, got: {:?}", message.wire.source_app)
       // };
-      let seed = rand::SystemRandom::new();
+      let seed = RingRand::SystemRandom::new();
       let networking_keypair = signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
 
       // send key as a response to the networking module
-      let _ = send_to_loop.send(vec![
-        Message {
-          message_type: MessageType::Response,
-          wire: Wire {
-            source_ship: our.clone(),
-            source_app: "keygen".to_string(),
-            target_ship: our.clone(),
-            target_app: message.wire.source_app.clone(),
-          },
-          payload: Payload {
-            json: None,
-            bytes: Some(networking_keypair.as_ref().to_vec())
+      let _ = send_to_loop.send(
+        WrappedMessage {
+          id: wm.id,
+          rsvp: None,
+          message: Message {
+            message_type: MessageType::Response,
+            wire: match wm.message.message_type {
+              MessageType::Response => panic!("keygen: should not get a response for GenerateNetworkingKey"),
+              MessageType::Request(is_expecting_response) => {
+                if is_expecting_response {
+                  Wire {
+                    source_ship: our.clone(),
+                    source_app: "keygen".to_string(),
+                    target_ship: our.clone(),
+                    target_app: wm.message.wire.source_app.clone(),
+                  }
+                } else {
+                  let Some(rsvp) = wm.rsvp else { panic!("keygen: must have rsvp for GenerateNetworkingKey"); };
+                  Wire {
+                    source_ship: our.clone(),
+                    source_app: "keygen".to_string(),
+                    target_ship: rsvp.node.clone(),
+                    target_app: rsvp.process.clone(),
+                  }
+                }
+              },
+            },
+            payload: Payload {
+              json: None,
+              bytes: Some(networking_keypair.as_ref().to_vec())
+            }
           }
         }
-      ]).await;
+      ).await;
     },
     // handles response from fs
-    _ => {
+    KeygenAction::Write(file_path) => {
       // TODO add error propagation from fs once that is built
-      let _ = print_tx.send("successfully saved keys to fs://sys.keys".to_string()).await;
+      let _ = print_tx.send(format!("successfully saved keys to {:?}", file_path)).await;
     }
   }
 }

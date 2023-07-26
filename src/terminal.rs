@@ -105,9 +105,12 @@ pub async fn terminal(
     let prompt_len: u16 = (our.name.len() + 3).try_into().unwrap();
     let (_win_cols, win_rows) = terminal::size().unwrap();
     let mut cursor_col = prompt_len;
-    let mut is_debug: bool = false;
+    let mut in_step_through: bool = false;
+    // TODO add more verbosity levels as needed?
+    // defaulting to TRUE for now, as we are BUIDLING
+    let mut verbose_mode: bool = true;
 
-    // TODO set a max history length
+    // TODO make adjustable max history length
     let mut command_history = CommandHistory::new(1000);
 
     loop {
@@ -115,13 +118,20 @@ pub async fn terminal(
 
         tokio::select! {
             prints = print_rx.recv() => match prints {
-                Some(print) => {
+                Some(printout) => {
                     let mut stdout = stdout.lock();
+                    if match printout.verbosity {
+                        0 => false,
+                        1 => !verbose_mode,
+                        _ => true
+                    } {
+                        continue;
+                    }
                     execute!(
                         stdout,
                         cursor::MoveTo(0, win_rows - 1),
                         terminal::Clear(ClearType::CurrentLine),
-                        Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", print)),
+                        Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", printout.content)),
                         cursor::MoveTo(0, win_rows),
                         Print(&current_line),
                     )?;
@@ -144,21 +154,32 @@ pub async fn terminal(
                         }) => {
                             break;
                         },
-                        // CTRL+J: toggle debug mode -- makes system-level event loop step-through
+                        // CTRL+V: toggle verbose mode
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('v'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            verbose_mode = !verbose_mode;
+                        },
+                        // CTRL+D: toggle debug mode -- makes system-level event loop step-through
                         // CTRL+S: step through system-level event loop
                         Event::Key(KeyEvent {
-                            code: KeyCode::Char('j'),
+                            code: KeyCode::Char('d'),
                             modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
                             let _ = print_tx.send(
-                                match is_debug {
-                                    true => "debug mode: off".into(),
-                                    false => "debug mode: on \r\nuse CTRL+S to step through events".into(),
+                                Printout {
+                                    verbosity: 0,
+                                    content: match in_step_through {
+                                        true => "debug mode off".into(),
+                                        false => "debug mode on: use CTRL+S to step through events".into(),
+                                    }
                                 }
                             ).await;
                             let _ = debug_event_loop.send(DebugCommand::Toggle).await;
-                            is_debug = !is_debug;
+                            in_step_through = !in_step_through;
                         },
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('s'),

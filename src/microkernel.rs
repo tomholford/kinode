@@ -188,7 +188,7 @@ impl MicrokernelProcessImports for Process {
                     },
                     None => {
                         self.send_to_terminal
-                            .send("awm: couldn't find context for Response".into())
+                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
                             .await
                             .unwrap();
                         Ok((wit_message, "".to_string()))
@@ -200,7 +200,7 @@ impl MicrokernelProcessImports for Process {
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
         self.send_to_terminal
-            .send(message)
+            .send(Printout { verbosity: 1, content: message })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
@@ -609,7 +609,10 @@ async fn handle_kernel_request(
                 is_expecting_response
             ) = message.message_type else {
                 send_to_terminal
-                    .send("kernel: StopProcess requires Request, got Response".into())
+                    .send(Printout {
+                        verbosity: 1,
+                        content: "kernel: StopProcess requires Request, got Response".into()
+                    })
                     .await
                     .unwrap();
                 return;
@@ -684,14 +687,19 @@ async fn make_event_loop(
                         }
 
                         let Some(wrapped_message) = wrapped_message else {
-                            send_to_terminal.send(
-                                "event loop: got None for message".to_string()
+                            send_to_terminal.send(Printout {
+                                    verbosity: 1,
+                                    content: "event loop: got None for message".to_string(),
+                                }
                             ).await.unwrap();
                             continue;
                         };
                         // let wrapped_message = recv_in_loop.recv().await.unwrap();
                         send_to_terminal.send(
-                            format!("event loop: got message: {}", wrapped_message)
+                            Printout {
+                                verbosity: 1,
+                                content: format!("event loop: got message: {}", wrapped_message)
+                            }
                         ).await.unwrap();
                         // print_stack_to_terminal(
                         //     "event loop: got message stack",
@@ -702,15 +710,21 @@ async fn make_event_loop(
                             match send_to_wss.send(wrapped_message).await {
                                 Ok(()) => {
                                     send_to_terminal
-                                        .send("event loop: sent to wss".to_string())
+                                        .send(Printout {
+                                            verbosity: 1,
+                                            content: "event loop: sent to wss".to_string(),
+                                        })
                                         .await
                                         .unwrap();
                                 }
                                 Err(e) => {
                                     send_to_terminal
-                                        .send(
-                                            format!("event loop: failed to send to wss: {}", e)
-                                        ).await.unwrap();
+                                        .send(Printout {
+                                            verbosity: 1,
+                                            content: format!("event loop: failed to send to wss: {}", e),
+                                        })
+                                        .await
+                                        .unwrap();
                                 }
                             }
                         } else {
@@ -739,13 +753,14 @@ async fn make_event_loop(
                                     }
                                     None => {
                                         send_to_terminal
-                                            .send(
-                                                format!(
+                                            .send(Printout {
+                                                verbosity: 0,
+                                                content: format!(
                                                     "event loop: don't have {} amongst registered processes: {:?}",
                                                     to,
                                                     senders.keys().collect::<Vec<_>>()
                                                 )
-                                            )
+                                            })
                                             .await
                                             .unwrap();
                                     }

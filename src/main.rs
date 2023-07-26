@@ -83,10 +83,16 @@ async fn main() {
     assert!(hex_pubkey == our.networking_key);
 
     let _ = print_sender
-        .send(format!("{}.. now online", our_name))
+        .send(Printout {
+            verbosity: 0,
+            content: format!("{}.. now online", our_name),
+        })
         .await;
     let _ = print_sender
-        .send(format!("our networking public key: {}", hex_pubkey))
+        .send(Printout {
+            verbosity: 0,
+            content: format!("our networking public key: {}", hex_pubkey),
+        })
         .await;
 
     /*  we are currently running 3 I/O modules:

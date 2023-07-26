@@ -7,8 +7,8 @@ use ethers::prelude::*;
 pub type MessageSender = tokio::sync::mpsc::Sender<WrappedMessage>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
 
-pub type PrintSender = tokio::sync::mpsc::Sender<String>;
-pub type PrintReceiver = tokio::sync::mpsc::Receiver<String>;
+pub type PrintSender = tokio::sync::mpsc::Sender<Printout>;
+pub type PrintReceiver = tokio::sync::mpsc::Receiver<Printout>;
 
 pub type DebugSender = tokio::sync::mpsc::Sender<DebugCommand>;
 pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
@@ -128,6 +128,15 @@ impl std::fmt::Display for WrappedMessage {
 pub enum DebugCommand {
     Toggle,
     Step,
+}
+
+/// A terminal printout. Verbosity level is from low to high, and for
+/// now, only 0 and 1 are used. Level 0 is always printed, level 1 is
+/// only printed if the terminal is in verbose mode. Numbers greater
+/// than 1 are reserved for future use and will be ignored for now.
+pub struct Printout {
+    pub verbosity: u8,
+    pub content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

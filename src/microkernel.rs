@@ -331,7 +331,7 @@ async fn send_process_results_to_loop(
 
         let payload = Payload {
             json: match payload.json {
-                Some(ref json_string) => serde_json::from_str(&json_string).unwrap(),
+                Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
                 None => None,
             },
             bytes: payload.bytes.clone(),

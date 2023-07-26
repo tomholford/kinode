@@ -5,8 +5,6 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use ethers::prelude::*;
-
 use crate::types::*;
 
 mod engine;
@@ -15,7 +13,7 @@ mod http_server;
 mod microkernel;
 mod terminal;
 mod types;
-mod websockets;
+mod ws;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
@@ -84,6 +82,13 @@ async fn main() {
     let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
     assert!(hex_pubkey == our.networking_key);
 
+    let _ = print_sender
+        .send(format!("{}.. now online", our_name))
+        .await;
+    let _ = print_sender
+        .send(format!("our networking public key: {}", hex_pubkey))
+        .await;
+
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
@@ -116,14 +121,14 @@ async fn main() {
             fs_message_sender.clone(),
             http_server_sender.clone(),
         ) => { "microkernel died".to_string() },
-        _ = websockets::websockets(
+        _ = ws::websockets(
             our.clone(),
             networking_keypair,
             pki.clone(),
-            wss_message_receiver,
-            wss_message_sender.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
+            wss_message_receiver,
+            wss_message_sender.clone(),
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,
@@ -138,6 +143,6 @@ async fn main() {
             print_sender.clone(),
         ) => { "http_server died".to_string() },
     };
-
+    println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

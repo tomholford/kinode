@@ -9,13 +9,17 @@ edition = "2021"
 anyhow = "1.0.71"
 async-std = "*"
 async-trait = "0.1.71"
-futures = { version = "0.3", default-features = false }
+bytes = "1.4.0"
+crossterm = { version = "0.26.1", features = ["event-stream"] }
+digest = "0.10"
+futures = "0.3"
 http = "0.2.9"
+lazy_static = "1.4.0"
 log = "*"
 rs_merkle = { version = "1.4", default-features = false }
-rustyline-async = "*"
 serde = {version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tokio = { version = "1.28", features = ["fs", "macros", "rt-multi-thread", "sync"] }
 tokio-tungstenite = "*"
 tokio-stream = "0.1.14"

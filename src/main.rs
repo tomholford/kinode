@@ -16,6 +16,7 @@ mod ws;
 mod keygen;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
+const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
@@ -30,11 +31,15 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
     let process_manager_wasm_path = args[1].clone();
-    let our_name: String = args[2].clone();
+    let home_directory_path = &args[2];
+    let our_name: String = args[3].clone();
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(EVENT_LOOP_CHANNEL_CAPACITY);
+    // kernel receives debug messages via this channel, terminal sends messages
+    let (kernel_debug_message_sender, kernel_debug_message_receiver): (DebugSender, DebugReceiver) =
+        mpsc::channel(EVENT_LOOP_DEBUG_CHANNEL_CAPACITY);
     // websocket sender receives send messages via this channel, kernel send messages
     let (wss_message_sender, wss_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
@@ -81,8 +86,12 @@ async fn main() {
     let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
     assert!(hex_pubkey == our.networking_key);
 
-    let _ = print_sender.send(format!("{}.. now online", our_name)).await;
-    let _ = print_sender.send(format!("our networking public key: {}", hex_pubkey)).await;
+    let _ = print_sender
+        .send(format!("{}.. now online", our_name))
+        .await;
+    let _ = print_sender
+        .send(format!("our networking public key: {}", hex_pubkey))
+        .await;
 
     /*  we are currently running 4 I/O modules:
      *      terminal,
@@ -101,6 +110,7 @@ async fn main() {
             &our,
             VERSION,
             kernel_message_sender.clone(),
+            kernel_debug_message_sender,
             print_receiver,
         ) => match term {
             Ok(_) => "graceful shutdown".to_string(),
@@ -112,6 +122,7 @@ async fn main() {
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,
+            kernel_debug_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
             keygen_message_sender.clone(),
@@ -127,6 +138,7 @@ async fn main() {
         ) => { "websocket sender died".to_string() },
         _ = filesystem::fs_sender(
             &our_name,
+            home_directory_path,
             kernel_message_sender.clone(),
             print_sender.clone(),
             fs_message_receiver
@@ -138,6 +150,6 @@ async fn main() {
             print_sender.clone(),
         ) => { "keygen died".to_string() },
     };
-
+    println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

@@ -1,6 +1,8 @@
 /target
 .vscode
 *.swp
+/home
+/file-transfer/target
 /hi-lus-lus/target
 /http-bindings/target
 /poast/target

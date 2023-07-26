@@ -61,6 +61,7 @@ pub async fn terminal(
     our: &Identity,
     version: &str,
     to_event_loop: MessageSender,
+    to_debug_event_loop: DebugSender,  // TODO
     mut print_rx: PrintReceiver,
 ) -> std::io::Result<()> {
     execute!(stdout(), terminal::Clear(ClearType::All))?;
@@ -218,8 +219,10 @@ pub async fn terminal(
                                     command_history.add(command.clone());
                                     cursor_col = prompt_len;
                                     let _err = to_event_loop.send(
-                                        vec![
-                                            Message {
+                                        WrappedMessage {
+                                            id: rand::random(),
+                                            rsvp: None,
+                                            message: Message {
                                                 message_type: MessageType::Request(false),
                                                 wire: Wire {
                                                     source_ship: our.name.clone(),
@@ -232,7 +235,7 @@ pub async fn terminal(
                                                     bytes: None,
                                                 },
                                             }
-                                        ]
+                                        }
                                     ).await;
                                 },
                                 _ => {},

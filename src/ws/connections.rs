@@ -1,4 +1,5 @@
-use crate::types::*;
+use crate::types::WrappedMessage as KernelWrappedMessage;
+// use crate::types::*;
 use crate::ws::*;
 use aes_gcm_siv::{
     aead::{Aead, KeyInit},
@@ -151,11 +152,11 @@ async fn aggregate_connection(
                     Ok(v) => v,
                     Err(e) => return Err(format!("error decrypting message: {}", e)),
                 };
-                let message = match serde_json::from_slice::<Message>(&decrypted) {
+                let message = match serde_json::from_slice::<KernelWrappedMessage>(&decrypted) {
                     Ok(v) => v,
                     Err(e) => return Err(format!("error deserializing message: {}", e)),
                 };
-                match kernel_message_tx.send(vec![message]).await {
+                match kernel_message_tx.send(message).await {
                     Ok(_) => {}
                     Err(e) => return Err(format!("error sending message: {}", e)),
                 }
@@ -187,7 +188,7 @@ async fn aggregate_connection(
                             direct_write_stream: None,
                         };
                         peers.write().await.insert(their_id.name.clone(), peer);
-                        let _err = self_message_tx.send(vec![message_to_send.clone()]).await;
+                        let _err = self_message_tx.send(message_to_send.clone()).await;
                     }
                     None => {
                         // they initiated: validate, then make and send our handshake
@@ -269,11 +270,11 @@ async fn forwarding_connection(
                         Ok(v) => v,
                         Err(e) => return Err(format!("error decrypting message: {}", e)),
                     };
-                    let message = match serde_json::from_slice::<Message>(&decrypted) {
+                    let message = match serde_json::from_slice::<KernelWrappedMessage>(&decrypted) {
                         Ok(v) => v,
                         Err(e) => return Err(format!("error deserializing message: {}", e)),
                     };
-                    match message_tx.send(vec![message]).await {
+                    match message_tx.send(message).await {
                         Ok(_) => {}
                         Err(e) => return Err(format!("error sending message: {}", e)),
                     }
@@ -507,11 +508,11 @@ async fn direct_connection(
                     Ok(v) => v,
                     Err(e) => return Err(format!("error decrypting message: {}", e)),
                 };
-                let message = match serde_json::from_slice::<Message>(&decrypted) {
+                let message = match serde_json::from_slice::<KernelWrappedMessage>(&decrypted) {
                     Ok(v) => v,
                     Err(e) => return Err(format!("error deserializing message: {}", e)),
                 };
-                match message_tx.send(vec![message]).await {
+                match message_tx.send(message).await {
                     Ok(_) => {}
                     Err(e) => return Err(format!("error sending message: {}", e)),
                 }

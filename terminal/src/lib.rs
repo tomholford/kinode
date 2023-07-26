@@ -23,20 +23,25 @@ fn parse_command(line: String) {
                     return;
                 }
             };
-            bindings::yield_results(
-                vec![WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                        is_expecting_response: false,
-                        target_ship: target_server,
-                        target_app: target_app,
-                    }),
-                    payload: &WitPayload {
-                        json: Some(serde_json::to_string(payload).unwrap()),
-                        bytes: None,
+            //  since payload is a string, key/value double quotes are escaped:
+            //   remove the escaping `\`s
+            let payload = payload.replace("\\\"", "\"");
+            bindings::yield_results(vec![
+                (
+                    WitProtomessage {
+                        protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: target_server,
+                            target_app: target_app,
+                        }),
+                        payload: &WitPayload {
+                            json: Some(payload.into()),
+                            bytes: None,
+                        },
                     },
-                }]
-                .as_slice(),
-            );
+                    "",
+                ),
+            ].as_slice());
         }
         _ => {
             bindings::print_to_terminal("invalid command");
@@ -51,8 +56,7 @@ impl bindings::MicrokernelProcess for Component {
         bindings::print_to_terminal(format!("{} terminal: running", our_name.clone()).as_str());
 
         loop {
-            let mut message_stack = bindings::await_next_message();
-            let message = message_stack.pop().unwrap();
+            let (message, _) = bindings::await_next_message();
             let stringy = message.payload.json.unwrap_or("".into());
             parse_command(stringy);
         }

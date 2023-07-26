@@ -14,6 +14,7 @@ mod microkernel;
 mod terminal;
 mod types;
 mod ws;
+mod keygen;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -21,6 +22,7 @@ const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
+const KEYGEN_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -49,6 +51,9 @@ async fn main() {
     // http server channel (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
+    // keygen creates networking keys and at-rest disk encryption key
+    let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -94,11 +99,12 @@ async fn main() {
         .send(format!("our networking public key: {}", hex_pubkey))
         .await;
 
-    /*  we are currently running 4 I/O modules:
+    /*  we are currently running 5 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,
      *      http-server,
+     *      keygen
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
      *
@@ -127,6 +133,7 @@ async fn main() {
             wss_message_sender.clone(),
             fs_message_sender.clone(),
             http_server_sender.clone(),
+            keygen_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = ws::websockets(
             our.clone(),
@@ -144,6 +151,12 @@ async fn main() {
             print_sender.clone(),
             fs_message_receiver
         ) => { "".to_string() },
+        _ = keygen::keygen(
+            &our_name,
+            kernel_message_sender.clone(),
+            keygen_message_receiver,
+            print_sender.clone(),
+        ) => { "keygen died".to_string() },
         _ = http_server::http_server(
             &our_name,
             http_server_receiver,

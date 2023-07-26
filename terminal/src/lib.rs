@@ -23,11 +23,8 @@ fn parse_command(line: String) {
                     return;
                 }
             };
-            //  since payload is a string, key/value double quotes are escaped:
-            //   remove the escaping `\`s
-            let payload = payload.replace("\\\"", "\"");
-            bindings::yield_results(vec![
-                (
+            bindings::yield_results(
+                vec![(
                     WitProtomessage {
                         protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                             is_expecting_response: false,
@@ -40,12 +37,13 @@ fn parse_command(line: String) {
                         },
                     },
                     "",
-                ),
-            ].as_slice());
+                )]
+                .as_slice(),
+            );
         }
         _ => {
             bindings::print_to_terminal("invalid command");
-            return
+            return;
         }
     }
 }
@@ -57,7 +55,8 @@ impl bindings::MicrokernelProcess for Component {
 
         loop {
             let (message, _) = bindings::await_next_message();
-            let stringy = message.payload.json.unwrap_or("".into());
+            let stringy = bincode::deserialize(&message.payload.bytes.unwrap_or_default())
+                .unwrap_or_default();
             parse_command(stringy);
         }
     }

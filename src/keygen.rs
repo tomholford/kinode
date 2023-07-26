@@ -94,7 +94,7 @@ async fn handle_request(
     // handles response from fs
     _ => {
       // TODO error propagation from fs when that is built
-      let _ = print_tx.send(format!("successfully saved keys to fs://sys.keys", act)).await;
+      let _ = print_tx.send("successfully saved keys to fs://sys.keys".to_string()).await;
     }
   }
 }

@@ -61,7 +61,7 @@ pub struct WrappedMessage {
 //  kernel sets in case, e.g.,
 //   A requests response from B does not request response from C
 //   -> kernel sets `Some(A) = Rsvp` for B's request to C
-type Rsvp = Option<ProcessNode>;
+pub type Rsvp = Option<ProcessNode>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {

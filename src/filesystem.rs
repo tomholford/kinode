@@ -128,7 +128,7 @@ pub async fn fs_sender(
     our_name: &str,
     home_directory_path: &str,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver
 ) {
     if let Err(e) = create_dir_if_dne(home_directory_path).await {
@@ -197,7 +197,7 @@ pub async fn fs_sender(
                 open_files,
                 // Arc::clone(&read_access_by_node),
                 send_to_loop.clone(),
-                print_tx.clone()
+                send_to_terminal.clone()
             )
         );
     }
@@ -210,9 +210,8 @@ async fn handle_request(
     message: WrappedMessage,
     open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    send_to_terminal: PrintSender,
 ) -> Result<(), Error> {
-    println!("filesystem: got {}", message);
     let WrappedMessage { id, rsvp, message } = message;
     if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
@@ -235,7 +234,6 @@ async fn handle_request(
         source_app,
         &request.uri_string
     ).await;
-    println!("filesystem: file_path: {}", file_path);
     if HAS_FULL_HOME_ACCESS.contains(source_app) {
         if !std::path::Path::new(&file_path).starts_with(&home_directory_path) {
             panic!(
@@ -265,7 +263,7 @@ async fn handle_request(
             //  TODO: use read_exact()?
             let file_contents = fs::read(&file_path).await?;
             let hash = compute_truncated_hash(&file_contents);
-            let _ = print_tx.send(
+            let _ = send_to_terminal.send(
                 format!(
                     "filesystem: got file at {} of size {} with hash {}",
                     file_path,
@@ -279,7 +277,7 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::Read(FileSystemUriHash {
                             uri_string: request.uri_string,
-                            hash: hash,
+                            hash,
                         })
                     )
                         .unwrap()
@@ -320,7 +318,7 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::GetMetadata(FileSystemMetadata {
                             uri_string: request.uri_string,
-                            hash: hash,
+                            hash,
                             is_dir: metadata.is_dir(),
                             is_file: metadata.is_file(),
                             is_symlink: metadata.is_symlink(),

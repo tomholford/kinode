@@ -232,7 +232,7 @@ pub async fn terminal(
                                                 },
                                                 payload: Payload {
                                                     json: None,
-                                                    bytes: Some(command.as_bytes().to_vec()),
+                                                    bytes: bincode::serialize(&command).ok(),
                                                 },
                                             }
                                         }

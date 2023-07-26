@@ -23,9 +23,8 @@ fn parse_command(line: String) {
                     return;
                 }
             };
-
-            bindings::yield_results(vec![
-                (
+            bindings::yield_results(
+                vec![(
                     WitProtomessage {
                         protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                             is_expecting_response: false,
@@ -38,12 +37,13 @@ fn parse_command(line: String) {
                         },
                     },
                     "",
-                ),
-            ].as_slice());
+                )]
+                .as_slice(),
+            );
         }
         _ => {
             bindings::print_to_terminal("invalid command");
-            return
+            return;
         }
     }
 }
@@ -55,8 +55,9 @@ impl bindings::MicrokernelProcess for Component {
 
         loop {
             let (message, _) = bindings::await_next_message();
-            let stringy = message.payload.bytes.unwrap_or(vec![]);
-            parse_command(String::from_utf8(stringy).unwrap_or("".into())); // gross
+            let stringy = bincode::deserialize(&message.payload.bytes.unwrap_or_default())
+                .unwrap_or_default();
+            parse_command(stringy);
         }
     }
 }

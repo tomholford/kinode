@@ -1,4 +1,5 @@
-use crate::types::*;
+// use crate::types::*;
+use crate::types::{WrappedMessage as KernelWrappedMessage, Message, MessageType, Wire, Payload, NetworkingError};
 use crate::ws::*;
 use aes_gcm_siv::{
     aead::{Aead, KeyInit},
@@ -61,20 +62,18 @@ pub async fn ws_sender(
         }
     }
 
-    while let Some(mut message_stack) = message_rx.recv().await {
-        let stack_len = message_stack.len();
-        let message = &message_stack[stack_len - 1];
-
+    while let Some(message) = message_rx.recv().await {
         // interpret message: if directed to us, just print for now.
         // otherwise send to target.
         // can perform debug commands if we are the sender
-        if message.wire.target_ship == our.name {
-            if message.wire.source_ship != our.name {
+        if message.message.wire.target_ship == our.name {
+            if message.message.wire.source_ship != our.name {
                 let _ = print_tx
                     .send(format!(
                         "\x1b[3;32m{}: {}\x1b[0m",
-                        message.wire.source_ship,
+                        message.message.wire.source_ship,
                         message
+                            .message
                             .payload
                             .json
                             .as_ref()
@@ -84,6 +83,7 @@ pub async fn ws_sender(
             } else {
                 // available commands: peers
                 match message
+                    .message
                     .payload
                     .json
                     .as_ref()
@@ -133,69 +133,81 @@ pub async fn ws_sender(
             Ok(res) => match res {
                 SuccessOrTimeout::Timeout => {
                     let _ = print_tx.send("ws: message timed out".into()).await;
-                    if let MessageType::Request(false) = message.message_type {
+                    if let MessageType::Request(false) = message.message.message_type {
                         continue
                     }
-                    message_stack.push(Message {
-                        message_type: MessageType::Response,
-                        wire: Wire {
-                            source_ship: our.name.clone(),
-                            source_app: "ws".into(),
-                            target_ship: our.name.clone(),
-                            target_app: message.wire.source_app.clone(),
-                        },
-                        payload: Payload {
-                            json: Some(
-                                serde_json::to_value(NetworkingError::MessageTimeout).unwrap(),
-                            ),
-                            bytes: None,
-                        },
-                    });
-                    let _ = kernel_message_tx.send(message_stack).await;
+                    let timeout_message = KernelWrappedMessage {
+                        id: message.id.clone(),
+                        rsvp: None,
+                        message: Message {
+                            message_type: MessageType::Response,
+                            wire: Wire {
+                                source_ship: our.name.clone(),
+                                source_app: "ws".into(),
+                                target_ship: our.name.clone(),
+                                target_app: message.message.wire.source_app.clone(),
+                            },
+                            payload: Payload {
+                                json: Some(
+                                    serde_json::to_value(NetworkingError::MessageTimeout).unwrap(),
+                                ),
+                                bytes: None,
+                            },
+                        }
+                    };
+                    let _ = kernel_message_tx.send(timeout_message).await;
                 }
                 SuccessOrTimeout::TryAgain => {
-                    let _ = self_message_tx.send(vec![message.clone()]).await;
+                    let _ = self_message_tx.send(message.clone()).await;
                 }
                 SuccessOrTimeout::Success => {
-                    if let MessageType::Request(false) = message.message_type {
+                    if let MessageType::Request(false) = message.message.message_type {
                         continue
                     }
-                    message_stack.push(Message {
-                        message_type: MessageType::Response,
-                        wire: Wire {
-                            source_ship: our.name.clone(),
-                            source_app: "ws".into(),
-                            target_ship: our.name.clone(),
-                            target_app: message.wire.source_app.clone(),
-                        },
-                        payload: Payload {
-                            json: Some(serde_json::to_value(SuccessOrTimeout::Success).unwrap()),
-                            bytes: None,
-                        },
-                    });
-                    let _ = kernel_message_tx.send(message_stack).await;
+                    let success_message = KernelWrappedMessage {
+                        id: message.id.clone(),
+                        rsvp: None,
+                        message: Message {
+                            message_type: MessageType::Response,
+                            wire: Wire {
+                                source_ship: our.name.clone(),
+                                source_app: "ws".into(),
+                                target_ship: our.name.clone(),
+                                target_app: message.message.wire.source_app.clone(),
+                            },
+                            payload: Payload {
+                                json: Some(serde_json::to_value(SuccessOrTimeout::Success).unwrap()),
+                                bytes: None,
+                            },
+                        }
+                    };
+                    let _ = kernel_message_tx.send(success_message).await;
                 }
             },
             Err(e) => {
                 let _ = print_tx.send(format!("{}", e)).await;
-                if let MessageType::Request(false) = message.message_type {
+                if let MessageType::Request(false) = message.message.message_type {
                     continue
                 }
-                let _ = kernel_message_tx
-                    .send(vec![Message {
+
+                let error_message = KernelWrappedMessage {
+                    id: message.id.clone(),
+                    rsvp: None,
+                    message: Message {
                         message_type: MessageType::Response,
                         wire: Wire {
-                            source_ship: our.name.to_string(),
+                            source_ship: our.name.clone(),
                             source_app: "ws".into(),
                             target_ship: our.name.clone(),
-                            target_app: message.wire.source_app.clone(),
+                            target_app: message.message.wire.source_app.clone(),
                         },
                         payload: Payload {
                             json: Some(serde_json::to_value(e).unwrap()),
                             bytes: None,
                         },
-                    }])
-                    .await;
+                    }
+                };
+                let _ = kernel_message_tx.send(error_message).await;
             }
         }
     }
@@ -288,7 +300,7 @@ async fn send_message(
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
-    message: Message,
+    message: KernelWrappedMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<SuccessOrTimeout, NetworkingError> {
     // if we have an open write socket with target,
@@ -296,7 +308,7 @@ async fn send_message(
     // networking info. open direct connection if so,
     // otherwise make a pass-through with their router
     // and do a self-send to retry message
-    let target = &message.wire.target_ship;
+    let target = &message.message.wire.target_ship;
     let message_bytes = match serde_json::to_vec(&message) {
         Ok(v) => v,
         Err(_) => return Err(NetworkingError::NetworkingBug),
@@ -531,13 +543,13 @@ async fn send_message_routed(
     routers: Routers,
     keypair: Arc<Ed25519KeyPair>,
     peers: Peers,
-    message: Message,
+    message: KernelWrappedMessage,
 ) -> Result<SuccessOrTimeout, NetworkingError> {
     // if the target is a router, send on our conn with them.
     // if target has a router marked, send on that conn.
     // otherwise, ask 1st router to connect and do a
     // self-send to retry message
-    let target = &message.wire.target_ship;
+    let target = &message.message.wire.target_ship;
 
     let mut peer_write = peers.write().await;
     match peer_write.get_mut(target) {

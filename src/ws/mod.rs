@@ -1,4 +1,5 @@
-use crate::types::*;
+// use crate::types::*;
+use crate::types::{WrappedMessage as KernelWrappedMessage, Identity, OnchainPKI, MessageSender, MessageReceiver, PrintSender};
 use crate::ws::connections::*;
 use aes_gcm_siv::Nonce;
 use elliptic_curve::ecdh::EphemeralSecret;
@@ -52,7 +53,7 @@ impl fmt::Debug for Peer {
 
 pub struct Router {
     name: String,
-    pending_peers: HashMap<String, (Arc<EphemeralSecret<Secp256k1>>, Vec<u8>, Message)>,
+    pending_peers: HashMap<String, (Arc<EphemeralSecret<Secp256k1>>, Vec<u8>, KernelWrappedMessage)>,
 }
 
 /// contains identity and encryption keys, used in initial handshake.

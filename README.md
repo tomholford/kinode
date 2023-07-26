@@ -92,7 +92,6 @@ After booting poast using the commands above, run
 Make sure to boot both the http-bindings app and poast
 ```bash
 cargo r process_manager.wasm tuna
-!message tuna process_manager {"type": "Start", "process_name": "http_bindings", "wasm_bytes_uri": "fs://http_bindings.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
 ```
 Then try making a GET request in browser to `http://127.0.0.1:8080/poast` or make a POST request as below:

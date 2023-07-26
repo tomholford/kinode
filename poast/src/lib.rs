@@ -9,7 +9,7 @@ impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
         bindings::print_to_terminal("poast: start");
         bindings::yield_results(
-            vec![
+            vec![(
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
@@ -27,12 +27,12 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-            ].as_slice()
+                "",
+            )].as_slice()
         );
 
         loop {
-            let mut message_stack = bindings::await_next_message();
-            let message = message_stack.pop().unwrap();
+            let (message, _) = bindings::await_next_message();
             let Some(message_from_loop_string) = message.payload.json else {
                 panic!("foo")
             };
@@ -41,7 +41,7 @@ impl bindings::MicrokernelProcess for Component {
             bindings::print_to_terminal(format!("ID: {}", message_from_loop["id"]).as_str());
             bindings::print_to_terminal(format!("METHOD: {}", message_from_loop["method"]).as_str());
             if message_from_loop["method"] == "GET" {
-                bindings::yield_results(vec![
+                bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
                         payload: &WitPayload {
@@ -55,10 +55,11 @@ impl bindings::MicrokernelProcess for Component {
                             }).to_string()),
                             bytes: Some("<h1>you just performed a GET to poast</h1>".as_bytes().to_vec())
                         }
-                    }
-                ].as_slice());
+                    },
+                    "",
+                )].as_slice());
             } else if message_from_loop["method"] == "POST" {
-                bindings::yield_results(vec![
+                bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
                         payload: &WitPayload {
@@ -74,10 +75,11 @@ impl bindings::MicrokernelProcess for Component {
                                 "you just performed a POST with body: {:?}", String::from_utf8(message.payload.bytes.unwrap_or(vec![])
                             )).as_bytes().to_vec())
                         }
-                    }
-                ].as_slice());
+                    },
+                    "",
+                )].as_slice());
             } else {
-                bindings::yield_results(vec![
+                bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
                         payload: &WitPayload {
@@ -91,8 +93,9 @@ impl bindings::MicrokernelProcess for Component {
                             }).to_string()),
                             bytes: Some("you made a request that was not GET or POST".as_bytes().to_vec())
                         }
-                    }
-                ].as_slice());
+                    },
+                    "",
+                )].as_slice());
             }
         }
     }

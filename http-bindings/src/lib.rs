@@ -7,14 +7,13 @@ use std::collections::HashMap;
 struct Component;
 
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: String, dap: String) {
+    fn run_process(our: String, _dap: String) {
         bindings::print_to_terminal("http_bindings: start");
         // TODO needs to be some kind of HttpPath => String
         let mut bindings: HashMap<String, String> = HashMap::new();
         
         loop {
-            let mut message_stack = bindings::await_next_message();
-            let message = message_stack.pop().unwrap();
+            let (message, _) = bindings::await_next_message();
             let Some(message_json_text) = message.payload.json else {
                 panic!("foo")
             };
@@ -31,7 +30,7 @@ impl bindings::MicrokernelProcess for Component {
                         match bindings.get(message_json["path"].as_str().unwrap()) {
                             Some(app) => {
                                 bindings::print_to_terminal("http_bindings: properly unwrapped");
-                                bindings::yield_results(vec![
+                                bindings::yield_results(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Request(
                                             WitRequestTypeWithTarget {
@@ -49,12 +48,13 @@ impl bindings::MicrokernelProcess for Component {
                                             }).to_string()),
                                             bytes: message.payload.bytes,
                                         },
-                                    }
-                                ].as_slice());
+                                    },
+                                    "",
+                                )].as_slice());
                             },
                             None => {
                                 bindings::print_to_terminal("http_bindings: failed to unwrap");
-                                bindings::yield_results(vec![
+                                bindings::yield_results(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Response,
                                         payload: &WitPayload {
@@ -66,8 +66,9 @@ impl bindings::MicrokernelProcess for Component {
                                             }).to_string()),
                                             bytes: Some("404 Not Found".as_bytes().to_vec()),
                                         },
-                                    }
-                                ].as_slice());
+                                    },
+                                    "",
+                                )].as_slice());
                             },
                         }
                     } else {

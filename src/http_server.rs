@@ -40,12 +40,9 @@ async fn http_handle_messages(
   mut message_rx: MessageReceiver,
   _print_tx: PrintSender,
 ) {
-  while let Some(message_stack) = message_rx.recv().await {
-    let stack_len = message_stack.len();
-    let message = message_stack[stack_len - 1].clone();
-    
-    let Some(value) = message.payload.json.clone() else {
-      panic!("http_server: action must have JSON payload, got: {:?}", message);
+  while let Some(wm) = message_rx.recv().await {
+    let Some(value) = wm.message.payload.json.clone() else {
+      panic!("http_server: action must have JSON payload, got: {:?}", wm.message);
     };
     let request: HttpResponse = serde_json::from_value(value).unwrap();
     let channel = http_response_senders.lock().unwrap().remove(request.id.as_str()).unwrap();
@@ -53,7 +50,7 @@ async fn http_handle_messages(
       id: request.id,
       status: request.status,
       headers: request.headers,
-      body: message.payload.bytes,
+      body: wm.message.payload.bytes,
     });
     }
   }
@@ -89,32 +86,36 @@ async fn handler(
 ) -> Result<impl warp::Reply, warp::Rejection> {
   let path_str = path.as_str().to_string();
   let id = create_id();
-  let message = Message {
-    message_type: MessageType::Request(true),
-    wire: Wire {
-      source_ship: our.clone().to_string(),
-      source_app: "http_server".to_string(),
-      target_ship: our.clone().to_string(),
-      target_app: "http_bindings".to_string(),
-    },
-    payload: Payload {
-      json: Some(serde_json::json!(
-        {
-          "action": "request".to_string(),
-          "id": id,
-          "method": method.to_string(),
-          "path": path_str,
-          "headers": serialize_headers(&headers),
-        }
-      )),
-      bytes: Some(body.to_vec()), // TODO None sometimes
-    },
+  let message = WrappedMessage {
+    id : rand::random(),
+    rsvp : None, // TODO I believe this is correct
+    message: Message {
+      message_type: MessageType::Request(true),
+      wire: Wire {
+        source_ship: our.clone().to_string(),
+        source_app: "http_server".to_string(),
+        target_ship: our.clone().to_string(),
+        target_app: "http_bindings".to_string(),
+      },
+      payload: Payload {
+        json: Some(serde_json::json!(
+          {
+            "action": "request".to_string(),
+            "id": id,
+            "method": method.to_string(),
+            "path": path_str,
+            "headers": serialize_headers(&headers),
+          }
+        )),
+        bytes: Some(body.to_vec()), // TODO None sometimes
+      },
+    }
   };
 
   let (response_sender, response_receiver) = oneshot::channel();
   http_response_senders.lock().unwrap().insert(id, response_sender);
 
-  message_tx.send(vec![message]).await.unwrap();
+  message_tx.send(message).await.unwrap();
   let from_channel = response_receiver.await.unwrap();
   let reply = warp::reply::with_status(
     match from_channel.body {

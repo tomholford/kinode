@@ -856,5 +856,33 @@ pub async fn kernel(
     };
     send_to_loop.send(start_terminal_message).await.unwrap();
 
+    // always start http-bindings on boot
+    let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
+    let start_http_bindings_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "http_bindings".into(),
+                            wasm_bytes_uri: "http_bindings.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(http_bindings_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_http_bindings_message).await.unwrap();
+
     let _ = event_loop_handle.await;
 }

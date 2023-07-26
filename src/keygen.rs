@@ -1,9 +1,10 @@
-use crate::types::*;
+use std::num::NonZeroU32;
 use serde::{Serialize, Deserialize};
+use crate::types::*;
 use serde_json::json;
 use ring::{digest, pbkdf2};
-use std::{collections::HashMap, num::NonZeroU32};
-
+use ring::signature;
+use ring::signature::KeyPair;
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // maybe switch to Argon2
 
@@ -12,16 +13,21 @@ const ITERATIONS: u32 = 5_000_000; // took 8 seconds on my machine
 
 pub type Credential = [u8; CREDENTIAL_LEN];
 
-// !message tuna keygen {"GenerateKey":{"password":"pw","salt":"742d35Cc6634C0532925a3b844Bc454e"}}
+// keygen test commands
+// !message tuna keygen {"GenerateDiskKey":{"password":"pw","salt":"742d35Cc6634C0532925a3b844Bc454e"}}
+// !message tuna keygen "GenerateNetworkingKey"
 
 #[derive(Debug, Serialize, Deserialize)]
 enum KeygenAction {
+  // TODO this is just the format of the return from fs
+  //      we should probably change that format
   uri_string(String),
-  GenerateKey(GenerateKey),
+  GenerateDiskKey(GenerateDiskKey),
+  GenerateNetworkingKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GenerateKey {
+pub struct GenerateDiskKey {
   password: String,
   salt: String,
 }
@@ -33,7 +39,7 @@ pub async fn keygen(
   print_tx: PrintSender,
 ) {
   while let Some(mut messages) = recv_in_kg.recv().await {
-    let Some(mut message) = messages.pop() else {
+    let Some(message) = messages.pop() else {
       panic!("keygen: keygen must receive non-empty MessageStack, got: {:?}", messages);
     };
 
@@ -60,7 +66,7 @@ async fn handle_request(
   let act: KeygenAction = serde_json::from_value(value).unwrap();
 
   match act {
-    KeygenAction::GenerateKey(action) => {
+    KeygenAction::GenerateDiskKey(action) => {
       if message.wire.source_ship != our {
         panic!("keygen: source_ship must be our ship, got: {:?}", message.wire.source_ship)
       };
@@ -77,7 +83,7 @@ async fn handle_request(
       //
       let _ = send_to_loop.send(vec![
         Message {
-          message_type: MessageType::Request(true),
+          message_type: MessageType::Request(true), // TODO maybe this should be a Response that someone should call, API style
           wire: Wire {
             source_ship: our.clone(),
             source_app: "keygen".to_string(),
@@ -85,8 +91,41 @@ async fn handle_request(
             target_app: "filesystem".to_string(),
           },
           payload: Payload {
-            json: Some(json!({"Write": "fs://sys.keys"})),
+            json: Some(json!({"Write": "fs://disk.keys"})),
             bytes: Some(to_store.to_vec())
+          }
+        }
+      ]).await;
+    },
+    KeygenAction::GenerateNetworkingKey => {
+      let _ = print_tx.send(format!("generating network.keys...")).await;
+      // TODO this is the real random code but for now just use a fixed value
+      // let mut rng = StdRng::from_entropy();
+      // let mut seed = [0u8; 32];
+      // rng.fill(&mut seed);
+      // TODO this is the fixed networking key code
+      let bytes: &[u8] = our.as_bytes();
+      let mut seed: [u8; 32] = [0; 32];
+      let copy_len = bytes.len().min(32);
+      seed[..copy_len].copy_from_slice(&bytes[..copy_len]);
+      // END
+
+      let networking_keypair = signature::Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
+      let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
+      let _ = print_tx.send(format!("our networking key: {:?}", hex_pubkey)).await;
+      // send key as a response to the networking module
+      let _ = send_to_loop.send(vec![
+        Message {
+          message_type: MessageType::Response,
+          wire: Wire {
+            source_ship: our.clone(),
+            source_app: "keygen".to_string(),
+            target_ship: our.clone(),
+            target_app: message.wire.source_app.clone(),
+          },
+          payload: Payload {
+            json: None,// TODO Some(json!({"Write": "fs://disk.keys"})),
+            bytes: None
           }
         }
       ]).await;

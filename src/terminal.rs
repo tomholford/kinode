@@ -1,5 +1,12 @@
-use rustyline_async::{Readline, ReadlineError};
-use std::io::Write;
+use crossterm::{
+    cursor,
+    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    execute,
+    style::Print,
+    terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
+};
+use futures::{future::FutureExt, StreamExt};
+use std::io::{stdout, Write};
 
 use crate::types::*;
 
@@ -11,7 +18,9 @@ pub async fn terminal(
     version: &str,
     to_event_loop: MessageSender,
     mut print_rx: PrintReceiver,
-) -> Result<(), ReadlineError> {
+) -> std::io::Result<()> {
+    execute!(stdout(), terminal::Clear(ClearType::All))?;
+
     // print initial splash screen
     println!(
         "\x1b[38;5;128m{}\x1b[0m",
@@ -35,58 +44,157 @@ pub async fn terminal(
        UU  !UU  lUL  UU       !UUUUUUU^          Y88b 888 Y88b 888 888 d88P 888  888 888
        "U  !UU  lUL  UU       !UUUUUf             "Y88888  "Y88888 88888P"  "Y888888 888
            !UU  lUL  UU       !UUl^                            888
-            `"  lUL  UU       '^                               888
+            `"  lUL  UU       '^                               888    {}
                      ""                                        888    version {}
 
             "#,
-            version
+            our.name, version
         )
     );
 
-    let (mut rl, mut stdout) = Readline::new(format!("{} > ", our.name))?;
+    enable_raw_mode()?;
+    let stdout = stdout();
+    let mut reader = EventStream::new();
+    let mut current_line = format!("{} > ", our.name);
+    let prompt_len = our.name.len() + 3;
+    let (win_cols, win_rows) = terminal::size().unwrap();
+
+    // TODO set a max history length
+    let mut command_history: Vec<String> = vec![];
+    let mut command_history_index: usize = 1;
 
     loop {
+        let event = reader.next().fuse();
+
         tokio::select! {
             prints = print_rx.recv() => match prints {
-                Some(print) => { writeln!(stdout, "\x1b[38;5;238m{}\x1b[0m", print)?; },
+                Some(print) => {
+                    let mut stdout = stdout.lock();
+                    execute!(
+                        stdout,
+                        cursor::MoveTo(0, win_rows - 1),
+                        terminal::Clear(ClearType::CurrentLine),
+                        Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", print)),
+                        cursor::MoveTo(0, win_rows),
+                        Print(&current_line),
+                    )?;
+                },
                 None => {
-                    writeln!(stdout, "terminal: lost print channel, crashing")?;
+                    write!(stdout.lock(), "terminal: lost print channel, crashing")?;
                     break;
                 }
             },
-            cmd = rl.readline() => match cmd {
-                Ok(line) => {
-                    rl.add_history_entry(line.clone());
-                    let _err = to_event_loop.send(
-                        vec![
-                            Message {
-                                message_type: MessageType::Request(false),
-                                wire: Wire {
-                                    source_ship: our.name.clone(),
-                                    source_app: "terminal".into(),
-                                    target_ship: our.name.clone(),
-                                    target_app: "terminal".into(),
+            maybe_event = event => match maybe_event {
+
+                Some(Ok(event)) => {
+                    let mut stdout = stdout.lock();
+                    match event {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            break;
+                        },
+                        Event::Key(k) => {
+                            match k.code {
+                                KeyCode::Char(c) => {
+                                    execute!(
+                                        stdout,
+                                        Print(c),
+                                    )?;
+                                    current_line.push(c);
                                 },
-                                payload: Payload {
-                                    json: Some(serde_json::Value::String(line)),
-                                    bytes: None,
+                                KeyCode::Backspace => {
+                                    if cursor::position().unwrap().0 as usize == prompt_len {
+                                        continue;
+                                    }
+                                    execute!(
+                                        stdout,
+                                        cursor::MoveLeft(1),
+                                        Print(" "),
+                                        cursor::MoveLeft(1),
+                                    )?;
+                                    current_line.pop();
                                 },
+                                KeyCode::Up => {
+                                    // go up one command in history,
+                                    // saving current line to history
+                                    if command_history_index == 0 {
+                                        continue;
+                                    }
+                                    let has = command_history.get(command_history_index - 1);
+                                    match has {
+                                        None => continue,
+                                        Some(got) => {
+                                            let got = got.clone();
+                                            if command_history_index > command_history.len() {
+                                                command_history.push(current_line[prompt_len..].to_string());
+                                            }
+                                            execute!(
+                                                stdout,
+                                                cursor::MoveTo(0, win_rows),
+                                                terminal::Clear(ClearType::CurrentLine),
+                                                Print(format!("{} > {}", our.name, got)),
+                                            )?;
+                                            command_history_index -= 1;
+                                        }
+                                    }
+                                },
+                                KeyCode::Down => {
+                                    // go down one command in history
+                                    let has = command_history.get(command_history_index + 1);
+                                    match has {
+                                        None => continue,
+                                        Some(got) => {
+                                            execute!(
+                                                stdout,
+                                                cursor::MoveTo(0, win_rows),
+                                                terminal::Clear(ClearType::CurrentLine),
+                                                Print(format!("{} > {}", our.name, got)),
+                                            )?;
+                                            command_history_index += 1;
+                                        }
+                                    }
+                                },
+                                KeyCode::Enter => {
+                                    let command = current_line[prompt_len..].to_string();
+                                    command_history.push(command.clone());
+                                    command_history_index = command_history.len();
+                                    current_line = format!("{} > ", our.name);
+                                    execute!(
+                                        stdout,
+                                        Print("\r\n"),
+                                        Print(&current_line),
+                                    )?;
+                                    let _err = to_event_loop.send(
+                                        vec![
+                                            Message {
+                                                message_type: MessageType::Request(false),
+                                                wire: Wire {
+                                                    source_ship: our.name.clone(),
+                                                    source_app: "terminal".into(),
+                                                    target_ship: our.name.clone(),
+                                                    target_app: "terminal".into(),
+                                                },
+                                                payload: Payload {
+                                                    json: Some(serde_json::Value::String(command)),
+                                                    bytes: None,
+                                                },
+                                            }
+                                        ]
+                                    ).await;
+                                },
+                                _ => {},
                             }
-                        ]
-                    ).await;
+                        },
+                        _ => {},
+                    }
                 }
-                Err(ReadlineError::Eof) => {
-                    writeln!(stdout, "<EOF>")?;
-                    break;
-                }
-                Err(ReadlineError::Interrupted) => { break; }
-                Err(e) => {
-                    writeln!(stdout, "terminal error: {e:?}")?;
-                    break;
-                }
+                Some(Err(e)) => println!("Error: {:?}\r", e),
+                None => break,
             }
         }
     }
-    rl.flush()?;
-    Ok(())
+    disable_raw_mode()
 }

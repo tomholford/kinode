@@ -55,7 +55,6 @@ impl bindings::MicrokernelProcess for Component {
             let message = message_stack.pop().unwrap();
             let stringy = message.payload.json.unwrap_or("".into());
             parse_command(stringy);
-            bindings::yield_results(vec![].as_slice());
         }
     }
 }

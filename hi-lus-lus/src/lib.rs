@@ -18,8 +18,7 @@ impl bindings::MicrokernelProcess for Component {
         };
 
         loop {
-            let mut message_stack = bindings::await_next_message();
-            let message = message_stack.pop().unwrap();
+            let (message, _) = bindings::await_next_message();
             let Some(message_from_loop_string) = message.payload.json else {
                 panic!("foo")
             };
@@ -55,16 +54,19 @@ impl bindings::MicrokernelProcess for Component {
                     };
                     bindings::yield_results(
                         vec![
-                            bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: false,
-                                        target_ship: target,
-                                        target_app: "hi_lus_lus",
-                                    }
-                                ),
-                                payload: &response,
-                            },
+                            (
+                                bindings::WitProtomessage {
+                                    protomessage_type: WitProtomessageType::Request(
+                                        WitRequestTypeWithTarget {
+                                            is_expecting_response: false,
+                                            target_ship: target,
+                                            target_app: "hi_lus_lus",
+                                        }
+                                    ),
+                                    payload: &response,
+                                },
+                                "",
+                            )
                         ].as_slice()
                     );
                 } else {

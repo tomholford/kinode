@@ -24,23 +24,26 @@ fn parse_command(line: String) {
                 }
             };
             bindings::yield_results(
-                vec![WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                        is_expecting_response: false,
-                        target_ship: target_server,
-                        target_app: target_app,
-                    }),
-                    payload: &WitPayload {
-                        json: Some(serde_json::to_string(payload).unwrap()),
-                        bytes: None,
+                vec![(
+                    WitProtomessage {
+                        protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: target_server,
+                            target_app: target_app,
+                        }),
+                        payload: &WitPayload {
+                            json: Some(payload.into()),
+                            bytes: None,
+                        },
                     },
-                }]
+                    "",
+                )]
                 .as_slice(),
             );
         }
         _ => {
             bindings::print_to_terminal("invalid command");
-            return
+            return;
         }
     }
 }
@@ -51,9 +54,9 @@ impl bindings::MicrokernelProcess for Component {
         bindings::print_to_terminal(format!("{} terminal: running", our_name.clone()).as_str());
 
         loop {
-            let mut message_stack = bindings::await_next_message();
-            let message = message_stack.pop().unwrap();
-            let stringy = message.payload.json.unwrap_or("".into());
+            let (message, _) = bindings::await_next_message();
+            let stringy = bincode::deserialize(&message.payload.bytes.unwrap_or_default())
+                .unwrap_or_default();
             parse_command(stringy);
         }
     }

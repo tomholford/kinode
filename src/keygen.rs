@@ -4,7 +4,6 @@ use crate::types::*;
 use serde_json::json;
 use ring::{digest, pbkdf2};
 use ring::signature;
-use ring::signature::KeyPair;
 use ring::rand;
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe switch to Argon2
@@ -14,17 +13,12 @@ const ITERATIONS: u32 = 5_000_000; // took 8 seconds on my machine
 
 pub type Credential = [u8; CREDENTIAL_LEN];
 
-// keygen test commands
-// !message tuna keygen {"GenerateDiskKey":{"password":"pw","salt":"742d35Cc6634C0532925a3b844Bc454e"}}
-// !message tuna keygen "GenerateNetworkingKey"
-
 #[derive(Debug, Serialize, Deserialize)]
 enum KeygenAction {
-  // TODO this is just the format of the return from fs
-  //      we should probably change that format
-  uri_string(String),
   GenerateDiskKey(GenerateDiskKey),
   GenerateNetworkingKey,
+  // TODO this is just the format of the return from fs we should probably change that format
+  uri_string(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,20 +95,13 @@ async fn handle_request(
     },
     KeygenAction::GenerateNetworkingKey => {
       let _ = print_tx.send(format!("generating network.keys...")).await;
-      // TODO this is the real random code but for now just use a fixed value
-      // let rng = rand::SystemRandom::new();
-      // let pkcs8_bytes = signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
-      // let networking_keypair = signature::Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref()).unwrap();
-      // TODO this is the fixed networking key code
-      let bytes: &[u8] = our.as_bytes();
-      let mut seed: [u8; 32] = [0; 32];
-      let copy_len = bytes.len().min(32);
-      seed[..copy_len].copy_from_slice(&bytes[..copy_len]);
-      let networking_keypair = signature::Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
-      // END
+      // TODO uncomment this once boot sequence is real
+      // if message.wire.source_app != "ws" {
+      //   panic!("keygen: source_app must be ws, got: {:?}", message.wire.source_app)
+      // };
+      let seed = rand::SystemRandom::new();
+      let networking_keypair = signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
 
-      let hex_public = hex::encode(networking_keypair.public_key().as_ref());
-      let _ = print_tx.send(format!("our networking key: {:?}", hex_public)).await;
       // send key as a response to the networking module
       let _ = send_to_loop.send(vec![
         Message {
@@ -126,8 +113,8 @@ async fn handle_request(
             target_app: message.wire.source_app.clone(),
           },
           payload: Payload {
-            json: Some(json!({ "public": hex_public, "seed": seed })), // TODO maybe remove seed
-            bytes: None
+            json: None,
+            bytes: Some(networking_keypair.as_ref().to_vec())
           }
         }
       ]).await;

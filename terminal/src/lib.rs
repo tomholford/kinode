@@ -38,7 +38,10 @@ fn parse_command(line: String) {
                 .as_slice(),
             );
         }
-        _ => return,
+        _ => {
+            bindings::print_to_terminal("invalid command");
+            return
+        }
     }
 }
 

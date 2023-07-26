@@ -6,9 +6,53 @@ use crossterm::{
     terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
 };
 use futures::{future::FutureExt, StreamExt};
+use std::collections::VecDeque;
 use std::io::{stdout, Write};
 
 use crate::types::*;
+
+struct CommandHistory {
+    pub lines: VecDeque<String>,
+    pub max_size: usize,
+    pub index: usize,
+}
+
+impl CommandHistory {
+    fn new(max_size: usize) -> Self {
+        Self {
+            lines: VecDeque::with_capacity(max_size),
+            max_size,
+            index: 0,
+        }
+    }
+
+    fn add(&mut self, line: String) {
+        self.lines.push_front(line);
+        self.index = 0;
+        if self.lines.len() > self.max_size {
+            self.lines.pop_back();
+        }
+    }
+
+    fn get_prev(&mut self) -> String {
+        if self.lines.len() == 0 || self.index == self.lines.len() {
+            return "".into();
+        }
+        let line = self.lines[self.index].clone();
+        if self.index < self.lines.len() {
+            self.index += 1;
+        }
+        line
+    }
+
+    fn get_next(&mut self) -> String {
+        if self.lines.len() == 0 || self.index == 0 {
+            return "".into();
+        }
+        self.index -= 1;
+        self.lines[self.index].clone()
+    }
+}
 
 /*
  *  terminal driver
@@ -56,12 +100,12 @@ pub async fn terminal(
     let stdout = stdout();
     let mut reader = EventStream::new();
     let mut current_line = format!("{} > ", our.name);
-    let prompt_len = our.name.len() + 3;
-    let (win_cols, win_rows) = terminal::size().unwrap();
+    let prompt_len: u16 = (our.name.len() + 3).try_into().unwrap();
+    let (_win_cols, win_rows) = terminal::size().unwrap();
+    let mut cursor_col = prompt_len;
 
     // TODO set a max history length
-    let mut command_history: Vec<String> = vec![];
-    let mut command_history_index: usize = 1;
+    let mut command_history = CommandHistory::new(1000);
 
     loop {
         let event = reader.next().fuse();
@@ -99,74 +143,80 @@ pub async fn terminal(
                         Event::Key(k) => {
                             match k.code {
                                 KeyCode::Char(c) => {
+                                    current_line.insert(cursor_col as usize, c);
+                                    cursor_col += 1;
                                     execute!(
                                         stdout,
-                                        Print(c),
+                                        cursor::MoveTo(0, win_rows),
+                                        Print(&current_line),
+                                        cursor::MoveTo(cursor_col, win_rows),
                                     )?;
-                                    current_line.push(c);
                                 },
                                 KeyCode::Backspace => {
-                                    if cursor::position().unwrap().0 as usize == prompt_len {
+                                    if cursor::position().unwrap().0 == prompt_len {
+                                        continue;
+                                    }
+                                    cursor_col -= 1;
+                                    current_line.remove(cursor_col as usize);
+                                    execute!(
+                                        stdout,
+                                        cursor::MoveTo(0, win_rows),
+                                        terminal::Clear(ClearType::CurrentLine),
+                                        Print(&current_line),
+                                    )?;
+                                },
+                                KeyCode::Left => {
+                                    if cursor::position().unwrap().0 == prompt_len {
                                         continue;
                                     }
                                     execute!(
                                         stdout,
                                         cursor::MoveLeft(1),
-                                        Print(" "),
-                                        cursor::MoveLeft(1),
                                     )?;
-                                    current_line.pop();
+                                    cursor_col -= 1;
                                 },
-                                KeyCode::Up => {
-                                    // go up one command in history,
-                                    // saving current line to history
-                                    if command_history_index == 0 {
+                                KeyCode::Right => {
+                                    if cursor::position().unwrap().0 as usize == current_line.len() {
                                         continue;
                                     }
-                                    let has = command_history.get(command_history_index - 1);
-                                    match has {
-                                        None => continue,
-                                        Some(got) => {
-                                            let got = got.clone();
-                                            if command_history_index > command_history.len() {
-                                                command_history.push(current_line[prompt_len..].to_string());
-                                            }
-                                            execute!(
-                                                stdout,
-                                                cursor::MoveTo(0, win_rows),
-                                                terminal::Clear(ClearType::CurrentLine),
-                                                Print(format!("{} > {}", our.name, got)),
-                                            )?;
-                                            command_history_index -= 1;
-                                        }
-                                    }
+                                    execute!(
+                                        stdout,
+                                        cursor::MoveRight(1),
+                                    )?;
+                                    cursor_col += 1;
+                                },
+                                KeyCode::Up => {
+                                    // go up one command in history
+                                    current_line = format!("{} > {}", our.name, command_history.get_prev());
+                                    cursor_col = current_line.len() as u16;
+                                    execute!(
+                                        stdout,
+                                        cursor::MoveTo(0, win_rows),
+                                        terminal::Clear(ClearType::CurrentLine),
+                                        Print(&current_line),
+                                    )?;
                                 },
                                 KeyCode::Down => {
                                     // go down one command in history
-                                    let has = command_history.get(command_history_index + 1);
-                                    match has {
-                                        None => continue,
-                                        Some(got) => {
-                                            execute!(
-                                                stdout,
-                                                cursor::MoveTo(0, win_rows),
-                                                terminal::Clear(ClearType::CurrentLine),
-                                                Print(format!("{} > {}", our.name, got)),
-                                            )?;
-                                            command_history_index += 1;
-                                        }
-                                    }
+                                    current_line = format!("{} > {}", our.name, command_history.get_next());
+                                    cursor_col = current_line.len() as u16;
+                                    execute!(
+                                        stdout,
+                                        cursor::MoveTo(0, win_rows),
+                                        terminal::Clear(ClearType::CurrentLine),
+                                        Print(&current_line),
+                                    )?;
                                 },
                                 KeyCode::Enter => {
-                                    let command = current_line[prompt_len..].to_string();
-                                    command_history.push(command.clone());
-                                    command_history_index = command_history.len();
+                                    let command = current_line[prompt_len as usize..].to_string();
                                     current_line = format!("{} > ", our.name);
                                     execute!(
                                         stdout,
                                         Print("\r\n"),
                                         Print(&current_line),
                                     )?;
+                                    command_history.add(command.clone());
+                                    cursor_col = prompt_len;
                                     let _err = to_event_loop.send(
                                         vec![
                                             Message {

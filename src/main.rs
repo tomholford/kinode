@@ -13,12 +13,14 @@ mod microkernel;
 mod terminal;
 mod types;
 mod ws;
+mod keygen;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
+const KEYGEN_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -44,6 +46,8 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
+    let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -89,10 +93,11 @@ async fn main() {
         .send(format!("our networking public key: {}", hex_pubkey))
         .await;
 
-    /*  we are currently running 3 I/O modules:
+    /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,
+     *      keygen
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
      *
@@ -120,6 +125,7 @@ async fn main() {
             kernel_debug_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
+            keygen_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = ws::websockets(
             our.clone(),
@@ -137,6 +143,12 @@ async fn main() {
             print_sender.clone(),
             fs_message_receiver
         ) => { "".to_string() },
+        _ = keygen::keygen(
+            &our_name,
+            kernel_message_sender.clone(),
+            keygen_message_receiver,
+            print_sender.clone(),
+        ) => { "keygen died".to_string() },
     };
     println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);

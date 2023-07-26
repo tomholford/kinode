@@ -6,7 +6,7 @@ use ring::{digest, pbkdf2};
 use ring::signature;
 use ring::rand;
 
-static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe switch to Argon2
+static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
 const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
 const ITERATIONS: u32 = 5_000_000; // took 8 seconds on my machine
@@ -17,7 +17,7 @@ pub type Credential = [u8; CREDENTIAL_LEN];
 enum KeygenAction {
   GenerateDiskKey(GenerateDiskKey),
   GenerateNetworkingKey,
-  // TODO this is just the format of the return from fs we should probably change that format
+  // TODO this is just the format of the return from fs...we should probably change that format
   uri_string(String),
 }
 
@@ -69,7 +69,7 @@ async fn handle_request(
         panic!("salt must be 32 bytes long")
       };
 
-      // TODO verify that sys.keys doesn't exist in fs
+      // TODO verify that sys.keys doesn't exist in fs, functionality doesn't exist yet
 
       let _ = print_tx.send(format!("generating sys.keys...")).await;
       let mut to_store: Credential = [0u8; CREDENTIAL_LEN];      
@@ -78,7 +78,6 @@ async fn handle_request(
       //
       let _ = send_to_loop.send(vec![
         Message {
-          // TODO maybe this should be a Response that someone should call, API style...won't know until we build demo
           message_type: MessageType::Request(true),
           wire: Wire {
             source_ship: our.clone(),
@@ -121,7 +120,7 @@ async fn handle_request(
     },
     // handles response from fs
     _ => {
-      // TODO error propagation from fs when that is built
+      // TODO add error propagation from fs once that is built
       let _ = print_tx.send("successfully saved keys to fs://sys.keys".to_string()).await;
     }
   }

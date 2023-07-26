@@ -37,7 +37,7 @@ cd ..
 
 ## Current commands
 
-- `!card <name> <json>`: send a card with a JSON value to another server or yourself
+- `!message <name> <app> <json>`: send a card with a JSON value to another server or yourself
 - `!quit`, `!exit`: kill the server
 
 ## Example usage

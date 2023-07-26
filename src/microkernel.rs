@@ -725,6 +725,10 @@ async fn make_event_loop(
                                     &mut process_handles,
                                     &engine,
                                 ).await;
+                            //  XX temporary branch to assist in pure networking debugging
+                            //  can be removed when ws WASM module is ready
+                            } else if to == "ws" {
+                                let _ = send_to_wss.send(wrapped_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
                                 match senders.get(&to) {
@@ -786,6 +790,7 @@ pub async fn kernel(
         ).await
     );
 
+    // always start process manager on boot
     let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
     let start_process_manager_message = WrappedMessage {
         id: rand::random(),
@@ -812,6 +817,34 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_process_manager_message).await.unwrap();
+
+    // always start terminal on boot
+    let terminal_wasm_bytes = fs::read("terminal.wasm").await.unwrap();
+    let start_terminal_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "terminal".into(),
+                            wasm_bytes_uri: "terminal.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(terminal_wasm_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_terminal_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

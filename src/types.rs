@@ -81,7 +81,9 @@ pub enum NetworkingError {
     #[error("Peer is offline or otherwise unreachable")]
     PeerOffline,
     #[error("Message delivery failed due to timeout")]
-    MessageTimeout
+    MessageTimeout,
+    #[error("Some bug in the networking code")]
+    NetworkingBug,
 }
 
 impl std::fmt::Display for Payload {
@@ -128,12 +130,12 @@ pub enum DebugCommand {
     Step,
 }
 
-pub enum Command {
-    Message(WrappedMessage),
-    Debug(DebugCommand),
-    Quit,
-    Invalid,
-}
+// pub enum Command {
+//     Message(WrappedMessage),
+//     Debug(DebugCommand),  // TODO
+//     Quit,
+//     Invalid,
+// }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {

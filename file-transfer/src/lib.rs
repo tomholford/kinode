@@ -85,15 +85,20 @@ struct FileTransferCancel {
     uri_string: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
+struct FileTransferReadyToReceive {
+    uri_string: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum FileTransferRequest {
     //  actions
     GetFile(FileTransferGetFile),
     Start(FileTransferStart),
-    Cancel(FileTransferCancel),  //  uri_string to derive key
+    Cancel(FileTransferCancel),
     GetPiece(FileTransferGetPiece),
     //  updates
     FilePiece(FileTransferFilePiece),
+    ReadyToReceive(FileTransferReadyToReceive),
 }
  
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +148,21 @@ struct Uploading {
     sent_pieces: Vec<IsConfirmedPiece>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct FileSystemMetadataContext {
+    node: String,
+    chunk_size: u64,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct FileTransferPieceContext {
+    node: String,
+    piece_number: u32,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct FileTransferNodeContext {
+    node: String,
+}
+
 fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
 }
@@ -155,11 +175,8 @@ impl bindings::MicrokernelProcess for Component {
         let mut downloads: HashMap<FileTransferKey, Downloading> = HashMap::new();
         let mut uploads: HashMap<FileTransferKey, Uploading> = HashMap::new();
 
-        //  TODO
         loop {
-            let message_stack = bindings::await_next_message();
-            let stack_len = message_stack.len();
-            let message = &message_stack[stack_len - 1];
+            let (message, context) = bindings::await_next_message();
             let Some(ref payload_json_string) = message.payload.json else {
                 panic!("foo")
             };
@@ -172,9 +189,6 @@ impl bindings::MicrokernelProcess for Component {
                     //   only GetFile and Cancel allowed from non file_transfer
                     //   and Cancel should probably only be allowed from same
                     //   process as GetFile came from
-                    // if message.wire.source_app != process_name {
-                    //     panic!("file_transfer: requests");
-                    // }
                     print_to_terminal("Request");
                     let request: FileTransferRequest =
                         match serde_json::from_str(payload_json_string) {
@@ -187,47 +201,63 @@ impl bindings::MicrokernelProcess for Component {
                     match request {
                         FileTransferRequest::GetFile(get_file) => {
                             print_to_terminal("GetFile");
-                            bindings::yield_results(vec![bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &get_file.target_ship,
-                                        target_app: &process_name,
+
+                            bindings::yield_results(vec![
+                                (
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Request(
+                                            WitRequestTypeWithTarget {
+                                                is_expecting_response: true,
+                                                target_ship: &get_file.target_ship,
+                                                target_app: &process_name,
+                                            },
+                                        ),
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::to_string(
+                                                &FileTransferRequest::Start(
+                                                    FileTransferStart {
+                                                        uri_string: get_file.uri_string,
+                                                        chunk_size: get_file.chunk_size,
+                                                    }
+                                                )
+                                            ).unwrap()),
+                                            bytes: None,
+                                        },
                                     },
-                                ),
-                                payload: &WitPayload {
-                                    json: Some(serde_json::to_string(
-                                        &FileTransferRequest::Start(
-                                            FileTransferStart {
-                                                uri_string: get_file.uri_string,
-                                                chunk_size: get_file.chunk_size,
-                                            }
-                                        )
-                                    ).unwrap()),
-                                    bytes: None,
-                                },
-                            }].as_slice());
+                                    "",
+                                )
+                            ].as_slice());
                         },
                         FileTransferRequest::Start(start) => {
                             print_to_terminal("Start");
-                            bindings::yield_results(vec![bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &our_name,
-                                        target_app: "filesystem",
+
+                            let context = serde_json::to_string(&FileSystemMetadataContext {
+                                node: message.wire.source_ship,
+                                chunk_size: start.chunk_size,
+                            }).unwrap();
+                            bindings::yield_results(vec![
+                                (
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Request(
+                                            WitRequestTypeWithTarget {
+                                                is_expecting_response: true,
+                                                target_ship: &our_name,
+                                                target_app: "filesystem",
+                                            },
+                                        ),
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::to_string(
+                                                &FileSystemRequest {
+                                                    uri_string: start.uri_string,
+                                                    action: FileSystemAction::GetMetadata,
+                                                }
+                                            ).unwrap()),
+                                            bytes: None,
+                                        },
                                     },
+                                    context.as_str(),
                                 ),
-                                payload: &WitPayload {
-                                    json: Some(serde_json::to_string(
-                                        &FileSystemRequest {
-                                            uri_string: start.uri_string,
-                                            action: FileSystemAction::GetMetadata,
-                                        }
-                                    ).unwrap()),
-                                    bytes: None,
-                                },
-                            }].as_slice());
+                            ].as_slice());
                         },
                         FileTransferRequest::Cancel(_uri_string) => {
                             panic!("cancel: todo");
@@ -237,6 +267,7 @@ impl bindings::MicrokernelProcess for Component {
                         },
                         FileTransferRequest::FilePiece(file_piece) => {
                             print_to_terminal("FilePiece");
+
                             let Some(bytes) = message.payload.bytes.clone() else {
                                 panic!("bytes");
                             };
@@ -252,56 +283,101 @@ impl bindings::MicrokernelProcess for Component {
                             }
                             downloading.received_pieces.push(file_piece.piece_hash);
 
-                            bindings::yield_results(vec![bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &our_name,
-                                        target_app: "filesystem",
+                            let context = serde_json::to_string(&FileTransferPieceContext {
+                                node: message.wire.source_ship.clone(),
+                                piece_number: file_piece.piece_number,
+                            }).unwrap();
+                            bindings::yield_results(vec![
+                                (
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Request(
+                                            WitRequestTypeWithTarget {
+                                                is_expecting_response: true,
+                                                target_ship: &our_name,
+                                                target_app: "filesystem",
+                                            },
+                                        ),
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::to_string(
+                                                &FileSystemRequest {
+                                                    uri_string: file_piece.uri_string,
+                                                    action: FileSystemAction::Append,
+                                                }
+                                            ).unwrap()),
+                                            bytes: Some(bytes),
+                                        },
                                     },
+                                    context.as_str(),
                                 ),
-                                payload: &WitPayload {
-                                    json: Some(serde_json::to_string(
-                                        &FileSystemRequest {
-                                            uri_string: file_piece.uri_string,
-                                            action: FileSystemAction::Append,
-                                        }
-                                    ).unwrap()),
-                                    bytes: Some(bytes),
-                                },
-                            }].as_slice());
+                            ].as_slice());
+                        },
+                        FileTransferRequest::ReadyToReceive(ready_to_receive) => {
+                            print_to_terminal("ReadyToReceive");
+
+                            let key = FileTransferKey {
+                                requester: message.wire.source_ship.clone(),
+                                server: our_name.clone(),
+                                uri_string: ready_to_receive.uri_string.clone(),
+                            };
+
+                            let uploading = uploads.get(&key).unwrap();
+
+                            let context = serde_json::to_string(&FileTransferNodeContext {
+                                node: message.wire.source_ship.clone(),
+                            }).unwrap();
+                            bindings::yield_results(vec![
+                                (
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Request(
+                                            WitRequestTypeWithTarget {
+                                                is_expecting_response: true,
+                                                target_ship: &our_name,
+                                                target_app: "filesystem",
+                                            },
+                                        ),
+                                        payload: &WitPayload {
+                                            json: Some(serde_json::to_string(
+                                                &FileSystemRequest {
+                                                    uri_string: ready_to_receive.uri_string,
+                                                    action: FileSystemAction::ReadChunkFromOpen(
+                                                        uploading.metadata.chunk_size,
+                                                    ),
+                                                }
+                                            ).unwrap()),
+                                            bytes: None,
+                                        },
+                                    },
+                                    context.as_str(),
+                                )
+                            ].as_slice());
                         },
                     }
                 },
                 WitMessageType::Response => {
                     print_to_terminal("Response");
+
                     if "filesystem" == message.wire.source_app {
                         let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                         match response {
                             FileSystemResponse::GetMetadata(file_metadata) => {
                                 print_to_terminal("GetMetadata");
-                                //  TODO: refactor key creation here and in ReadChunk, Append
-                                let start_request_index = stack_len - 3;
-                                let message = &message_stack[start_request_index];
-                                let Some(ref payload_json_string) = message.payload.json else {
-                                    panic!("foo fs")
-                                };
-                                let request: FileTransferRequest =
-                                    serde_json::from_str(payload_json_string).unwrap();
-                                let FileTransferRequest::Start(start) = request else {
-                                    panic!("baz")
-                                };
+
+                                let context: FileSystemMetadataContext =
+                                    serde_json::from_str(&context).unwrap();
 
                                 let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
+                                    requester: context.node.clone(),
                                     server: our_name.clone(),
-                                    uri_string: start.uri_string.clone(),
+                                    uri_string: file_metadata.uri_string.clone(),
                                 };
-                                let number_pieces = div_round_up(file_metadata.len, start.chunk_size) as u32;
+                                let number_pieces = div_round_up(
+                                    file_metadata.len,
+                                    context.chunk_size
+                                ) as u32;
                                 let metadata = FileTransferMetadata {
                                     key: key.clone(),
                                     hash: file_metadata.hash,
-                                    chunk_size: start.chunk_size,
+                                    chunk_size: context.chunk_size,
                                     number_pieces,
                                     number_bytes: file_metadata.len,
                                 };
@@ -312,105 +388,91 @@ impl bindings::MicrokernelProcess for Component {
                                         sent_pieces: vec![],
                                     }
                                 );
+
+                                let context = serde_json::to_string(&FileTransferNodeContext {
+                                    node: context.node,
+                                }).unwrap();
                                 bindings::yield_results(vec![
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferResponse::Started(metadata)
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
-                                    },
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &our_name,
-                                                target_app: "filesystem",
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Response,
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferResponse::Started(metadata)
+                                                ).unwrap()),
+                                                bytes: None,
                                             },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: start.uri_string,
-                                                    action: FileSystemAction::OpenRead,
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
                                         },
-                                    },
+                                        "",
+                                    ),
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &our_name,
+                                                    target_app: "filesystem",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileSystemRequest {
+                                                        uri_string: file_metadata.uri_string,
+                                                        action: FileSystemAction::OpenRead,
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        context.as_str(),
+                                    ),
                                 ].as_slice());
                             },
-                            FileSystemResponse::OpenRead(uri_string) => {
-                                print_to_terminal("OpenRead");
-                                //  TODO: refactor key creation here and in Metadata, Append
-                                let start_request_index = stack_len - 3;
-                                let message = &message_stack[start_request_index];
-                                let Some(ref payload_json_string) = message.payload.json else {
-                                    panic!("foo fs")
-                                };
-                                let request: FileTransferRequest =
-                                    serde_json::from_str(payload_json_string).unwrap();
-                                let FileTransferRequest::Start(start) = request else {
-                                    panic!("baz")
-                                };
-
-                                let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
-                                    server: our_name.clone(),
-                                    uri_string: start.uri_string.clone(),
-                                };
-
-                                let uploading = uploads.get_mut(&key).unwrap();
-
-                                bindings::yield_results(vec![
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &our_name,
-                                                target_app: "filesystem",
-                                            },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string,
-                                                    action: FileSystemAction::ReadChunkFromOpen(
-                                                            uploading.metadata.chunk_size,
-                                                    ),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
-                                    },
-                                ].as_slice());
+                            FileSystemResponse::OpenRead(_uri_string) => {
+                                print_to_terminal("Successfully opened Read");
                             },
-                            FileSystemResponse::OpenAppend(_uri_string) => {
-                                print_to_terminal("Successfully opened Append");
+                            FileSystemResponse::OpenAppend(uri_string) => {
+                                print_to_terminal("OpenAppend");
+
+                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: false,
+                                                    target_ship: &context.node,
+                                                    target_app: &process_name,
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferRequest::ReadyToReceive(
+                                                        FileTransferReadyToReceive {
+                                                            uri_string,
+                                                        }
+                                                    )
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        "",
+                                    )
+                                ].as_slice());
+                                print_to_terminal("OpenAppend 2");
                             },
                             FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
                                 print_to_terminal("ReadChunkFromOpen");
+
+                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
                                 let Some(bytes) = message.payload.bytes.clone() else {
                                     panic!("bytes");
                                 };
-                                //  TODO: refactor key creation here and in Metadata, Append
-                                let start_request_index = stack_len - 3;
-                                let message = &message_stack[start_request_index];
-                                let Some(ref payload_json_string) = message.payload.json else {
-                                    panic!("foo fs")
-                                };
-                                let request: FileTransferRequest =
-                                    serde_json::from_str(payload_json_string).unwrap();
-                                let FileTransferRequest::Start(start) = request else {
-                                    panic!("baz")
-                                };
 
                                 let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
+                                    requester: context.node.clone(),
                                     server: our_name.clone(),
-                                    uri_string: start.uri_string.clone(),
+                                    uri_string: uri_hash.uri_string.clone(),
                                 };
 
                                 let uploading = uploads.get_mut(&key).unwrap();
@@ -420,46 +482,41 @@ impl bindings::MicrokernelProcess for Component {
                                 });
 
                                 bindings::yield_results(vec![
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &message.wire.source_ship,
-                                                target_app: &message.wire.source_app,
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &context.node,
+                                                    target_app: "file_transfer",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferRequest::FilePiece(
+                                                        FileTransferFilePiece {
+                                                            uri_string: uri_hash.uri_string,
+                                                            piece_number: (uploading.sent_pieces.len() - 1) as u32,
+                                                            piece_hash: uri_hash.hash,
+                                                        }
+                                                    )
+                                                ).unwrap()),
+                                                bytes: Some(bytes),
                                             },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferRequest::FilePiece(
-                                                    FileTransferFilePiece {
-                                                        uri_string: start.uri_string,
-                                                        piece_number: (uploading.sent_pieces.len() - 1) as u32,
-                                                        piece_hash: uri_hash.hash,
-                                                    }
-                                                )
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
                                         },
-                                    },
+                                        "",
+                                    )
                                 ].as_slice());
                             },
                             FileSystemResponse::Append(uri_string) => {
                                 print_to_terminal("Append");
-                                //  TODO: refactor key creation here and in ReadChunk, Metadata
-                                let file_piece_request_index = stack_len - 3;
-                                let message = &message_stack[file_piece_request_index];
-                                let Some(ref payload_json_string) = message.payload.json else {
-                                    panic!("Append handler json None")
-                                };
-                                let request: FileTransferRequest =
-                                    serde_json::from_str(payload_json_string).unwrap();
-                                let FileTransferRequest::FilePiece(file_piece) = request else {
-                                    panic!("Append handler not FilePiece")
-                                };
+                                
+                                let context: FileTransferPieceContext =
+                                    serde_json::from_str(&context).unwrap();
 
                                 let key = FileTransferKey {
                                     requester: our_name.clone(),
-                                    server: message.wire.source_ship.clone(),
+                                    server: context.node,
                                     uri_string: uri_string.clone(),
                                 };
 
@@ -467,37 +524,43 @@ impl bindings::MicrokernelProcess for Component {
                                 if downloading.received_pieces.len() == downloading.metadata.number_pieces as usize {
                                     //  received all file pieces
                                     bindings::yield_results(vec![
-                                        bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Response,
-                                            payload: &WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileTransferResponse::FileReceived(
-                                                        uri_string.clone(),
-                                                    )
-                                                ).unwrap()),
-                                                bytes: None,
+                                        (
+                                            bindings::WitProtomessage {
+                                                protomessage_type: WitProtomessageType::Response,
+                                                payload: &WitPayload {
+                                                    json: Some(serde_json::to_string(
+                                                        &FileTransferResponse::FileReceived(
+                                                            uri_string.clone(),
+                                                        )
+                                                    ).unwrap()),
+                                                    bytes: None,
+                                                },
                                             },
-                                        },
+                                            "",
+                                        )
                                     ].as_slice());
                                 } else {
                                     //  still expecting file pieces
                                     downloads.insert(key, downloading);
 
                                     bindings::yield_results(vec![
-                                        bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Response,
-                                            payload: &WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileTransferResponse::PieceReceived(
-                                                        FileTransferPieceReceived {
-                                                            uri_string: uri_string,
-                                                            piece_number: file_piece.piece_number,
-                                                        }
-                                                    )
-                                                ).unwrap()),
-                                                bytes: None,
+                                        (
+                                            bindings::WitProtomessage {
+                                                protomessage_type: WitProtomessageType::Response,
+                                                payload: &WitPayload {
+                                                    json: Some(serde_json::to_string(
+                                                        &FileTransferResponse::PieceReceived(
+                                                            FileTransferPieceReceived {
+                                                                uri_string: uri_string,
+                                                                piece_number: context.piece_number,
+                                                            }
+                                                        )
+                                                    ).unwrap()),
+                                                    bytes: None,
+                                                },
                                             },
-                                        },
+                                            "",
+                                        )
                                     ].as_slice());
                                 }
                             },
@@ -529,29 +592,44 @@ impl bindings::MicrokernelProcess for Component {
                                     }
                                 );
                                 print_to_terminal("Started 6");
+                                print_to_terminal(
+                                    format!(
+                                        "Started downloads keys: {:?}",
+                                        downloads.keys().collect::<Vec<_>>(),
+                                    ).as_str()
+                                );
 
-                                bindings::yield_results(vec![bindings::WitProtomessage {
-                                    protomessage_type: WitProtomessageType::Request(
-                                        WitRequestTypeWithTarget {
-                                            is_expecting_response: true,
-                                            target_ship: &our_name,
-                                            target_app: "filesystem",
+                                let context = serde_json::to_string(&FileTransferNodeContext {
+                                    node: message.wire.source_ship,
+                                }).unwrap();
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &our_name,
+                                                    target_app: "filesystem",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileSystemRequest {
+                                                        uri_string: uri_string.clone(),
+                                                        action: FileSystemAction::OpenAppend,
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
                                         },
+                                        context.as_str(),
                                     ),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: uri_string.clone(),
-                                                action: FileSystemAction::OpenAppend,
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                }].as_slice());
+                                ].as_slice());
                                 print_to_terminal("Started 7");
                             },
                             FileTransferResponse::PieceReceived(piece_received) => {
                                 print_to_terminal("PieceReceived");
+
                                 let key = FileTransferKey {
                                     requester: message.wire.source_ship.clone(),
                                     server: our_name.clone(),
@@ -566,31 +644,39 @@ impl bindings::MicrokernelProcess for Component {
 
                                 uploading.sent_pieces[piece_received.piece_number as usize].is_confirmed = true;
 
+                                let context = serde_json::to_string(&FileTransferNodeContext {
+                                    node: message.wire.source_ship,
+                                }).unwrap();
+
                                 bindings::yield_results(vec![
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &our_name,
-                                                target_app: "filesystem",
-                                            },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: piece_received.uri_string,
-                                                    action: FileSystemAction::ReadChunkFromOpen(
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &our_name,
+                                                    target_app: "filesystem",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileSystemRequest {
+                                                        uri_string: piece_received.uri_string,
+                                                        action: FileSystemAction::ReadChunkFromOpen(
                                                             uploading.metadata.chunk_size,
-                                                    ),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
+                                                        ),
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
                                         },
-                                    },
+                                        context.as_str(),
+                                    )
                                 ].as_slice());
                             },
                             FileTransferResponse::FileReceived(uri_string) => {
                                 print_to_terminal("FileReceived");
+
                                 let key = FileTransferKey {
                                     requester: message.wire.source_ship.clone(),
                                     server: our_name.clone(),

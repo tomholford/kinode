@@ -7,7 +7,7 @@ interface types {
         target-ship: string,
         target-app:  string,
     }
-    
+
     record wit-payload {
         json: option<string>,
         bytes: option<list<u8>>,
@@ -28,7 +28,7 @@ interface types {
         request(wit-request-type-with-target),
         response,
     }
-    
+
     record wit-message {
         message-type: wit-message-type,
         wire: wit-wire,
@@ -53,8 +53,8 @@ world microkernel-process {
     }
 
     import print-to-terminal: func(message: string)
-    import yield-results: func(results: list<wit-protomessage>)
-    import await-next-message: func() -> list<wit-message>
+    import yield-results: func(results: list<tuple<wit-protomessage, string>>)
+    import await-next-message: func() -> tuple<wit-message, string>
     import get-current-unix-time: func() -> u64
     import get-insecure-uniform-u64: func() -> u64
     export run-process: func(our-name: string, process-name: string)

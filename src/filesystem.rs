@@ -128,7 +128,7 @@ pub async fn fs_sender(
     our_name: &str,
     home_directory_path: &str,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver
 ) {
     if let Err(e) = create_dir_if_dne(home_directory_path).await {
@@ -149,16 +149,15 @@ pub async fn fs_sender(
         HashMap::new();
             //Arc::new(RwLock::new(HashMap::new()));
 
-    // //  TODO: store or back up in DB/kv?
-    while let Some(message_stack) = recv_in_fs.recv().await {
-        let stack_len = message_stack.len();
-        let source_ship = &message_stack[stack_len - 1].wire.source_ship;
-        let source_app = &message_stack[stack_len - 1].wire.source_app;
+    //  TODO: store or back up in DB/kv?
+    while let Some(message) = recv_in_fs.recv().await {
+        let source_ship = &message.message.wire.source_ship;
+        let source_app = &message.message.wire.source_app;
         if our_name != source_ship {
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
                 our_name,
-                &message_stack[stack_len - 1],
+                &message,
             );
             continue;
         }
@@ -194,28 +193,26 @@ pub async fn fs_sender(
             handle_request(
                 our_name.to_string(),
                 home_directory_path.to_string(),
-                message_stack,
+                message,
                 open_files,
                 // Arc::clone(&read_access_by_node),
                 send_to_loop.clone(),
-                print_tx.clone()
+                send_to_terminal.clone()
             )
         );
     }
 }
 
-//  TODO: error handling: should probably send error messages to caller
+//  TODO: error handling: send error messages to caller
 async fn handle_request(
     our_name: String,
     home_directory_path: String,
-    mut messages: MessageStack,
+    message: WrappedMessage,
     open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    send_to_terminal: PrintSender,
 ) -> Result<(), Error> {
-    let Some(message) = messages.pop() else {
-        panic!("filesystem: filesystem must receive non-empty MessageStack, got: {:?}", messages);
-    };
+    let WrappedMessage { id, rsvp, message } = message;
     if "filesystem".to_string() != message.wire.target_app {
         panic!("filesystem: filesystem must be target.app, got: {:?}", message);
     }
@@ -223,7 +220,12 @@ async fn handle_request(
         panic!("filesystem: request must have JSON payload, got: {:?}", message);
     };
 
-    let request: FileSystemRequest = serde_json::from_value(value).unwrap();
+    let request: FileSystemRequest = match serde_json::from_value(value) {
+        Ok(r) => r,
+        Err(e) => {
+            panic!("filesystem: couldn't parse Request: {:?}, with error: {}", message.payload.json, e)
+        },
+    };
 
     let source_app = &message.wire.source_app;
     // let file_path = get_file_path(&request.uri_string).await;
@@ -232,7 +234,6 @@ async fn handle_request(
         source_app,
         &request.uri_string
     ).await;
-    println!("filesystem: file_path: {}", file_path);
     if HAS_FULL_HOME_ACCESS.contains(source_app) {
         if !std::path::Path::new(&file_path).starts_with(&home_directory_path) {
             panic!(
@@ -262,7 +263,7 @@ async fn handle_request(
             //  TODO: use read_exact()?
             let file_contents = fs::read(&file_path).await?;
             let hash = compute_truncated_hash(&file_contents);
-            let _ = print_tx.send(
+            let _ = send_to_terminal.send(
                 format!(
                     "filesystem: got file at {} of size {} with hash {}",
                     file_path,
@@ -276,7 +277,7 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::Read(FileSystemUriHash {
                             uri_string: request.uri_string,
-                            hash: hash,
+                            hash,
                         })
                     )
                         .unwrap()
@@ -317,7 +318,7 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::GetMetadata(FileSystemMetadata {
                             uri_string: request.uri_string,
-                            hash: hash,
+                            hash,
                             is_dir: metadata.is_dir(),
                             is_file: metadata.is_file(),
                             is_symlink: metadata.is_symlink(),
@@ -325,7 +326,7 @@ async fn handle_request(
                         })
                     ).unwrap()
                 ),  //  TODO: error propagation to caller
-                bytes: Some(file_contents),
+                bytes: None,
             }
         },
         FileSystemAction::OpenRead => {
@@ -521,21 +522,22 @@ async fn handle_request(
         },
     };
 
-    let response = Message {
-        message_type: MessageType::Response,
-        wire: Wire {
-            source_ship: our_name.clone(),
-            source_app: "filesystem".to_string(),
-            target_ship: our_name.clone(),
-            target_app: message.wire.source_app.clone(),
+    let response = WrappedMessage {
+        id,
+        rsvp,
+        message: Message {
+            message_type: MessageType::Response,
+            wire: Wire {
+                source_ship: our_name.clone(),
+                source_app: "filesystem".to_string(),
+                target_ship: our_name.clone(),
+                target_app: message.wire.source_app.clone(),
+            },
+            payload: response_payload,
         },
-        payload: response_payload,
     };
 
-    messages.push(message);
-    messages.push(response);
-
-    let _ = send_to_loop.send(messages).await;
+    let _ = send_to_loop.send(response).await;
 
     Ok(())
 }

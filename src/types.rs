@@ -169,7 +169,6 @@ pub enum FileSystemError {
     #[error("Filesystem error while {what} on {path}: {error}.")]
     FsError { what: String, path: String, error: String, },
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {
     pub uri_string: String,

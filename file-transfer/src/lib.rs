@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
+use thiserror::Error;
 use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types::WitMessageType;
 use bindings::component::microkernel_process::types::WitPayload;
@@ -8,6 +9,45 @@ use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 struct Component;
 
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum NetworkingError {
+    #[error("Peer is offline or otherwise unreachable")]
+    PeerOffline,
+    #[error("Message delivery failed due to timeout")]
+    MessageTimeout,
+    #[error("Some bug in the networking code")]
+    NetworkingBug,
+}
+
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum FileSystemError {
+    //  bad input from user
+    #[error("Malformed URI: {uri}. Problem with {bad_part_name}: {:?}.", bad_part)]
+    BadUri { uri: String, bad_part_name: String,  bad_part: Option<String>, },
+    #[error("JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.", json)]
+    BadJson { json: Option<serde_json::Value>, error: String, },
+    #[error("Bytes payload required for {action}.")]
+    BadBytes { action: String },
+    #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
+    IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
+    #[error("Already have {path} opened with mode {mode}.")]
+    AlreadyOpen { path: String, mode: String, },
+    #[error("Don't have {path} opened with mode {mode}.")]
+    NotCurrentlyOpen { path: String, mode: String, },
+    //  path or underlying fs problems
+    #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
+    BadPathJoin { base_path: String, addend: String, },
+    #[error("Failed to create dir at {path}: {error}.")]
+    CouldNotMakeDir { path: String, error: String, },
+    #[error("Failed to read {path}: {error}.")]
+    ReadFailed { path: String, error: String, },
+    #[error("Failed to write {path}: {error}.")]
+    WriteFailed { path: String, error: String, },
+    #[error("Failed to open {path} for {mode}: {error}.")]
+    OpenFailed { path: String, mode: String, error: String, },
+    #[error("Filesystem error while {what} on {path}: {error}.")]
+    FsError { what: String, path: String, error: String, },
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {
     pub uri_string: String,
@@ -41,6 +81,7 @@ pub enum FileSystemResponse {
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
+    Error(FileSystemError),
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {
@@ -82,23 +123,23 @@ struct FileTransferGetPiece {
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct FileTransferCancel {
+    target_ship: String,
     uri_string: String,
 }
-#[derive(Debug, Serialize, Deserialize)]
-struct FileTransferReadyToReceive {
-    uri_string: String,
-}
+// #[derive(Debug, Serialize, Deserialize)]
+// struct FileTransferReadyToReceive {
+//     uri_string: String,
+// }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum FileTransferRequest {
     //  actions
-    GetFile(FileTransferGetFile),
-    Start(FileTransferStart),
-    Cancel(FileTransferCancel),
-    GetPiece(FileTransferGetPiece),
+    GetFile(FileTransferGetFile),    //  from user to requester
+    Start(FileTransferStart),        //  from requester to server
+    Cancel(FileTransferCancel),      //  from user to requester & requester to server
+    GetPiece(FileTransferGetPiece),  //  from requester to server
     //  updates
-    FilePiece(FileTransferFilePiece),
-    ReadyToReceive(FileTransferReadyToReceive),
+    // ReadyToReceive(FileTransferReadyToReceive),  //  from 
 }
  
 #[derive(Debug, Serialize, Deserialize)]
@@ -129,42 +170,106 @@ struct FileTransferError {
 }
 #[derive(Debug, Serialize, Deserialize)]
 enum FileTransferResponse {
-    Started(FileTransferMetadata),
-    PieceReceived(FileTransferPieceReceived),
-    FileReceived(String),  //  uri_string to derive key
+    Started(FileTransferMetadata),     //  from server to requester
+    FilePiece(FileTransferFilePiece),  //  from server to requester
+    // FileReceived(String),              //  uri_string to derive key
     Errored(FileTransferError),
 }
 
-struct IsConfirmedPiece {
-    piece_hash: u64,
-    is_confirmed: bool,
-}
 struct Downloading {
     metadata: FileTransferMetadata,
     received_pieces: Vec<u64>,  //  piece_hash
 }
 struct Uploading {
     metadata: FileTransferMetadata,
-    sent_pieces: Vec<IsConfirmedPiece>,
+    sent_pieces: Vec<u64>,  //  piece_hash
 }
+type Downloads = HashMap<FileTransferKey, Downloading>;
+type Uploads = HashMap<FileTransferKey, Uploading>;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FileSystemMetadataContext {
-    node: String,
-    chunk_size: u64,
+struct FileTransferContext {
+    key: FileTransferKey,
+    additional: FileTransferAdditionalContext,
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct FileTransferPieceContext {
-    node: String,
-    piece_number: u32,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct FileTransferNodeContext {
-    node: String,
+enum FileTransferAdditionalContext {
+    Empty,
+    Metadata { chunk_size: u64 },
+    Piece { piece_number: u32 },
 }
 
 fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
+}
+
+fn handle_networking_error(
+    error: NetworkingError,
+    our_name: String,
+    context: String,
+    downloads: &mut Downloads,
+    uploads: &mut Uploads,
+) {
+    match error {
+        NetworkingError::PeerOffline => {
+            panic!("")
+        },
+        NetworkingError::MessageTimeout => {
+            panic!("")
+        },
+        NetworkingError::NetworkingBug => {
+            panic!("")
+        },
+    }
+}
+
+fn handle_fs_error(
+    error: FileSystemError,
+    our_name: String,
+    context: String,
+    downloads: &mut Downloads,
+    uploads: &mut Uploads,
+) {
+    match error {
+        //  bad input from user
+        FileSystemError::BadUri { uri, bad_part_name, bad_part, } => {
+            panic!("")
+        },
+        FileSystemError::BadJson { json, error, } => {
+            panic!("")
+        },
+        FileSystemError::BadBytes { action, } => {
+            panic!("")
+        },
+        FileSystemError::IllegalAccess { process_name, attempted_dir, sandbox_dir, } => {
+            panic!("")
+        },
+        FileSystemError::AlreadyOpen { path, mode, } => {
+            panic!("")
+        },
+        FileSystemError::NotCurrentlyOpen { path, mode, } => {
+            panic!("")
+        },
+        //  path or underlying fs problems
+        FileSystemError::BadPathJoin { base_path, addend, } => {
+            panic!("")
+        },
+        FileSystemError::CouldNotMakeDir { path, error, } => {
+            panic!("")
+        },
+        FileSystemError::ReadFailed {path, error, } => {
+            panic!("")
+        },
+        FileSystemError::WriteFailed { path, error, } => {
+            panic!("")
+        },
+        FileSystemError::OpenFailed { path, mode, error, } => {
+            panic!("")
+        },
+        FileSystemError::FsError { what, path, error, } => {
+            panic!("")
+        },
+    }
 }
 
 impl bindings::MicrokernelProcess for Component {
@@ -172,8 +277,8 @@ impl bindings::MicrokernelProcess for Component {
         print_to_terminal("file_transfer: begin");
 
         //  in progress
-        let mut downloads: HashMap<FileTransferKey, Downloading> = HashMap::new();
-        let mut uploads: HashMap<FileTransferKey, Uploading> = HashMap::new();
+        let mut downloads: Downloads = HashMap::new();
+        let mut uploads: Uploads = HashMap::new();
 
         loop {
             let (message, context) = bindings::await_next_message();
@@ -231,9 +336,17 @@ impl bindings::MicrokernelProcess for Component {
                         FileTransferRequest::Start(start) => {
                             print_to_terminal("Start");
 
-                            let context = serde_json::to_string(&FileSystemMetadataContext {
-                                node: message.wire.source_ship,
-                                chunk_size: start.chunk_size,
+                            //  TODO: if already transferring that file to someone else, bail
+
+                            let context = serde_json::to_string(&FileTransferContext {
+                                key: FileTransferKey {
+                                    requester: message.wire.source_ship,
+                                    server: our_name.clone(),
+                                    uri_string: start.uri_string.clone(),
+                                },
+                                additional: FileTransferAdditionalContext::Metadata {
+                                    chunk_size: start.chunk_size,
+                                },
                             }).unwrap();
                             bindings::yield_results(vec![
                                 (
@@ -262,68 +375,22 @@ impl bindings::MicrokernelProcess for Component {
                         FileTransferRequest::Cancel(_uri_string) => {
                             panic!("cancel: todo");
                         },
-                        FileTransferRequest::GetPiece(_get_piece) => {
-                            panic!("cancel: todo");
-                        },
-                        FileTransferRequest::FilePiece(file_piece) => {
-                            print_to_terminal("FilePiece");
-
-                            let Some(bytes) = message.payload.bytes.clone() else {
-                                panic!("bytes");
-                            };
-                            let key = FileTransferKey {
-                                requester: our_name.clone(),
-                                server: message.wire.source_ship.clone(),
-                                uri_string: file_piece.uri_string.clone(),
-                            };
-
-                            let downloading = downloads.get_mut(&key).unwrap();
-                            if downloading.received_pieces.len() != file_piece.piece_number as usize {
-                                panic!("FilePiece");
-                            }
-                            downloading.received_pieces.push(file_piece.piece_hash);
-
-                            let context = serde_json::to_string(&FileTransferPieceContext {
-                                node: message.wire.source_ship.clone(),
-                                piece_number: file_piece.piece_number,
-                            }).unwrap();
-                            bindings::yield_results(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &our_name,
-                                                target_app: "filesystem",
-                                            },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: file_piece.uri_string,
-                                                    action: FileSystemAction::Append,
-                                                }
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
-                                    },
-                                    context.as_str(),
-                                ),
-                            ].as_slice());
-                        },
-                        FileTransferRequest::ReadyToReceive(ready_to_receive) => {
-                            print_to_terminal("ReadyToReceive");
+                        FileTransferRequest::GetPiece(get_piece) => {
+                            print_to_terminal("GetPiece");
 
                             let key = FileTransferKey {
                                 requester: message.wire.source_ship.clone(),
                                 server: our_name.clone(),
-                                uri_string: ready_to_receive.uri_string.clone(),
+                                uri_string: get_piece.uri_string.clone(),
                             };
 
-                            let uploading = uploads.get(&key).unwrap();
+                            // let uploading = uploads.get(&key).unwrap();
 
-                            let context = serde_json::to_string(&FileTransferNodeContext {
-                                node: message.wire.source_ship.clone(),
+                            let context = serde_json::to_string(&FileTransferContext {
+                                key,
+                                additional: FileTransferAdditionalContext::Piece {
+                                    piece_number: get_piece.piece_number.clone(),
+                                },
                             }).unwrap();
                             bindings::yield_results(vec![
                                 (
@@ -338,9 +405,9 @@ impl bindings::MicrokernelProcess for Component {
                                         payload: &WitPayload {
                                             json: Some(serde_json::to_string(
                                                 &FileSystemRequest {
-                                                    uri_string: ready_to_receive.uri_string,
+                                                    uri_string: get_piece.uri_string,
                                                     action: FileSystemAction::ReadChunkFromOpen(
-                                                        uploading.metadata.chunk_size,
+                                                        get_piece.chunk_size,
                                                     ),
                                                 }
                                             ).unwrap()),
@@ -350,6 +417,8 @@ impl bindings::MicrokernelProcess for Component {
                                     context.as_str(),
                                 )
                             ].as_slice());
+
+
                         },
                     }
                 },
@@ -362,36 +431,41 @@ impl bindings::MicrokernelProcess for Component {
                             FileSystemResponse::GetMetadata(file_metadata) => {
                                 print_to_terminal("GetMetadata");
 
-                                let context: FileSystemMetadataContext =
+                                let context: FileTransferContext =
                                     serde_json::from_str(&context).unwrap();
-
-                                let key = FileTransferKey {
-                                    requester: context.node.clone(),
-                                    server: our_name.clone(),
-                                    uri_string: file_metadata.uri_string.clone(),
+                                let FileTransferAdditionalContext::Metadata { chunk_size }
+                                        = context.additional else {
+                                    panic!("file_transfer: GetMetadata Response requires chunk_size")
                                 };
+                                let key = context.key;
+                                if file_metadata.uri_string != key.uri_string {
+                                    panic!("file_transfer: GetMetadata Response non-matching uri_string")
+                                }
+
                                 let number_pieces = div_round_up(
                                     file_metadata.len,
-                                    context.chunk_size
+                                    chunk_size
                                 ) as u32;
                                 let metadata = FileTransferMetadata {
                                     key: key.clone(),
                                     hash: file_metadata.hash,
-                                    chunk_size: context.chunk_size,
+                                    chunk_size,
                                     number_pieces,
                                     number_bytes: file_metadata.len,
                                 };
                                 uploads.insert(
-                                    key,
+                                    key.clone(),
                                     Uploading {
                                         metadata: metadata.clone(),
                                         sent_pieces: vec![],
                                     }
                                 );
 
-                                let context = serde_json::to_string(&FileTransferNodeContext {
-                                    node: context.node,
+                                let context = serde_json::to_string(&FileTransferContext {
+                                    key,
+                                    additional: FileTransferAdditionalContext::Empty,
                                 }).unwrap();
+
                                 bindings::yield_results(vec![
                                     (
                                         bindings::WitProtomessage {
@@ -434,22 +508,27 @@ impl bindings::MicrokernelProcess for Component {
                             FileSystemResponse::OpenAppend(uri_string) => {
                                 print_to_terminal("OpenAppend");
 
-                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
+                                let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+                                let key = context.key;
+                                let downloading = downloads.get(&key).unwrap();
+                                
                                 bindings::yield_results(vec![
                                     (
                                         bindings::WitProtomessage {
                                             protomessage_type: WitProtomessageType::Request(
                                                 WitRequestTypeWithTarget {
-                                                    is_expecting_response: false,
-                                                    target_ship: &context.node,
+                                                    is_expecting_response: true,
+                                                    target_ship: &key.server,
                                                     target_app: &process_name,
-                                                },
+                                                }
                                             ),
                                             payload: &WitPayload {
                                                 json: Some(serde_json::to_string(
-                                                    &FileTransferRequest::ReadyToReceive(
-                                                        FileTransferReadyToReceive {
+                                                    &FileTransferRequest::GetPiece(
+                                                        FileTransferGetPiece {
                                                             uri_string,
+                                                            chunk_size: downloading.metadata.chunk_size,
+                                                            piece_number: 0,
                                                         }
                                                     )
                                                 ).unwrap()),
@@ -457,43 +536,32 @@ impl bindings::MicrokernelProcess for Component {
                                             },
                                         },
                                         "",
-                                    )
+                                    ),
                                 ].as_slice());
                                 print_to_terminal("OpenAppend 2");
                             },
                             FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
                                 print_to_terminal("ReadChunkFromOpen");
 
-                                let context: FileTransferNodeContext = serde_json::from_str(&context).unwrap();
+                                let context: FileTransferContext = serde_json::from_str(&context).unwrap();
                                 let Some(bytes) = message.payload.bytes.clone() else {
                                     panic!("bytes");
                                 };
-
-                                let key = FileTransferKey {
-                                    requester: context.node.clone(),
-                                    server: our_name.clone(),
-                                    uri_string: uri_hash.uri_string.clone(),
-                                };
+                                let key = context.key;
+                                if key.uri_string != uri_hash.uri_string {
+                                    panic!("file_transfer: ReadChunkFromOpen Response non-matching uri_string")
+                                }
 
                                 let uploading = uploads.get_mut(&key).unwrap();
-                                uploading.sent_pieces.push(IsConfirmedPiece {
-                                    piece_hash: uri_hash.hash.clone(),
-                                    is_confirmed: false,
-                                });
+                                uploading.sent_pieces.push(uri_hash.hash.clone());
 
                                 bindings::yield_results(vec![
                                     (
                                         bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Request(
-                                                WitRequestTypeWithTarget {
-                                                    is_expecting_response: true,
-                                                    target_ship: &context.node,
-                                                    target_app: "file_transfer",
-                                                },
-                                            ),
+                                            protomessage_type: WitProtomessageType::Response,
                                             payload: &WitPayload {
                                                 json: Some(serde_json::to_string(
-                                                    &FileTransferRequest::FilePiece(
+                                                    &FileTransferResponse::FilePiece(
                                                         FileTransferFilePiece {
                                                             uri_string: uri_hash.uri_string,
                                                             piece_number: (uploading.sent_pieces.len() - 1) as u32,
@@ -511,48 +579,43 @@ impl bindings::MicrokernelProcess for Component {
                             FileSystemResponse::Append(uri_string) => {
                                 print_to_terminal("Append");
                                 
-                                let context: FileTransferPieceContext =
+                                let context: FileTransferContext =
                                     serde_json::from_str(&context).unwrap();
-
-                                let key = FileTransferKey {
-                                    requester: our_name.clone(),
-                                    server: context.node,
-                                    uri_string: uri_string.clone(),
+                                let FileTransferAdditionalContext::Piece{ piece_number } = 
+                                        context.additional else {
+                                    panic!("file_transfer: Append Response requires piece_number")
                                 };
+
+                                let key = context.key;
 
                                 let downloading = downloads.remove(&key).unwrap();
                                 if downloading.received_pieces.len() == downloading.metadata.number_pieces as usize {
                                     //  received all file pieces
-                                    bindings::yield_results(vec![
-                                        (
-                                            bindings::WitProtomessage {
-                                                protomessage_type: WitProtomessageType::Response,
-                                                payload: &WitPayload {
-                                                    json: Some(serde_json::to_string(
-                                                        &FileTransferResponse::FileReceived(
-                                                            uri_string.clone(),
-                                                        )
-                                                    ).unwrap()),
-                                                    bytes: None,
-                                                },
-                                            },
-                                            "",
-                                        )
-                                    ].as_slice());
+                                    //  TODO: check hash is correct
+                                    continue;
                                 } else {
                                     //  still expecting file pieces
-                                    downloads.insert(key, downloading);
+                                    let chunk_size = downloading.metadata.chunk_size.clone();
+                                    let piece_number = downloading.received_pieces.len() as u32;
+                                    downloads.insert(key.clone(), downloading);
 
                                     bindings::yield_results(vec![
                                         (
                                             bindings::WitProtomessage {
-                                                protomessage_type: WitProtomessageType::Response,
+                                                protomessage_type: WitProtomessageType::Request(
+                                                    WitRequestTypeWithTarget {
+                                                        is_expecting_response: true,
+                                                        target_ship: &key.server,
+                                                        target_app: &process_name,
+                                                    }
+                                                ),
                                                 payload: &WitPayload {
                                                     json: Some(serde_json::to_string(
-                                                        &FileTransferResponse::PieceReceived(
-                                                            FileTransferPieceReceived {
-                                                                uri_string: uri_string,
-                                                                piece_number: context.piece_number,
+                                                        &FileTransferRequest::GetPiece(
+                                                            FileTransferGetPiece {
+                                                                uri_string,
+                                                                chunk_size,
+                                                                piece_number,
                                                             }
                                                         )
                                                     ).unwrap()),
@@ -565,11 +628,18 @@ impl bindings::MicrokernelProcess for Component {
                                 }
                             },
                             FileSystemResponse::Error(error) => {
-                                panic!("file_transfer: got error: {}", error);
+                                handle_fs_error(
+                                    error,
+                                    our_name.clone(),
+                                    context,
+                                    &mut downloads,
+                                    &mut uploads
+                                );
+                                // panic!("file_transfer: got error: {}", error);
                             },
                             _ => {
                                 panic!(
-                                    "file_transfer: panic: unexpected filesystem Response: {}",
+                                    "file_transfer: panic: unexpected filesystem Response: {:?}",
                                     response,
                                 );
                             },
@@ -591,7 +661,7 @@ impl bindings::MicrokernelProcess for Component {
                                     panic!("started");
                                 }
                                 downloads.insert(
-                                    key,
+                                    key.clone(),
                                     Downloading {
                                         metadata,
                                         received_pieces: vec![],
@@ -605,8 +675,9 @@ impl bindings::MicrokernelProcess for Component {
                                     ).as_str()
                                 );
 
-                                let context = serde_json::to_string(&FileTransferNodeContext {
-                                    node: message.wire.source_ship,
+                                let context = serde_json::to_string(&FileTransferContext {
+                                    key,
+                                    additional: FileTransferAdditionalContext::Empty,
                                 }).unwrap();
                                 bindings::yield_results(vec![
                                     (
@@ -633,27 +704,32 @@ impl bindings::MicrokernelProcess for Component {
                                 ].as_slice());
                                 print_to_terminal("Started 7");
                             },
-                            FileTransferResponse::PieceReceived(piece_received) => {
-                                print_to_terminal("PieceReceived");
+                            FileTransferResponse::FilePiece(file_piece) => {
+                                print_to_terminal("FilePiece");
 
+                                //  TODO: confirm bytes match alleged piece hash
+
+                                let Some(bytes) = message.payload.bytes.clone() else {
+                                    panic!("bytes");
+                                };
                                 let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
-                                    server: our_name.clone(),
-                                    uri_string: piece_received.uri_string.clone(),
+                                    requester: our_name.clone(),
+                                    server: message.wire.source_ship.clone(),
+                                    uri_string: file_piece.uri_string.clone(),
                                 };
 
-                                let uploading = uploads.get_mut(&key).unwrap();
-
-                                if uploading.sent_pieces.len() - 1 < piece_received.piece_number as usize {
-                                    panic!("PieceReceived: piece number too big");
+                                let downloading = downloads.get_mut(&key).unwrap();
+                                if downloading.received_pieces.len() != file_piece.piece_number as usize {
+                                    panic!("FilePiece");
                                 }
+                                downloading.received_pieces.push(file_piece.piece_hash);
 
-                                uploading.sent_pieces[piece_received.piece_number as usize].is_confirmed = true;
-
-                                let context = serde_json::to_string(&FileTransferNodeContext {
-                                    node: message.wire.source_ship,
+                                let context = serde_json::to_string(&FileTransferContext {
+                                    key,
+                                    additional: FileTransferAdditionalContext::Piece {
+                                        piece_number: file_piece.piece_number,
+                                    },
                                 }).unwrap();
-
                                 bindings::yield_results(vec![
                                     (
                                         bindings::WitProtomessage {
@@ -667,33 +743,42 @@ impl bindings::MicrokernelProcess for Component {
                                             payload: &WitPayload {
                                                 json: Some(serde_json::to_string(
                                                     &FileSystemRequest {
-                                                        uri_string: piece_received.uri_string,
-                                                        action: FileSystemAction::ReadChunkFromOpen(
-                                                            uploading.metadata.chunk_size,
-                                                        ),
+                                                        uri_string: file_piece.uri_string,
+                                                        action: FileSystemAction::Append,
                                                     }
                                                 ).unwrap()),
-                                                bytes: None,
+                                                bytes: Some(bytes),
                                             },
                                         },
                                         context.as_str(),
-                                    )
+                                    ),
                                 ].as_slice());
                             },
-                            FileTransferResponse::FileReceived(uri_string) => {
-                                print_to_terminal("FileReceived");
+                            // FileTransferResponse::FileReceived(uri_string) => {
+                            //     print_to_terminal("FileReceived");
 
-                                let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
-                                    server: our_name.clone(),
-                                    uri_string,
-                                };
+                            //     let key = FileTransferKey {
+                            //         requester: message.wire.source_ship.clone(),
+                            //         server: our_name.clone(),
+                            //         uri_string,
+                            //     };
 
-                                uploads.remove(&key).unwrap();
-                            },
+                            //     uploads.remove(&key).unwrap();
+                            // },
                             FileTransferResponse::Errored(_error) => {
                                 panic!("errored: todo");
                             },
+                        }
+                    } else if "ws" == message.wire.source_app {
+                        if let Ok(networking_error) =
+                                serde_json::from_str::<NetworkingError>(payload_json_string) {
+                            handle_networking_error(
+                                networking_error,
+                                our_name.clone(),
+                                context,
+                                &mut downloads,
+                                &mut uploads,
+                            );
                         }
                     }
                 },

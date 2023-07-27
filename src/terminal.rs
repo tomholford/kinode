@@ -214,6 +214,7 @@ pub async fn terminal(
                                         cursor::MoveTo(0, win_rows),
                                         terminal::Clear(ClearType::CurrentLine),
                                         Print(&current_line),
+                                        cursor::MoveTo(cursor_col, win_rows),
                                     )?;
                                 },
                                 KeyCode::Left => {

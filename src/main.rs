@@ -15,6 +15,7 @@ mod terminal;
 mod types;
 mod ws;
 mod keygen;
+mod http_client;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -23,6 +24,7 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const KEYGEN_CHANNEL_CAPACITY: usize = 32;
+const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -54,6 +56,9 @@ async fn main() {
     // keygen creates networking keys and at-rest disk encryption key
     let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
+    // http client performs http requests on behalf of processes
+    let (http_client_message_sender, http_client_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -141,6 +146,7 @@ async fn main() {
             fs_message_sender.clone(),
             http_server_sender.clone(),
             keygen_message_sender.clone(),
+            http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = ws::websockets(
             our.clone(),
@@ -170,6 +176,12 @@ async fn main() {
             kernel_message_sender.clone(),
             print_sender.clone(),
         ) => { "http_server died".to_string() },
+        _ = http_client::http_client(
+            &our_name,
+            kernel_message_sender.clone(),
+            http_client_message_receiver,
+            print_sender.clone(),
+        ) => { "keygen died".to_string() },
     };
     println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);

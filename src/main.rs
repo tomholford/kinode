@@ -50,12 +50,12 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
-    // http server channel (eyre)
-    let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
-        mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // keygen creates networking keys and at-rest disk encryption key
     let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
+    // http server channel (eyre)
+    let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
+    mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
     let (http_client_message_sender, http_client_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
@@ -144,8 +144,8 @@ async fn main() {
             kernel_debug_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
-            http_server_sender.clone(),
             keygen_message_sender.clone(),
+            http_server_sender.clone(),
             http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = ws::websockets(

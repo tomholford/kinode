@@ -674,8 +674,8 @@ async fn make_event_loop(
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_http: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
@@ -685,7 +685,7 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             senders.insert("keygen".to_string(), send_to_keygen);
-            senders.insert("http_server".to_string(), send_to_http.clone());
+            senders.insert("http_server".to_string(), send_to_http_server.clone());
             senders.insert("http_client".to_string(), send_to_http_client);
 
             let mut process_handles: ProcessHandles = HashMap::new();
@@ -806,8 +806,8 @@ pub async fn kernel(
     recv_debug_in_loop: DebugReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_http: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
 ) {
     let mut config = Config::new();
@@ -823,8 +823,8 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
-            send_to_http,
             send_to_keygen,
+            send_to_http_server,
             send_to_http_client,
             send_to_terminal.clone(),
             engine,

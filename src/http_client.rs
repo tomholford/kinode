@@ -12,6 +12,17 @@ struct HttpClientRequest {
   body: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct HttpClientResponse {
+  pub status: u16,
+  pub headers: HashMap<String, String>,
+}
+
+// Test http_client with these commands in the terminal
+// !message tuna http_client {"method": "GET", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {}, "body": ""}
+// !message tuna http_client {"method": "POST", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {"Content-Type": "application/json"}, "body": "{\"title\": \"foo\", \"body\": \"bar\"}"}
+// !message tuna http_client {"method": "PUT", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {"Content-Type": "application/json"}, "body": "{\"title\": \"foo\", \"body\": \"bar\"}"}
+
 pub async fn http_client(
   our_name: &str,
   send_to_loop: MessageSender,
@@ -45,11 +56,6 @@ async fn handle_message(
     Err(e) => panic!("http_client: failed to parse request: {:?}", e),
   };
 
-  print_tx.send(Printout {
-    verbosity: 0,
-    content: format!("http_client: got request: {:?}", req),
-  }).await;
-
   let client = reqwest::Client::new();
         
   let request_builder = match req.method.to_uppercase()[..].to_string().as_str() {
@@ -59,36 +65,63 @@ async fn handle_message(
       "DELETE" => client.delete(req.uri),
       _ => panic!("Unsupported HTTP method: {}", req.method),
   };
-
-  // parse headers
-  let mut header_map = HeaderMap::new();
-  for (name, value) in req.headers {
-      let header_name = HeaderName::from_bytes(name.as_bytes())
-          .expect("Failed to convert header name to HeaderName.");
-      let header_value = HeaderValue::from_str(&value.as_str())
-          .expect("Failed to convert header value to HeaderValue.");
-      header_map.insert(header_name, header_value);
-  }
   
   let request = request_builder
-      .headers(header_map)
+      .headers(deserialize_headers(req.headers))
       .body(req.body.clone())
       .build().unwrap();
   
-  let response = client.execute(request).await.unwrap(); // TODO error handling
-  
-  if response.status().is_success() {
-      let body = response.text().await.unwrap(); // TODO error handling
-      print_tx.send(Printout {
-        verbosity: 0,
-        content: format!("http_client: got response: {:?}", body),
-      }).await;
-  } else {
-      // Err(Error::from(response.error_for_status().unwrap_err()))
-      panic!("foo")
-  }
-  // !message tuna http_client {"method": "GET", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {}, "body": ""}
-  // !message tuna http_client {"method": "POST", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {"Content-Type": "application/json"}, "body": "{\"title\": \"foo\", \"body\": \"bar\"}"}
-  // !message tuna http_client {"method": "PUT", "uri": "https://jsonplaceholder.typicode.com/posts", "body": "{\"title\": \"foo\", \"body\": \"bar\"}"}
+  let response = match client.execute(request).await {
+      Ok(response) => response,
+      Err(e) => panic!("http_client: failed to execute request: {:?}", e),
+  };
 
+  let http_client_response = HttpClientResponse {
+    status: response.status().as_u16(),
+    headers: serialize_headers(&response.headers().clone()),
+  };
+
+  let message = WrappedMessage {
+    id: wm.id, // TODO I think this is right
+    rsvp: wm.rsvp, // TODO I think this is right
+    message: Message {
+      message_type: MessageType::Response,
+      wire: Wire {
+        source_ship: our.clone(),
+        source_app: "http_client".to_string(),
+        target_ship: wm.message.wire.source_ship.clone(),
+        target_app: wm.message.wire.source_app.clone(),
+      },
+      payload: Payload {
+        json: Some(serde_json::to_value(http_client_response).unwrap()),
+        bytes: Some(response.bytes().await.unwrap().to_vec()),
+      },
+    },
+  };
+  
+  send_to_loop.send(message).await.unwrap();
+}
+
+//
+//  helpers
+//
+fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
+  let mut hashmap = HashMap::new();
+  for (key, value) in headers.iter() {
+      let key_str = key.to_string();
+      let value_str = value.to_str().unwrap_or("").to_string();
+      hashmap.insert(key_str, value_str);
+  }
+  hashmap
+}
+
+fn deserialize_headers(hashmap: HashMap<String, String>) -> HeaderMap {
+  let mut header_map = HeaderMap::new();
+  for (key, value) in hashmap {
+    let key_bytes = key.as_bytes();
+    let key_name = HeaderName::from_bytes(key_bytes).unwrap();
+    let value_header = HeaderValue::from_str(&value).unwrap();
+    header_map.insert(key_name, value_header);
+  }
+  header_map
 }

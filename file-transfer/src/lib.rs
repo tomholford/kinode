@@ -564,8 +564,14 @@ impl bindings::MicrokernelProcess for Component {
                                     ].as_slice());
                                 }
                             },
+                            FileSystemResponse::Error(error) => {
+                                panic!("file_transfer: got error: {}", error);
+                            },
                             _ => {
-                                panic!("bar");
+                                panic!(
+                                    "file_transfer: panic: unexpected filesystem Response: {}",
+                                    response,
+                                );
                             },
                         }
                     } else if process_name == message.wire.source_app {

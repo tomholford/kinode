@@ -157,7 +157,7 @@ fn make_error_message(
                 target_app: source_process,
             },
             payload: Payload {
-                json: Some(serde_json::to_value(error).unwrap()),
+                json: Some(serde_json::to_value(FileSystemResponse::Error(error)).unwrap()),
                 bytes: None,
             },
         },

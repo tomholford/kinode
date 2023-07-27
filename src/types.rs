@@ -203,6 +203,7 @@ pub enum FileSystemResponse {
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
+    Error(FileSystemError),
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {

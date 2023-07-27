@@ -1,5 +1,7 @@
 // use crate::types::*;
-use crate::types::{WrappedMessage as KernelWrappedMessage, Message, MessageType, Wire, Payload, NetworkingError};
+use crate::types::{
+    Message, MessageType, NetworkingError, Payload, Wire, WrappedMessage as KernelWrappedMessage,
+};
 use crate::ws::*;
 use aes_gcm_siv::{
     aead::{Aead, KeyInit},
@@ -69,16 +71,19 @@ pub async fn ws_sender(
         if message.message.wire.target_ship == our.name {
             if message.message.wire.source_ship != our.name {
                 let _ = print_tx
-                    .send(format!(
-                        "\x1b[3;32m{}: {}\x1b[0m",
-                        message.message.wire.source_ship,
-                        message
-                            .message
-                            .payload
-                            .json
-                            .as_ref()
-                            .unwrap_or(&serde_json::Value::Null)
-                    ))
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!(
+                            "\x1b[3;32m{}: {}\x1b[0m",
+                            message.message.wire.source_ship,
+                            message
+                                .message
+                                .payload
+                                .json
+                                .as_ref()
+                                .unwrap_or(&serde_json::Value::Null),
+                        ),
+                    })
                     .await;
             } else {
                 // available commands: peers
@@ -93,11 +98,21 @@ pub async fn ws_sender(
                         if s == "peers" {
                             let peer_read = peers.read().await;
                             let peers: Vec<(&String, &Peer)> = peer_read.iter().collect();
-                            let _ = print_tx.send(format!("{:#?}", peers)).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 0,
+                                    content: format!("{:#?}", peers),
+                                })
+                                .await;
                         }
                     }
                     _ => {
-                        let _ = print_tx.send("ws: got unknown command".into()).await;
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: "ws: got unknown command".into(),
+                            })
+                            .await;
                     }
                 }
             }
@@ -132,9 +147,14 @@ pub async fn ws_sender(
         match result {
             Ok(res) => match res {
                 SuccessOrTimeout::Timeout => {
-                    let _ = print_tx.send("ws: message timed out".into()).await;
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 1,
+                            content: "ws: message timed out".into(),
+                        })
+                        .await;
                     if let MessageType::Request(false) = message.message.message_type {
-                        continue
+                        continue;
                     }
                     let timeout_message = KernelWrappedMessage {
                         id: message.id.clone(),
@@ -153,7 +173,7 @@ pub async fn ws_sender(
                                 ),
                                 bytes: None,
                             },
-                        }
+                        },
                     };
                     let _ = kernel_message_tx.send(timeout_message).await;
                 }
@@ -162,7 +182,7 @@ pub async fn ws_sender(
                 }
                 SuccessOrTimeout::Success => {
                     if let MessageType::Request(false) = message.message.message_type {
-                        continue
+                        continue;
                     }
                     let success_message = KernelWrappedMessage {
                         id: message.id.clone(),
@@ -176,18 +196,25 @@ pub async fn ws_sender(
                                 target_app: message.message.wire.source_app.clone(),
                             },
                             payload: Payload {
-                                json: Some(serde_json::to_value(SuccessOrTimeout::Success).unwrap()),
+                                json: Some(
+                                    serde_json::to_value(SuccessOrTimeout::Success).unwrap(),
+                                ),
                                 bytes: None,
                             },
-                        }
+                        },
                     };
                     let _ = kernel_message_tx.send(success_message).await;
                 }
             },
             Err(e) => {
-                let _ = print_tx.send(format!("{}", e)).await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 1,
+                        content: format!("{}", e),
+                    })
+                    .await;
                 if let MessageType::Request(false) = message.message.message_type {
-                    continue
+                    continue;
                 }
 
                 let error_message = KernelWrappedMessage {
@@ -205,7 +232,7 @@ pub async fn ws_sender(
                             json: Some(serde_json::to_value(e).unwrap()),
                             bytes: None,
                         },
-                    }
+                    },
                 };
                 let _ = kernel_message_tx.send(error_message).await;
             }

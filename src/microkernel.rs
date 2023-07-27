@@ -247,9 +247,24 @@ async fn send_process_results_to_loop(
                             //   not expecting Response
                             match prompting_message {
                                 Some(ref prompting_message) => {
+                                    let rsvp = match prompting_message.message.message_type {
+                                        MessageType::Request(prompting_message_is_expecting_response) => {
+                                            if prompting_message_is_expecting_response {
+                                                Some(ProcessNode {
+                                                    node: prompting_message.message.wire.source_ship.clone(),
+                                                    process: prompting_message.message.wire.source_app.clone(),
+                                                })
+                                            } else {
+                                                prompting_message.rsvp.clone()
+                                            }
+                                        },
+                                        MessageType::Response => {
+                                            panic!("oops")
+                                        },
+                                    };
                                     (
                                         prompting_message.id.clone(),
-                                        prompting_message.rsvp.clone(),
+                                        rsvp,
                                     )
                                 },
                                 None => {
@@ -275,8 +290,8 @@ async fn send_process_results_to_loop(
                             MessageType::Request(is_expecting_response) => {
                                 if is_expecting_response {
                                     (
-                                        prompting_message.message.wire.target_ship.clone(),
-                                        prompting_message.message.wire.target_app.clone(),
+                                        prompting_message.message.wire.source_ship.clone(),
+                                        prompting_message.message.wire.source_app.clone(),
                                     )
                                 } else {
                                     let Some(rsvp) = prompting_message.rsvp.clone() else {
@@ -432,8 +447,6 @@ async fn send_process_results_to_loop(
         for (key, val) in contexts.iter() {
             println!("{}: {:?}", key, val);
         }
-
-        let Some(prompting_message) = prompting_message else {panic!("oops")};
 
         send_to_loop
             .send(wrapped_message)

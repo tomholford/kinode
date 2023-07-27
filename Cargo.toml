@@ -37,5 +37,6 @@ hex = "0.4.3"
 aes-gcm-siv = "0.11.1"
 elliptic-curve = { version = "0.13.5", features = ["ecdh"] }
 thiserror = "1.0.43"
+reqwest = "0.11.18"
 # For use with https://github.com/tokio-rs/console
 # console-subscriber ="*"

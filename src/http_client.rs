@@ -82,15 +82,30 @@ async fn handle_message(
   };
 
   let message = WrappedMessage {
-    id: wm.id, // TODO I think this is right
-    rsvp: wm.rsvp, // TODO I think this is right
+    id: wm.id,
+    rsvp: None,
     message: Message {
       message_type: MessageType::Response,
-      wire: Wire {
-        source_ship: our.clone(),
-        source_app: "http_client".to_string(),
-        target_ship: wm.message.wire.source_ship.clone(),
-        target_app: wm.message.wire.source_app.clone(),
+      wire: match wm.message.message_type {
+        MessageType::Response => panic!("http_client: should not get a response message"),
+        MessageType::Request(is_expecting_response) => {
+          if is_expecting_response {
+            Wire {
+              source_ship: our.clone(),
+              source_app: "http_client".to_string(),
+              target_ship: our.clone(),
+              target_app: wm.message.wire.source_app.clone(),
+            }
+          } else {
+            let Some(rsvp) = wm.rsvp else { panic!("http_client: no rsvp"); };
+            Wire {
+              source_ship: our.clone(),
+              source_app: "http_client".to_string(),
+              target_ship: rsvp.node.clone(),
+              target_app: rsvp.process.clone(),
+            }
+          }
+        },
       },
       payload: Payload {
         json: Some(serde_json::to_value(http_client_response).unwrap()),

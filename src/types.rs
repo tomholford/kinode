@@ -1,3 +1,4 @@
+use http::uri::InvalidUri;
 use std::{collections::HashMap, sync::Arc};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
@@ -137,6 +138,36 @@ pub enum DebugCommand {
 pub struct Printout {
     pub verbosity: u8,
     pub content: String,
+}
+
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum FileSystemError {
+    //  bad input from user
+    #[error("Malformed URI: {uri}. Problem with {bad_part_name}: {:?}.", bad_part)]
+    BadUri { uri: String, bad_part_name: String,  bad_part: Option<String>, },
+    #[error("JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.", json)]
+    BadJson { json: Option<serde_json::Value>, error: String, },
+    #[error("Bytes payload required for {action}.")]
+    BadBytes { action: String },
+    #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
+    IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
+    #[error("Already have {path} opened with mode {mode}.")]
+    AlreadyOpen { path: String, mode: String, },
+    #[error("Don't have {path} opened with mode {mode}.")]
+    NotCurrentlyOpen { path: String, mode: String, },
+    //  path or underlying fs problems
+    #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
+    BadPathJoin { base_path: String, addend: String, },
+    #[error("Failed to create dir at {path}: {error}.")]
+    CouldNotMakeDir { path: String, error: String, },
+    #[error("Failed to read {path}: {error}.")]
+    ReadFailed { path: String, error: String, },
+    #[error("Failed to write {path}: {error}.")]
+    WriteFailed { path: String, error: String, },
+    #[error("Failed to open {path} for {mode}: {error}.")]
+    OpenFailed { path: String, mode: String, error: String, },
+    #[error("Filesystem error while {what} on {path}: {error}.")]
+    FsError { what: String, path: String, error: String, },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

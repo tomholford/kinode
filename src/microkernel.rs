@@ -351,10 +351,10 @@ async fn send_process_results_to_loop(
             }
         };
 
-        // println!("contexts before modification");
-        // for (key, val) in contexts.iter() {
-        //     println!("{}: {:?}", key, val);
-        // }
+        println!("contexts before modification");
+        for (key, val) in contexts.iter() {
+            println!("{}: {:?}", key, val);
+        }
 
         //  modify contexts if necessary
         //   note that this could be rolled into the `match` making Message above;
@@ -428,10 +428,10 @@ async fn send_process_results_to_loop(
             },
         }
 
-        // println!("contexts after modification");
-        // for (key, val) in contexts.iter() {
-        //     println!("{}: {:?}", key, val);
-        // }
+        println!("contexts after modification");
+        for (key, val) in contexts.iter() {
+            println!("{}: {:?}", key, val);
+        }
 
         let Some(prompting_message) = prompting_message else {panic!("oops")};
 

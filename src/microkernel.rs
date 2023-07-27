@@ -290,8 +290,8 @@ async fn send_process_results_to_loop(
                             MessageType::Request(is_expecting_response) => {
                                 if is_expecting_response {
                                     (
-                                        prompting_message.message.wire.target_ship.clone(),
-                                        prompting_message.message.wire.target_app.clone(),
+                                        prompting_message.message.wire.source_ship.clone(),
+                                        prompting_message.message.wire.source_app.clone(),
                                     )
                                 } else {
                                     let Some(rsvp) = prompting_message.rsvp.clone() else {

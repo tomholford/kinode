@@ -6,6 +6,8 @@ use warp::http::{StatusCode, HeaderMap, header::HeaderName, header::HeaderValue}
 use tokio::sync::oneshot;
 use rand::{Rng, distributions::Alphanumeric};
 use serde::{Serialize, Deserialize};
+use std::net::{SocketAddr, ToSocketAddrs};
+use tokio::net::TcpListener;
 
 // types and constants
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,7 +73,12 @@ async fn http_serve(
     .and(warp::any().map(move || print_tx.clone()))
     .and_then(handler);
 
-  warp::serve(filter).run(([127, 0, 0, 1], 8080)).await;
+  if let Some(port) = find_open_port().await {
+    println!("http_server: running on: {}", port);
+    warp::serve(filter).run(([127, 0, 0, 1], port)).await;
+  } else {
+    panic!("http_server: no open ports found, cannot start");
+  }
 }
 
 async fn handler(
@@ -165,4 +172,21 @@ fn deserialize_headers(hashmap: HashMap<String, String>) -> HeaderMap {
     header_map.insert(key_name, value_header);
   }
   header_map
+}
+
+async fn find_open_port() -> Option<u16> {
+  for port in 8080..=u16::MAX {
+      let bind_addr = format!("127.0.0.1:{}", port);
+      if is_port_available(&bind_addr).await {
+          return Some(port);
+      }
+  }
+  None
+}
+
+async fn is_port_available(bind_addr: &str) -> bool {
+  match TcpListener::bind(bind_addr).await {
+      Ok(_) => true,
+      Err(_) => false,
+  }
 }

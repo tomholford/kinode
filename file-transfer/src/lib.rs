@@ -503,7 +503,7 @@ impl bindings::MicrokernelProcess for Component {
         let mut downloads: Downloads = HashMap::new();
         let mut uploads: Uploads = HashMap::new();
 
-        loop {
+        'main_loop: loop {
             let (message, context) = bindings::await_next_message();
             let Some(ref payload_json_string) = message.payload.json else {
                 print_to_terminal("file_transfer: require non-empty json payload");
@@ -573,14 +573,30 @@ impl bindings::MicrokernelProcess for Component {
                         FileTransferRequest::Start(start) => {
                             print_to_terminal("Start");
 
-                            //  TODO: if already transferring that file to someone else, bail
+                            let key =  FileTransferKey {
+                                requester: message.wire.source_ship,
+                                server: our_name.clone(),
+                                uri_string: start.uri_string.clone(),
+                            };
+
+                            //  if already transferring requested file to someone else, bail
+                            for (other_key, _) in &uploads {
+                                if start.uri_string == other_key.uri_string {
+                                    bail(
+                                        format!(
+                                            "transferring file {} to another user, please try again later",
+                                            start.uri_string,
+                                        ),
+                                        &our_name,
+                                        &process_name,
+                                        key,
+                                    );
+                                    continue 'main_loop;
+                                }
+                            }
 
                             let context = serde_json::to_string(&FileTransferContext {
-                                key: FileTransferKey {
-                                    requester: message.wire.source_ship,
-                                    server: our_name.clone(),
-                                    uri_string: start.uri_string.clone(),
-                                },
+                                key,
                                 additional: FileTransferAdditionalContext::Metadata {
                                     chunk_size: start.chunk_size,
                                 },

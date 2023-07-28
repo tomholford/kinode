@@ -182,7 +182,7 @@ struct Downloading {
 }
 struct Uploading {
     metadata: FileTransferMetadata,
-    sent_pieces: Vec<u64>,  //  piece_hash
+    number_sent_pieces: u32,
 }
 type Downloads = HashMap<FileTransferKey, Downloading>;
 type Uploads = HashMap<FileTransferKey, Uploading>;
@@ -206,6 +206,7 @@ fn div_round_up(numerator: u64, denominator: u64) -> u64 {
 fn handle_networking_error(
     error: NetworkingError,
     our_name: String,
+    process_name: String,
     context: String,
     downloads: &mut Downloads,
     uploads: &mut Uploads,
@@ -226,6 +227,7 @@ fn handle_networking_error(
 fn handle_fs_error(
     error: FileSystemError,
     our_name: String,
+    process_name: String,
     context: String,
     downloads: &mut Downloads,
     uploads: &mut Uploads,
@@ -245,7 +247,42 @@ fn handle_fs_error(
             panic!("")
         },
         FileSystemError::AlreadyOpen { path, mode, } => {
-            panic!("")
+            if "Append" == mode {
+                print_to_terminal("OpenFailed: Append");
+                print_to_terminal(format!("context: {}", context).as_str());
+
+                let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+                let downloading = downloads.get(&context.key).unwrap();
+
+                bindings::yield_results(vec![
+                    (
+                        bindings::WitProtomessage {
+                            protomessage_type: WitProtomessageType::Request(
+                                WitRequestTypeWithTarget {
+                                    is_expecting_response: true,
+                                    target_ship: &context.key.server,
+                                    target_app: &process_name,
+                                }
+                            ),
+                            payload: &WitPayload {
+                                json: Some(serde_json::to_string(
+                                    &FileTransferRequest::GetPiece(
+                                        FileTransferGetPiece {
+                                            uri_string: context.key.uri_string.clone(),
+                                            chunk_size: downloading.metadata.chunk_size,
+                                            piece_number: downloading.received_pieces.len() as u32,
+                                        }
+                                    )
+                                ).unwrap()),
+                                bytes: None,
+                            },
+                        },
+                        "",
+                    ),
+                ].as_slice());
+            } else {
+                panic!("")
+            }
         },
         FileSystemError::NotCurrentlyOpen { path, mode, } => {
             panic!("")
@@ -384,14 +421,43 @@ impl bindings::MicrokernelProcess for Component {
                                 uri_string: get_piece.uri_string.clone(),
                             };
 
-                            // let uploading = uploads.get(&key).unwrap();
-
+                            let uploading = uploads.get(&key).unwrap();
                             let context = serde_json::to_string(&FileTransferContext {
                                 key,
                                 additional: FileTransferAdditionalContext::Piece {
                                     piece_number: get_piece.piece_number.clone(),
                                 },
                             }).unwrap();
+                            let payload =
+                                if uploading.number_sent_pieces == get_piece.piece_number {
+                                    WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string: get_piece.uri_string,
+                                                action: FileSystemAction::ReadChunkFromOpen(
+                                                    get_piece.chunk_size,
+                                                ),
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    }
+                                } else {
+                                    //  requester is resuming a previous download:
+                                    //   make sure file handle is seeked to right place
+                                    WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string: get_piece.uri_string,
+                                                action: FileSystemAction::SeekWithinOpen(
+                                                    FileSystemSeekFrom::Start(
+                                                        (get_piece.piece_number as u64) * get_piece.chunk_size
+                                                    ),
+                                                ),
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    }
+                                };
                             bindings::yield_results(vec![
                                 (
                                     bindings::WitProtomessage {
@@ -402,23 +468,11 @@ impl bindings::MicrokernelProcess for Component {
                                                 target_app: "filesystem",
                                             },
                                         ),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: get_piece.uri_string,
-                                                    action: FileSystemAction::ReadChunkFromOpen(
-                                                        get_piece.chunk_size,
-                                                    ),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+                                        payload: &payload,
                                     },
                                     context.as_str(),
                                 )
                             ].as_slice());
-
-
                         },
                     }
                 },
@@ -457,7 +511,7 @@ impl bindings::MicrokernelProcess for Component {
                                     key.clone(),
                                     Uploading {
                                         metadata: metadata.clone(),
-                                        sent_pieces: vec![],
+                                        number_sent_pieces: 0,
                                     }
                                 );
 
@@ -528,7 +582,7 @@ impl bindings::MicrokernelProcess for Component {
                                                         FileTransferGetPiece {
                                                             uri_string,
                                                             chunk_size: downloading.metadata.chunk_size,
-                                                            piece_number: 0,
+                                                            piece_number: downloading.received_pieces.len() as u32,
                                                         }
                                                     )
                                                 ).unwrap()),
@@ -544,8 +598,11 @@ impl bindings::MicrokernelProcess for Component {
                                 print_to_terminal("ReadChunkFromOpen");
 
                                 let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+                                let FileTransferAdditionalContext::Piece { piece_number } = context.additional else {
+                                    panic!("ReadChunkFromOpen: no piece_number in context");
+                                };
                                 let Some(bytes) = message.payload.bytes.clone() else {
-                                    panic!("bytes");
+                                    panic!("ReadChunkFromOpen: no bytes");
                                 };
                                 let key = context.key;
                                 if key.uri_string != uri_hash.uri_string {
@@ -553,7 +610,16 @@ impl bindings::MicrokernelProcess for Component {
                                 }
 
                                 let uploading = uploads.get_mut(&key).unwrap();
-                                uploading.sent_pieces.push(uri_hash.hash.clone());
+
+                                if uploading.number_sent_pieces != piece_number {
+                                    print_to_terminal(format!(
+                                        "file_transfer: piece_number {} differs from state {}: assuming this is a resumed session",
+                                        piece_number,
+                                        uploading.number_sent_pieces,
+                                    ).as_str());
+                                }
+
+                                uploading.number_sent_pieces = piece_number.clone() + 1;
 
                                 bindings::yield_results(vec![
                                     (
@@ -564,7 +630,7 @@ impl bindings::MicrokernelProcess for Component {
                                                     &FileTransferResponse::FilePiece(
                                                         FileTransferFilePiece {
                                                             uri_string: uri_hash.uri_string,
-                                                            piece_number: (uploading.sent_pieces.len() - 1) as u32,
+                                                            piece_number,
                                                             piece_hash: uri_hash.hash,
                                                         }
                                                     )
@@ -627,10 +693,46 @@ impl bindings::MicrokernelProcess for Component {
                                     ].as_slice());
                                 }
                             },
+                            FileSystemResponse::SeekWithinOpen(uri_string) => {
+                                let parsed_context: FileTransferContext =
+                                    serde_json::from_str(&context).unwrap();
+                                let FileTransferAdditionalContext::Piece { piece_number } = 
+                                        parsed_context.additional else {
+                                    panic!("SeekWithinOpen needs piece_number context");
+                                };
+                                let uploading = uploads.get(&parsed_context.key).unwrap();
+
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &our_name,
+                                                    target_app: "filesystem",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileSystemRequest {
+                                                        uri_string: uri_string,
+                                                        action: FileSystemAction::ReadChunkFromOpen(
+                                                            uploading.metadata.chunk_size.clone(),
+                                                        ),
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        context.as_str(),
+                                    )
+                                ].as_slice());
+                            },
                             FileSystemResponse::Error(error) => {
                                 handle_fs_error(
                                     error,
                                     our_name.clone(),
+                                    process_name.clone(),
                                     context,
                                     &mut downloads,
                                     &mut uploads
@@ -660,13 +762,15 @@ impl bindings::MicrokernelProcess for Component {
                                 if metadata.key != key {
                                     panic!("started");
                                 }
-                                downloads.insert(
-                                    key.clone(),
-                                    Downloading {
-                                        metadata,
-                                        received_pieces: vec![],
-                                    }
-                                );
+                                if !downloads.contains_key(&key) {
+                                    downloads.insert(
+                                        key.clone(),
+                                        Downloading {
+                                            metadata,
+                                            received_pieces: vec![],
+                                        }
+                                    );
+                                }
                                 print_to_terminal("Started 6");
                                 print_to_terminal(
                                     format!(
@@ -775,6 +879,7 @@ impl bindings::MicrokernelProcess for Component {
                             handle_networking_error(
                                 networking_error,
                                 our_name.clone(),
+                                process_name.clone(),
                                 context,
                                 &mut downloads,
                                 &mut uploads,

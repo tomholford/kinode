@@ -924,23 +924,23 @@ impl bindings::MicrokernelProcess for Component {
                                     }
 
                                     //  requester getting metadata of possibly-resumable file
-                                    if file_metadata.len != downloading.metadata.chunk_size * (downloading.received_pieces.len() as u64) {
-                                        //  re-issue GetFile to self to download from scratch
-                                        downloads.remove(&context.key);
-                                        yield_get_file(
-                                            &our_name,
-                                            &process_name,
-                                            context.key.server,
-                                            context.key.uri_string,
-                                            chunk_size,
-                                        )
-                                    } else {
+                                    if (chunk_size == downloading.metadata.chunk_size) & (file_metadata.len == chunk_size * (downloading.received_pieces.len() as u64)) {
                                         //  resume file transfer
                                         yield_start(
                                             ProcessNode {
                                                 node: context.key.server,
                                                 process: process_name.clone(),
                                             },
+                                            context.key.uri_string,
+                                            chunk_size,
+                                        );
+                                    } else {
+                                        //  re-issue GetFile to self to download from scratch
+                                        downloads.remove(&context.key);
+                                        yield_get_file(
+                                            &our_name,
+                                            &process_name,
+                                            context.key.server,
                                             context.key.uri_string,
                                             chunk_size,
                                         );

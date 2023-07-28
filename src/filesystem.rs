@@ -446,7 +446,11 @@ async fn handle_request(
         FileSystemAction::Open(mode) => {
             let file_ref = FileRef {
                 path: file_path.clone(),
-                mode: mode.clone(),
+                mode: match mode.clone() {
+                    FileSystemMode::Read => FileSystemMode::Read,
+                    FileSystemMode::Append => FileSystemMode::Append,
+                    FileSystemMode::AppendOverwrite => FileSystemMode::Append,
+                },
             };
             {
                 let open_files_lock = open_files.lock().await;
@@ -468,15 +472,17 @@ async fn handle_request(
                 FileSystemMode::Append => {
                     fs::OpenOptions::new()
                         .append(true)
-                        .truncate(true)
                         .create(true)
                         .open(&file_path)
                         .await
                 },
+                //  TODO: rename
                 FileSystemMode::AppendOverwrite => {
                     fs::OpenOptions::new()
-                        .append(true)
+                        // .append(true)
+                        .write(true)
                         .create(true)
+                        .truncate(true)
                         .open(&file_path)
                         .await
                 },

@@ -72,6 +72,7 @@ cargo r process_manager.wasm home/dolph dolph
 
 # Terminal A: get a file from B using file_transfer:
 !message tuna file_transfer {"type": "GetFile", "target_ship": "dolph", "uri_string": "fs://README.md", "chunk_size": 1024}
+!message tuna file_transfer {"type": "DisplayOngoing"}
 
 # Terminal A: Stopping a process means messages will no longer work:
 !message tuna process_manager {"type": "Stop", "process_name": "hi_lus_lus"}

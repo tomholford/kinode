@@ -9,26 +9,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "630be753d4e58660abd17930c71b647fe46c27ea6b63cc59e1e3851406972e42"
 
 [[package]]
-name = "itoa"
-version = "1.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b02a5381cc465bd3041d84623d0fa3b66738b52b8e2fc3bab8ad63ab032f4a"
-
-[[package]]
-name = "poast"
+name = "http-bindings"
 version = "0.1.0"
 dependencies = [
- "poast-bindings",
+ "http_bindings-bindings",
  "serde_json",
  "wit-bindgen",
 ]
 
 [[package]]
-name = "poast-bindings"
+name = "http_bindings-bindings"
 version = "0.1.0"
 dependencies = [
  "wit-bindgen",
 ]
+
+[[package]]
+name = "itoa"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62b02a5381cc465bd3041d84623d0fa3b66738b52b8e2fc3bab8ad63ab032f4a"
 
 [[package]]
 name = "ryu"

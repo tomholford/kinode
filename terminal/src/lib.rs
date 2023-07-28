@@ -13,12 +13,14 @@ fn parse_command(line: String) {
                 Some((s, t)) => (s, t),
                 None => {
                     bindings::print_to_terminal("invalid command");
+                    panic!("invalid command");
                 }
             };
             let (target_app, payload) = match tail.split_once(" ") {
                 Some((a, p)) => (a, p),
                 None => {
                     bindings::print_to_terminal("invalid command");
+                    panic!("invalid command");
                 }
             };
             bindings::yield_results(

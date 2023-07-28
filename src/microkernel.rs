@@ -674,6 +674,8 @@ async fn make_event_loop(
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
+    send_to_http_client: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -682,6 +684,8 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             senders.insert("keygen".to_string(), send_to_keygen);
+            senders.insert("http_server".to_string(), send_to_http_server.clone());
+            senders.insert("http_client".to_string(), send_to_http_client);
 
             let mut process_handles: ProcessHandles = HashMap::new();
             let mut is_debug = false;
@@ -802,6 +806,8 @@ pub async fn kernel(
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
+    send_to_http_client: MessageSender,
 ) {
     let mut config = Config::new();
     config.async_support(true);
@@ -817,6 +823,8 @@ pub async fn kernel(
             send_to_wss,
             send_to_fs,
             send_to_keygen,
+            send_to_http_server,
+            send_to_http_client,
             send_to_terminal.clone(),
             engine,
         ).await
@@ -877,6 +885,34 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_terminal_message).await.unwrap();
+
+    // always start http-bindings on boot
+    let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
+    let start_http_bindings_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "http_bindings".into(),
+                            wasm_bytes_uri: "http_bindings.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(http_bindings_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_http_bindings_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

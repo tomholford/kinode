@@ -68,8 +68,8 @@ async fn handle_request(
       // TODO verify that sys.keys doesn't exist in fs, functionality doesn't exist yet
 
       let _ = print_tx.send(Printout {
-        verbosity: 1,
-        content: format!("generating sys.keys..."),
+        verbosity: 0,
+        content: format!("generating sys.keys...")
       }).await;
       let mut to_store: Credential = [0u8; CREDENTIAL_LEN];      
       pbkdf2::derive(PBKDF2_ALG, NonZeroU32::new(ITERATIONS).unwrap(), action.salt.as_bytes(), action.password.as_bytes(), &mut to_store);
@@ -97,8 +97,8 @@ async fn handle_request(
     },
     KeygenAction::GenerateNetworkingKey => {
       let _ = print_tx.send(Printout {
-        verbosity: 1,
-        content: format!("generating network.keys..."),
+        verbosity : 0,
+        content: format!("generating network.keys...")
       }).await;
       // TODO uncomment this once boot sequence is real
       // if message.wire.source_app != "ws" {
@@ -147,8 +147,8 @@ async fn handle_request(
     KeygenAction::Write(file_path) => {
       // TODO add error propagation from fs once that is built
       let _ = print_tx.send(Printout {
-        verbosity: 1,
-        content: format!("successfully saved keys to {:?}", file_path),
+        verbosity: 0,
+        content: format!("successfully saved keys to {:?}", file_path)
       }).await;
     }
   }

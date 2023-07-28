@@ -9,6 +9,12 @@ use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 struct Component;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessNode {
+    pub node: String,
+    pub process: String,
+}
+
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum NetworkingError {
     #[error("Peer is offline or otherwise unreachable")]
@@ -203,6 +209,23 @@ fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
 }
 
+fn clean_up_state(
+    our_name: String,
+    process_name: String,
+    context: String,
+    downloads: &mut Downloads,
+    uploads: &mut Uploads,
+) {
+    let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+    if our_name == context.key.requester {
+        downloads.remove(&context.key);
+    } else if our_name == context.key.server {
+        uploads.remove(&context.key);
+    } else {
+        panic!("file_transfer: cleaning up state failed: we are neither requester nor server")
+    }
+}
+
 fn handle_networking_error(
     error: NetworkingError,
     our_name: String,
@@ -248,38 +271,22 @@ fn handle_fs_error(
         },
         FileSystemError::AlreadyOpen { path, mode, } => {
             if "Append" == mode {
-                print_to_terminal("OpenFailed: Append");
-                print_to_terminal(format!("context: {}", context).as_str());
+                print_to_terminal("AlreadyOpen: Append");
 
                 let context: FileTransferContext = serde_json::from_str(&context).unwrap();
                 let downloading = downloads.get(&context.key).unwrap();
 
-                bindings::yield_results(vec![
-                    (
-                        bindings::WitProtomessage {
-                            protomessage_type: WitProtomessageType::Request(
-                                WitRequestTypeWithTarget {
-                                    is_expecting_response: true,
-                                    target_ship: &context.key.server,
-                                    target_app: &process_name,
-                                }
-                            ),
-                            payload: &WitPayload {
-                                json: Some(serde_json::to_string(
-                                    &FileTransferRequest::GetPiece(
-                                        FileTransferGetPiece {
-                                            uri_string: context.key.uri_string.clone(),
-                                            chunk_size: downloading.metadata.chunk_size,
-                                            piece_number: downloading.received_pieces.len() as u32,
-                                        }
-                                    )
-                                ).unwrap()),
-                                bytes: None,
-                            },
-                        },
-                        "",
-                    ),
-                ].as_slice());
+                yield_get_piece(
+                    ProcessNode {
+                        node: context.key.server.clone(),
+                        process: process_name,
+                    },
+                    context.key.uri_string.clone(),
+                    downloading.metadata.chunk_size,
+                    downloading.received_pieces.len() as u32,
+                );
+            } else if "Read" == mode {
+                print_to_terminal("AlreadyOpen: Read");
             } else {
                 panic!("")
             }
@@ -308,6 +315,42 @@ fn handle_fs_error(
         },
     }
 }
+
+fn yield_get_piece(
+    target: ProcessNode,
+    uri_string: String,
+    chunk_size: u64,
+    piece_number: u32,
+) {
+    bindings::yield_results(vec![
+        (
+            bindings::WitProtomessage {
+                protomessage_type: WitProtomessageType::Request(
+                    WitRequestTypeWithTarget {
+                        is_expecting_response: true,
+                        target_ship: &target.node,
+                        target_app: &target.process,
+                    }
+                ),
+                payload: &WitPayload {
+                    json: Some(serde_json::to_string(
+                        &FileTransferRequest::GetPiece(
+                            FileTransferGetPiece {
+                                uri_string,
+                                chunk_size,
+                                piece_number,
+                            }
+                        )
+                    ).unwrap()),
+                    bytes: None,
+                },
+            },
+            "",
+        )
+    ].as_slice());
+}
+
+
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
@@ -566,32 +609,15 @@ impl bindings::MicrokernelProcess for Component {
                                 let key = context.key;
                                 let downloading = downloads.get(&key).unwrap();
                                 
-                                bindings::yield_results(vec![
-                                    (
-                                        bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Request(
-                                                WitRequestTypeWithTarget {
-                                                    is_expecting_response: true,
-                                                    target_ship: &key.server,
-                                                    target_app: &process_name,
-                                                }
-                                            ),
-                                            payload: &WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileTransferRequest::GetPiece(
-                                                        FileTransferGetPiece {
-                                                            uri_string,
-                                                            chunk_size: downloading.metadata.chunk_size,
-                                                            piece_number: downloading.received_pieces.len() as u32,
-                                                        }
-                                                    )
-                                                ).unwrap()),
-                                                bytes: None,
-                                            },
-                                        },
-                                        "",
-                                    ),
-                                ].as_slice());
+                                yield_get_piece(
+                                    ProcessNode {
+                                        node: key.server.clone(),
+                                        process: process_name.clone()
+                                    },
+                                    uri_string,
+                                    downloading.metadata.chunk_size,
+                                    downloading.received_pieces.len() as u32,
+                                );
                                 print_to_terminal("OpenAppend 2");
                             },
                             FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
@@ -665,32 +691,15 @@ impl bindings::MicrokernelProcess for Component {
                                     let piece_number = downloading.received_pieces.len() as u32;
                                     downloads.insert(key.clone(), downloading);
 
-                                    bindings::yield_results(vec![
-                                        (
-                                            bindings::WitProtomessage {
-                                                protomessage_type: WitProtomessageType::Request(
-                                                    WitRequestTypeWithTarget {
-                                                        is_expecting_response: true,
-                                                        target_ship: &key.server,
-                                                        target_app: &process_name,
-                                                    }
-                                                ),
-                                                payload: &WitPayload {
-                                                    json: Some(serde_json::to_string(
-                                                        &FileTransferRequest::GetPiece(
-                                                            FileTransferGetPiece {
-                                                                uri_string,
-                                                                chunk_size,
-                                                                piece_number,
-                                                            }
-                                                        )
-                                                    ).unwrap()),
-                                                    bytes: None,
-                                                },
-                                            },
-                                            "",
-                                        )
-                                    ].as_slice());
+                                    yield_get_piece(
+                                        ProcessNode {
+                                            node: key.server.clone(),
+                                            process: process_name.clone()
+                                        },
+                                        uri_string,
+                                        chunk_size,
+                                        piece_number,
+                                    );
                                 }
                             },
                             FileSystemResponse::SeekWithinOpen(uri_string) => {

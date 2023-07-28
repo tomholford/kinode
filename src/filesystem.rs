@@ -25,6 +25,16 @@ struct FileRef {
     mode: FileSystemMode,
 }
 
+fn get_entry_type(is_dir: bool, is_file: bool, is_symlink: bool) -> FileSystemEntryType {
+    if is_symlink {
+        FileSystemEntryType::Symlink
+    } else if is_file {
+        FileSystemEntryType::File
+    } else {
+        FileSystemEntryType::Dir
+    }
+}
+
 async fn create_dir_if_dne(path: &str) -> Result<(), FileSystemError> {
     if let Err(_) = fs::read_dir(&path).await {
         match fs::create_dir_all(&path).await {
@@ -432,10 +442,12 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::GetMetadata(FileSystemMetadata {
                             uri_string: request.uri_string,
-                            hash,
-                            is_dir: metadata.is_dir(),
-                            is_file: metadata.is_file(),
-                            is_symlink: metadata.is_symlink(),
+                            hash: Some(hash),
+                            entry_type: get_entry_type(
+                                metadata.is_dir(),
+                                metadata.is_file(),
+                                metadata.is_symlink(),
+                            ),
                             len: metadata.len(),
                         })
                     ).unwrap()
@@ -443,6 +455,82 @@ async fn handle_request(
                 bytes: None,
             }
         },
+        FileSystemAction::ReadDir => {
+            let mut entries = match fs::read_dir(&file_path).await {
+                Ok(es) => es,
+                Err(e) => return Err(FileSystemError::ReadFailed {
+                    path: file_path,
+                    error: format!("{}", e),
+                }),
+            };
+
+            let mut metadatas: Vec<FileSystemMetadata> = vec![];
+
+            loop {
+                let entry = match entries.next_entry().await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        send_to_terminal.send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "filesystem: ReadDir couldn't get next entry: {}",
+                                e,
+                            ),
+                        }).await;
+                        continue;
+                    },
+                };
+                let Some(entry) = entry else {
+                    break;
+                };
+
+                let metadata = match entry.metadata().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        send_to_terminal.send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "filesystem: ReadDir couldn't read metadata: {}",
+                                e,
+                            )
+                        }).await;
+                        continue;
+                    },
+                };
+
+                let file_name = match entry.file_name().into_string() {
+                    Ok(f) => f,
+                    Err(e) => {
+                        send_to_terminal.send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "filesystem: ReadDir couldn't put entry name into string: {:?}",
+                                e,
+                            ),
+                        }).await;
+                        continue;
+                    },
+                };
+
+                metadatas.push(FileSystemMetadata {
+                    uri_string: file_name,
+                    hash: None,
+                    entry_type: get_entry_type(
+                        metadata.is_dir(),
+                        metadata.is_file(),
+                        metadata.is_symlink()
+                    ),
+                    len: metadata.len(),
+                })
+            }
+
+            Payload {
+                json: Some(
+                    serde_json::to_value(FileSystemResponse::ReadDir(metadatas)).unwrap()
+                ),
+                bytes: None,
+            }
+        }
         FileSystemAction::Open(mode) => {
             let file_ref = FileRef {
                 path: file_path.clone(),

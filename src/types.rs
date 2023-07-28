@@ -194,6 +194,7 @@ pub enum FileSystemAction {
     Read,
     Write,
     GetMetadata,
+    ReadDir,
     Open(FileSystemMode),
     Close(FileSystemMode),
     Append,
@@ -212,6 +213,7 @@ pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
+    ReadDir(Vec<FileSystemMetadata>),
     Open { uri_string: String, mode: FileSystemMode },
     Close { uri_string: String, mode: FileSystemMode },
     Append(String),
@@ -227,10 +229,8 @@ pub struct FileSystemUriHash {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemMetadata {
     pub uri_string: String,
-    pub hash: u64,
-    pub is_dir: bool,
-    pub is_file: bool,
-    pub is_symlink: bool,
+    pub hash: Option<u64>,
+    pub entry_type: FileSystemEntryType,
     pub len: u64,
 }
 #[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -238,4 +238,10 @@ pub enum FileSystemMode {
     Read,
     Append,
     AppendOverwrite,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemEntryType {
+    Symlink,
+    File,
+    Dir,
 }

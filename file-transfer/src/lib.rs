@@ -64,6 +64,7 @@ pub enum FileSystemAction {
     Read,
     Write,
     GetMetadata,
+    ReadDir,
     Open(FileSystemMode),
     Close(FileSystemMode),
     Append,
@@ -82,6 +83,7 @@ pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
+    ReadDir(Vec<FileSystemMetadata>),
     Open { uri_string: String, mode: FileSystemMode },
     Close { uri_string: String, mode: FileSystemMode },
     Append(String),
@@ -97,10 +99,8 @@ pub struct FileSystemUriHash {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemMetadata {
     pub uri_string: String,
-    pub hash: u64,
-    pub is_dir: bool,
-    pub is_file: bool,
-    pub is_symlink: bool,
+    pub hash: Option<u64>,
+    pub entry_type: FileSystemEntryType,
     pub len: u64,
 }
 #[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -108,6 +108,12 @@ pub enum FileSystemMode {
     Read,
     Append,
     AppendOverwrite,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemEntryType {
+    Symlink,
+    File,
+    Dir,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq)]
@@ -146,6 +152,7 @@ enum FileTransferRequest {
     GetPiece(FileTransferGetPiece),                       //  from requester to server
     Done { uri_string: String },                          //  from requester to server
     DisplayOngoing,                                       //  from user to requester
+    ReadDir { target_node: String, uri_string: String, }  //  from user to requester to server
 }
  
 #[derive(Debug, Serialize, Deserialize)]
@@ -173,6 +180,7 @@ struct FileTransferPieceReceived {
 enum FileTransferResponse {
     Started(FileTransferMetadata),     //  from server to requester
     FilePiece(FileTransferFilePiece),  //  from server to requester
+    ReadDir(Vec<FileSystemMetadata>),  //  from server to requester
 }
 
 struct Downloading {
@@ -630,12 +638,18 @@ impl bindings::MicrokernelProcess for Component {
                                     print_to_terminal("file_transfer: Cancel: must be either requester or server");
                                     continue;
                                 };
-                                yield_close(
-                                    &our_name,
-                                    key.uri_string.clone(),
-                                    mode,
-                                    "",
-                                );
+
+                            let context = serde_json::to_string(&FileTransferContext {
+                                key: key.clone(),
+                                additional: FileTransferAdditionalContext::Empty,
+                            }).unwrap();
+                            yield_close(
+                                &our_name,
+                                key.uri_string.clone(),
+                                mode,
+                                // context.as_str(),
+                                "",
+                            );
 
                             if is_cancel_both {
                                 //  propagate cancel to other node
@@ -648,10 +662,6 @@ impl bindings::MicrokernelProcess for Component {
                                         print_to_terminal("file_transfer: Cancel: must be either requester or server");
                                         continue;
                                     };
-                                let context = serde_json::to_string(&FileTransferContext {
-                                    key: key.clone(),
-                                    additional: FileTransferAdditionalContext::Empty,
-                                }).unwrap();
                                 yield_cancel(
                                     &other_node,
                                     &process_name,
@@ -753,7 +763,7 @@ impl bindings::MicrokernelProcess for Component {
                                     key.uri_string,
                                 ).as_str());
                                 print_to_terminal(format!(
-                                    "  hash: {}",
+                                    "  hash: {:?}",
                                     val.metadata.hash,
                                 ).as_str());
                                 print_to_terminal(format!(
@@ -771,6 +781,77 @@ impl bindings::MicrokernelProcess for Component {
                                 ).as_str());
                             }
                             print_to_terminal("****");
+                        },
+                        FileTransferRequest::ReadDir { target_node, uri_string } => {
+                            if our_name == target_node {
+                                //  serve Request:
+                                //    1. query local fs                   <---
+                                //    2. pass fs Reponse on to Requester
+                                let context = serde_json::to_string(&FileTransferContext {
+                                    key: FileTransferKey {
+                                        requester: message.wire.source_ship,
+                                        server: our_name.clone(),
+                                        uri_string: uri_string.clone(),
+                                    },
+                                    additional: FileTransferAdditionalContext::Empty,
+                                }).unwrap();
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &our_name,
+                                                    target_app: "filesystem",
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileSystemRequest {
+                                                        uri_string,
+                                                        action: FileSystemAction::ReadDir,
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        context.as_str(),
+                                    )
+                                ].as_slice());
+                            } else {
+                                //  send Request to target
+                                let context = serde_json::to_string(&FileTransferContext {
+                                    key: FileTransferKey {
+                                        requester: our_name.clone(),
+                                        server: target_node.clone(),
+                                        uri_string: uri_string.clone(),
+                                    },
+                                    additional: FileTransferAdditionalContext::Empty,
+                                }).unwrap();
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: true,
+                                                    target_ship: &target_node,
+                                                    target_app: &process_name,
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferRequest::ReadDir {
+                                                        target_node: target_node.clone(),
+                                                        uri_string: uri_string.clone(),
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        context.as_str(),
+                                    )
+                                ].as_slice());
+                            }
                         },
                     }
                 },
@@ -811,9 +892,18 @@ impl bindings::MicrokernelProcess for Component {
                                         file_metadata.len,
                                         chunk_size
                                     ) as u32;
+                                    let Some(hash) = file_metadata.hash else {
+                                        bail(
+                                            "GetMetadata did not get hash from fs".into(),
+                                            &our_name,
+                                            &process_name,
+                                            context.key,
+                                        );
+                                        continue;
+                                    };
                                     let metadata = FileTransferMetadata {
                                         key: context.key.clone(),
-                                        hash: file_metadata.hash,
+                                        hash,
                                         chunk_size,
                                         number_pieces,
                                         number_bytes: file_metadata.len,
@@ -882,7 +972,7 @@ impl bindings::MicrokernelProcess for Component {
                                     };
                                     if downloading.metadata.number_pieces == (downloading.received_pieces.len() as u32) {
                                         //  received all file pieces: check hash is correct
-                                        if downloading.metadata.hash == file_metadata.hash {
+                                        if Some(downloading.metadata.hash) == file_metadata.hash {
                                             //  done! file successfully downloaded
                                             let context_string = serde_json::to_string(&FileTransferContext {
                                                 key: context.key.clone(),
@@ -946,6 +1036,25 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                     }
                                 }
+                            },
+                            FileSystemResponse::ReadDir(metadatas) => {
+                                //  serve Request:
+                                //    1. query local fs
+                                //    2. pass fs Reponse on to Requester  <---
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Response,
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferResponse::ReadDir(metadatas)
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        "",
+                                    )
+                                ].as_slice());
                             },
                             FileSystemResponse::Open { uri_string, mode } => {
                                 match mode {
@@ -1209,7 +1318,16 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileSystemResponse::Error(error) => {
                                 let context: FileTransferContext =
-                                    serde_json::from_str(&context).unwrap();
+                                        match serde_json::from_str(&context) {
+                                    Ok(c) => c,
+                                    Err(_) => {
+                                        print_to_terminal(format!(
+                                            "file_transfer: FileSystemError: {:?}",
+                                            error,
+                                        ).as_str());
+                                        continue;
+                                    },
+                                };
 
                                 handle_fs_error(
                                     error,
@@ -1353,6 +1471,30 @@ impl bindings::MicrokernelProcess for Component {
                                         context.as_str(),
                                     ),
                                 ].as_slice());
+                            },
+                            FileTransferResponse::ReadDir(metadatas) => {
+                                let context: serde_json::Value =
+                                    serde_json::from_str(&context).unwrap();
+                                print_to_terminal(format!(
+                                    "file_transfer: directory contents of remote://{}/{}/",
+                                    message.wire.source_ship,
+                                    context["uri_string"].to_string(),
+                                ).as_str());
+                                print_to_terminal("****");
+                                for metadata in &metadatas {
+                                    let suffix = match metadata.entry_type {
+                                        FileSystemEntryType::Symlink => "@",
+                                        FileSystemEntryType::File => "",
+                                        FileSystemEntryType::Dir => "/",
+                                    };
+                                    print_to_terminal(format!(
+                                        "{}{}\t{}",
+                                        metadata.uri_string,
+                                        suffix,
+                                        metadata.len,
+                                    ).as_str());
+                                }
+                                print_to_terminal("****");
                             },
                         }
                     } else if "ws" == message.wire.source_app {

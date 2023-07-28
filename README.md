@@ -17,6 +17,7 @@ cargo install --git https://github.com/bytecodealliance/cargo-component --locked
 
 # Build the components.
 
+
 cd process-manager
 cargo component build --target wasm32-unknown-unknown
 cd ..
@@ -85,3 +86,16 @@ cargo r process_manager.wasm home/dolph dolph
 !message tuna process_manager {"type": "Restart", "process_name": "file_transfer"}
 !message dolph process_manager {"type": "Restart", "process_name": "file_transfer"}
 ```
+
+## Using `http-server` with an app
+After booting poast using the commands above, run
+Make sure to boot both the http-bindings app and poast
+```bash
+cargo r process_manager.wasm tuna
+!message tuna process_manager {"type": "Start", "process_name": "poast", "wasm_bytes_uri": "fs://poast.wasm"}
+```
+Then try making a GET request in browser to `http://127.0.0.1:8080/poast` or make a POST request as below:
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{"foo":"bar"}' http://127.0.0.1:8080/poast
+```
+And both should return responses.

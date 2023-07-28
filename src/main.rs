@@ -9,6 +9,7 @@ use crate::types::*;
 
 mod engine;
 mod filesystem;
+mod http_server;
 mod microkernel;
 mod terminal;
 mod types;
@@ -21,6 +22,7 @@ const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
+const HTTP_CHANNEL_CAPACITY: usize = 32;
 const KEYGEN_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
 
@@ -48,8 +50,12 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
+    // keygen creates networking keys and at-rest disk encryption key
     let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
+    // http server channel (eyre)
+    let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
+    mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
     let (http_client_message_sender, http_client_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
@@ -104,10 +110,11 @@ async fn main() {
         })
         .await;
 
-    /*  we are currently running 4 I/O modules:
+    /*  we are currently running 5 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,
+     *      http-server,
      *      keygen
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
@@ -138,6 +145,7 @@ async fn main() {
             wss_message_sender.clone(),
             fs_message_sender.clone(),
             keygen_message_sender.clone(),
+            http_server_sender.clone(),
             http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
         _ = ws::websockets(
@@ -162,6 +170,12 @@ async fn main() {
             keygen_message_receiver,
             print_sender.clone(),
         ) => { "keygen died".to_string() },
+        _ = http_server::http_server(
+            &our_name,
+            http_server_receiver,
+            kernel_message_sender.clone(),
+            print_sender.clone(),
+        ) => { "http_server died".to_string() },
         _ = http_client::http_client(
             &our_name,
             kernel_message_sender.clone(),

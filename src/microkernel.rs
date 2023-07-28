@@ -247,9 +247,24 @@ async fn send_process_results_to_loop(
                             //   not expecting Response
                             match prompting_message {
                                 Some(ref prompting_message) => {
+                                    let rsvp = match prompting_message.message.message_type {
+                                        MessageType::Request(prompting_message_is_expecting_response) => {
+                                            if prompting_message_is_expecting_response {
+                                                Some(ProcessNode {
+                                                    node: prompting_message.message.wire.source_ship.clone(),
+                                                    process: prompting_message.message.wire.source_app.clone(),
+                                                })
+                                            } else {
+                                                prompting_message.rsvp.clone()
+                                            }
+                                        },
+                                        MessageType::Response => {
+                                            panic!("oops")
+                                        },
+                                    };
                                     (
                                         prompting_message.id.clone(),
-                                        prompting_message.rsvp.clone(),
+                                        rsvp,
                                     )
                                 },
                                 None => {
@@ -275,8 +290,8 @@ async fn send_process_results_to_loop(
                             MessageType::Request(is_expecting_response) => {
                                 if is_expecting_response {
                                     (
-                                        prompting_message.message.wire.target_ship.clone(),
-                                        prompting_message.message.wire.target_app.clone(),
+                                        prompting_message.message.wire.source_ship.clone(),
+                                        prompting_message.message.wire.source_app.clone(),
                                     )
                                 } else {
                                     let Some(rsvp) = prompting_message.rsvp.clone() else {
@@ -432,8 +447,6 @@ async fn send_process_results_to_loop(
         // for (key, val) in contexts.iter() {
         //     println!("{}: {:?}", key, val);
         // }
-
-        let Some(prompting_message) = prompting_message else {panic!("oops")};
 
         send_to_loop
             .send(wrapped_message)
@@ -662,6 +675,7 @@ async fn make_event_loop(
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
@@ -671,6 +685,7 @@ async fn make_event_loop(
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
             senders.insert("keygen".to_string(), send_to_keygen);
+            senders.insert("http_server".to_string(), send_to_http_server.clone());
             senders.insert("http_client".to_string(), send_to_http_client);
 
             let mut process_handles: ProcessHandles = HashMap::new();
@@ -792,6 +807,7 @@ pub async fn kernel(
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
     send_to_keygen: MessageSender,
+    send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
 ) {
     let mut config = Config::new();
@@ -808,6 +824,7 @@ pub async fn kernel(
             send_to_wss,
             send_to_fs,
             send_to_keygen,
+            send_to_http_server,
             send_to_http_client,
             send_to_terminal.clone(),
             engine,
@@ -869,6 +886,34 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_terminal_message).await.unwrap();
+
+    // always start http-bindings on boot
+    let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
+    let start_http_bindings_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "http_bindings".into(),
+                            wasm_bytes_uri: "http_bindings.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(http_bindings_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_http_bindings_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

@@ -228,7 +228,6 @@ async fn send_process_results_to_loop(
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) -> () {
-    // println!("sprtl: prompting_message, results: {:?}, {:?}", prompting_message, results);
     for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
         let new_context = match serde_json::from_str(new_context_string) {
             Ok(r) => Some(r),
@@ -366,10 +365,10 @@ async fn send_process_results_to_loop(
             }
         };
 
-        println!("contexts before modification");
-        for (key, val) in contexts.iter() {
-            println!("{}: {:?}", key, val);
-        }
+        // println!("contexts before modification");
+        // for (key, val) in contexts.iter() {
+        //     println!("{}: {:?}", key, val);
+        // }
 
         //  modify contexts if necessary
         //   note that this could be rolled into the `match` making Message above;
@@ -443,10 +442,10 @@ async fn send_process_results_to_loop(
             },
         }
 
-        println!("contexts after modification");
-        for (key, val) in contexts.iter() {
-            println!("{}: {:?}", key, val);
-        }
+        // println!("contexts after modification");
+        // for (key, val) in contexts.iter() {
+        //     println!("{}: {:?}", key, val);
+        // }
 
         send_to_loop
             .send(wrapped_message)

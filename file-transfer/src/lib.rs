@@ -139,13 +139,11 @@ struct FileTransferCancel {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum FileTransferRequest {
-    //  actions
     GetFile(FileTransferGetFile),    //  from user to requester
     Start(FileTransferStart),        //  from requester to server
     Cancel(FileTransferCancel),      //  from user to requester & requester to server
     GetPiece(FileTransferGetPiece),  //  from requester to server
-    //  updates
-    // ReadyToReceive(FileTransferReadyToReceive),  //  from 
+    DisplayOngoing,                  //  from user to requester
 }
  
 #[derive(Debug, Serialize, Deserialize)]
@@ -516,6 +514,35 @@ impl bindings::MicrokernelProcess for Component {
                                     context.as_str(),
                                 )
                             ].as_slice());
+                        },
+                        FileTransferRequest::DisplayOngoing => {
+                            print_to_terminal("file_transfer: ongoing downloads:");
+                            print_to_terminal("****");
+                            for (key, val) in downloads.iter() {
+                                print_to_terminal(format!(
+                                    "remote://{}/{}",
+                                    key.server,
+                                    key.uri_string,
+                                ).as_str());
+                                print_to_terminal(format!(
+                                    "  hash: {}",
+                                    val.metadata.hash,
+                                ).as_str());
+                                print_to_terminal(format!(
+                                    "  number_bytes: {}",
+                                    val.metadata.number_bytes,
+                                ).as_str());
+                                print_to_terminal(format!(
+                                    "  chunk size: {}",
+                                    val.metadata.chunk_size,
+                                ).as_str());
+                                print_to_terminal(format!(
+                                    "  chunks received / total: {} / {}",
+                                    val.received_pieces.len(),
+                                    val.metadata.number_pieces,
+                                ).as_str());
+                            }
+                            print_to_terminal("****");
                         },
                     }
                 },

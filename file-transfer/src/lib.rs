@@ -149,6 +149,7 @@ enum FileTransferRequest {
     Start(FileTransferStart),        //  from requester to server
     Cancel(FileTransferCancel),      //  from user to requester & requester to server
     GetPiece(FileTransferGetPiece),  //  from requester to server
+    Done { uri_string: String },     //  from requester to server
     DisplayOngoing,                  //  from user to requester
 }
  
@@ -211,23 +212,6 @@ enum FileTransferAdditionalContext {
 
 fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
-}
-
-fn clean_up_state(
-    our_name: String,
-    process_name: String,
-    context: String,
-    downloads: &mut Downloads,
-    uploads: &mut Uploads,
-) {
-    let context: FileTransferContext = serde_json::from_str(&context).unwrap();
-    if our_name == context.key.requester {
-        downloads.remove(&context.key);
-    } else if our_name == context.key.server {
-        uploads.remove(&context.key);
-    } else {
-        panic!("file_transfer: cleaning up state failed: we are neither requester nor server")
-    }
 }
 
 fn handle_networking_error(
@@ -641,6 +625,25 @@ impl bindings::MicrokernelProcess for Component {
                                 )
                             ].as_slice());
                         },
+                        FileTransferRequest::Done { uri_string } => {
+                            let key = FileTransferKey {
+                                requester: message.wire.source_ship.clone(),
+                                server: our_name.clone(),
+                                uri_string: uri_string.clone(),
+                            };
+                            uploads.remove(&key);
+                            yield_close(
+                                &our_name,
+                                uri_string.clone(),
+                                FileSystemMode::Read,
+                                ""
+                            );
+                            print_to_terminal(format!(
+                                "file_transfer: done transferring {} to {}",
+                                uri_string,
+                                message.wire.source_ship,
+                            ).as_str());
+                        },
                         FileTransferRequest::DisplayOngoing => {
                             print_to_terminal("file_transfer: ongoing downloads:");
                             print_to_terminal("****");
@@ -770,7 +773,7 @@ impl bindings::MicrokernelProcess for Component {
                                         //  received all file pieces: check hash is correct
                                         if downloading.metadata.hash == file_metadata.hash {
                                             //  done! file successfully downloaded
-                                            let context = serde_json::to_string(&FileTransferContext {
+                                            let context_string = serde_json::to_string(&FileTransferContext {
                                                 key: context.key.clone(),
                                                 additional: FileTransferAdditionalContext::Empty,
                                             }).unwrap();
@@ -778,8 +781,30 @@ impl bindings::MicrokernelProcess for Component {
                                                 &our_name,
                                                 file_metadata.uri_string,
                                                 FileSystemMode::Append,
-                                                context.as_str(),
+                                                context_string.as_str(),
                                             );
+                                            bindings::yield_results(vec![
+                                                (
+                                                    bindings::WitProtomessage {
+                                                        protomessage_type: WitProtomessageType::Request(
+                                                            WitRequestTypeWithTarget {
+                                                                is_expecting_response: false,
+                                                                target_ship: &context.key.server,
+                                                                target_app: &process_name,
+                                                            },
+                                                        ),
+                                                        payload: &WitPayload {
+                                                            json: Some(serde_json::to_string(
+                                                                &FileTransferRequest::Done {
+                                                                    uri_string: context.key.uri_string,
+                                                                }
+                                                            ).unwrap()),
+                                                            bytes: None,
+                                                        },
+                                                    },
+                                                    "",
+                                                ),
+                                            ].as_slice());
                                         } else {
                                             downloads.remove(&context.key);
                                             print_to_terminal("file_transfer: file corrupted during transfer, please try again");

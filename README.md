@@ -15,33 +15,49 @@ rustup target add wasm32-unknown-unknown
 cargo install cargo-wasi
 cargo install --git https://github.com/bytecodealliance/cargo-component --locked
 
-# Build the components.
+# Build the runtime, along with 3 booted-at-startup WASM modules: process-manager, terminal, and http-bindings
+cargo build
 
-
-cd process-manager
-cargo component build --target wasm32-unknown-unknown
-cd ..
-cd hi-lus-lus
-cargo component build --target wasm32-unknown-unknown
-cd ..
-cd file-transfer
-cargo component build --target wasm32-unknown-unknown
-cd ..
+# Create the home directory for your node
+# If you boot multiple nodes, make sure each has their own home directory.
+mkdir home
 ```
 
-### Terminal
+If desired, build additional components and copy them into your node's home directory like so. Available components to build:
+- file-transfer
+- hi-lus-lus
+- poast
+- sequencer
 
-- look at `blockchain.json` to see what identities are available to you
-- `squid` is running on the uqbar devnet server, `loach` is what i use for local testing
-- pick a name, or add your own
-- run `cargo r <yourname>` to start the server
+```bash
+cd file-transfer
+cargo component build --target wasm32-unknown-unknown
+cp target/wasm32-unknown-unknown/debug/file-transfer.wasm ../home/file-transfer.wasm
+```
+Replace `file-transfer` with the desired component.
 
-## Current commands
+### Boot
 
-- `!message <name> <app> <json>`: send a card with a JSON value to another server or yourself
-- `!quit`, `!exit`: kill the server
+Boot takes 3 arguments: the desired process manager, the home directory, and the name of the node. You can just use `process_manager.wasm`, which will already be built. Use the home directory you created previously and select a name for the node. This name argument will soon be eliminated and replaced with the login page.
+```bash
+cargo run process_manager.wasm home your_name
+```
+
+Now that the node has started, look to the example usage section below to see what kind of commands are available.
+
+### Terminal syntax
+
+- CTRL+C to kill node
+- CTRL+V to toggle verbose mode, which is on by default
+- CTRL+D to toggle debug mode
+- CTRL+S to step through events in debug mode
+
+- `!message <name> <app> <json>`: send a card with a JSON value to another node or yourself
+- more to come
 
 ## Example usage
+
+### Using the file-transfer app
 
 ```bash
 # Create tuna and dolph home directories, and populate them:
@@ -88,7 +104,8 @@ cargo r process_manager.wasm home/dolph dolph
 !message dolph process_manager {"type": "Restart", "process_name": "file_transfer"}
 ```
 
-## Using `http-server` with an app
+### Using `http-server` with an app
+
 After booting poast using the commands above, run
 Make sure to boot both the http-bindings app and poast
 ```bash

@@ -246,25 +246,28 @@ async fn send_process_results_to_loop(
                             //   not expecting Response
                             match prompting_message {
                                 Some(ref prompting_message) => {
-                                    let rsvp = match prompting_message.message.message_type {
+                                    match prompting_message.message.message_type {
                                         MessageType::Request(prompting_message_is_expecting_response) => {
                                             if prompting_message_is_expecting_response {
-                                                Some(ProcessNode {
-                                                    node: prompting_message.message.wire.source_ship.clone(),
-                                                    process: prompting_message.message.wire.source_app.clone(),
-                                                })
+                                                (
+                                                    prompting_message.id.clone(), //  TODO: need to reference count?
+                                                    Some(ProcessNode {
+                                                        node: prompting_message.message.wire.source_ship.clone(),
+                                                        process: prompting_message.message.wire.source_app.clone(),
+                                                    }),
+                                                )
                                             } else {
-                                                prompting_message.rsvp.clone()
+                                                (
+                                                    prompting_message.id.clone(),  //  TODO: need to reference count?
+                                                    prompting_message.rsvp.clone(),
+                                                )
                                             }
                                         },
                                         MessageType::Response => {
-                                            panic!("oops")
+                                            (rand::random(), None)
+                                            // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
                                         },
-                                    };
-                                    (
-                                        prompting_message.id.clone(),
-                                        rsvp,
-                                    )
+                                    }
                                 },
                                 None => {
                                     (rand::random(), None)

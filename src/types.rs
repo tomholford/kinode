@@ -86,6 +86,16 @@ pub enum NetworkingError {
     #[error("Some bug in the networking code")]
     NetworkingBug,
 }
+impl std::fmt::Display for ProcessNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "ProcessNode {{ node: {}, process: {} }}",
+            self.node,
+            self.process,
+        )
+    }
+}
 
 impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -116,10 +126,15 @@ impl std::fmt::Display for Message {
 
 impl std::fmt::Display for WrappedMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let rsvp = match self.rsvp {
+            Some(ref rsvp) => format!("{}", rsvp),
+            None => "None".into(),
+        };
         write!(
             f,
-            "WrappedMessage {{ id: {}, message: {} }}",
+            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
             self.id,
+            rsvp,
             self.message,
         )
     }

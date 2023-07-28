@@ -180,6 +180,7 @@ pub enum FileSystemAction {
     Write,
     GetMetadata,
     Open(FileSystemMode),
+    Close(FileSystemMode),
     Append,
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
@@ -197,6 +198,7 @@ pub enum FileSystemResponse {
     Write(String),
     GetMetadata(FileSystemMetadata),
     Open { uri_string: String, mode: FileSystemMode },
+    Close { uri_string: String, mode: FileSystemMode },
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
@@ -220,4 +222,5 @@ pub struct FileSystemMetadata {
 pub enum FileSystemMode {
     Read,
     Append,
+    AppendOverwrite,
 }

@@ -468,6 +468,14 @@ async fn handle_request(
                 FileSystemMode::Append => {
                     fs::OpenOptions::new()
                         .append(true)
+                        .truncate(true)
+                        .create(true)
+                        .open(&file_path)
+                        .await
+                },
+                FileSystemMode::AppendOverwrite => {
+                    fs::OpenOptions::new()
+                        .append(true)
                         .create(true)
                         .open(&file_path)
                         .await
@@ -502,6 +510,25 @@ async fn handle_request(
                 },
             }
         },
+        FileSystemAction::Close(mode) => {
+            let file_ref = FileRef {
+                path: file_path.clone(),
+                mode: mode.clone(),
+            };
+            let mut open_files_lock = open_files.lock().await;
+            open_files_lock.remove(&file_ref);
+            Payload {
+                json: Some(
+                    serde_json::to_value(
+                        FileSystemResponse::Close {
+                            uri_string: request.uri_string,
+                            mode,
+                        }
+                    ).unwrap()
+                ),
+                bytes: None,
+            }
+        }
         FileSystemAction::Append => {
             let file_ref = FileRef {
                 path: file_path.clone(),

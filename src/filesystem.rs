@@ -20,14 +20,9 @@ lazy_static::lazy_static! {
 }
 
 #[derive(Eq, Hash, PartialEq)]
-enum FileMode {
-    Read,
-    Append,
-}
-#[derive(Eq, Hash, PartialEq)]
 struct FileRef {
     path: String,
-    mode: FileMode,
+    mode: FileSystemMode,
 }
 
 async fn create_dir_if_dne(path: &str) -> Result<(), FileSystemError> {
@@ -407,7 +402,7 @@ async fn handle_request(
                 Err(e) => {
                     return Err(FileSystemError::OpenFailed {
                         path: file_path,
-                        mode: "OneOffRead".into(),
+                        mode: FileSystemMode::Read,
                         error: format!("{}", e),
                     })
                 },
@@ -448,25 +443,36 @@ async fn handle_request(
                 bytes: None,
             }
         },
-        FileSystemAction::OpenRead => {
+        FileSystemAction::Open(mode) => {
             let file_ref = FileRef {
                 path: file_path.clone(),
-                mode: FileMode::Read,
+                mode: mode.clone(),
             };
             {
                 let open_files_lock = open_files.lock().await;
                 if open_files_lock.contains_key(&file_ref) {
                     return Err(FileSystemError::AlreadyOpen {
                         path: file_path,
-                        mode: "Read".into(),
+                        mode,
                     })
                 }
             }
 
-            let file_result = fs::OpenOptions::new()
-                .read(true)
-                .open(&file_path)
-                .await;
+            let file_result = match mode {
+                FileSystemMode::Read => {
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .open(&file_path)
+                        .await
+                },
+                FileSystemMode::Append => {
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&file_path)
+                        .await
+                },
+            };
 
             match file_result {
                 Ok(file) => {
@@ -478,7 +484,10 @@ async fn handle_request(
                     Payload {
                         json: Some(
                             serde_json::to_value(
-                                FileSystemResponse::OpenRead(request.uri_string)
+                                FileSystemResponse::Open {
+                                    uri_string: request.uri_string,
+                                    mode,
+                                }
                             ).unwrap()
                         ),
                         bytes: None,
@@ -487,53 +496,7 @@ async fn handle_request(
                 Err(e) => {
                     return Err(FileSystemError::OpenFailed {
                         path: file_path,
-                        mode: "Read".into(),
-                        error: format!("{}", e),
-                    })
-                },
-            }
-        },
-        FileSystemAction::OpenAppend => {
-            let file_ref = FileRef {
-                path: file_path.clone(),
-                mode: FileMode::Append,
-            };
-            {
-                let open_files_lock = open_files.lock().await;
-                if open_files_lock.contains_key(&file_ref) {
-                    return Err(FileSystemError::AlreadyOpen {
-                        path: file_path,
-                        mode: "Append".into(),
-                    })
-                }
-            }
-
-            let file_result = fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&file_path)
-                .await;
-
-            match file_result {
-                Ok(file) => {
-                    {
-                        let mut open_files_lock = open_files.lock().await;
-                        open_files_lock.insert(file_ref, file);
-                    }
-
-                    Payload {
-                        json: Some(
-                            serde_json::to_value(
-                                FileSystemResponse::OpenAppend(request.uri_string)
-                            ).unwrap()
-                        ),
-                        bytes: None,
-                    }
-                },
-                Err(e) => {
-                    return Err(FileSystemError::OpenFailed {
-                        path: file_path,
-                        mode: "Append".into(),
+                        mode,
                         error: format!("{}", e),
                     })
                 },
@@ -542,7 +505,7 @@ async fn handle_request(
         FileSystemAction::Append => {
             let file_ref = FileRef {
                 path: file_path.clone(),
-                mode: FileMode::Append,
+                mode: FileSystemMode::Append,
             };
             let mut open_files_lock = open_files.lock().await;
             let file = match open_files_lock
@@ -551,7 +514,7 @@ async fn handle_request(
                 None => {
                     return Err(FileSystemError::NotCurrentlyOpen {
                         path: file_path,
-                        mode: "Append".into(),
+                        mode: FileSystemMode::Append,
                     })
                 },
             };
@@ -581,7 +544,7 @@ async fn handle_request(
         FileSystemAction::ReadChunkFromOpen(number_bytes) => {
             let file_ref = FileRef {
                 path: file_path.clone(),
-                mode: FileMode::Read,
+                mode: FileSystemMode::Read,
             };
             let mut open_files_lock = open_files.lock().await;
             let file = match open_files_lock
@@ -590,7 +553,7 @@ async fn handle_request(
                 None => {
                     return Err(FileSystemError::NotCurrentlyOpen {
                         path: file_path,
-                        mode: "ReadChunkFromOpen".into(),
+                        mode: FileSystemMode::Read,
                     })
                 },
             };
@@ -629,7 +592,7 @@ async fn handle_request(
         FileSystemAction::SeekWithinOpen(seek_from) => {
             let file_ref = FileRef {
                 path: file_path.clone(),
-                mode: FileMode::Read,
+                mode: FileSystemMode::Read,
             };
             let mut open_files_lock = open_files.lock().await;
 
@@ -639,7 +602,7 @@ async fn handle_request(
                 None => {
                     return Err(FileSystemError::NotCurrentlyOpen {
                         path: file_path,
-                        mode: "SeekWithinOpen".into(),
+                        mode: FileSystemMode::Read,
                     })
                 },
             };

@@ -151,10 +151,10 @@ pub enum FileSystemError {
     BadBytes { action: String },
     #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
     IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
-    #[error("Already have {path} opened with mode {mode}.")]
-    AlreadyOpen { path: String, mode: String, },
-    #[error("Don't have {path} opened with mode {mode}.")]
-    NotCurrentlyOpen { path: String, mode: String, },
+    #[error("Already have {path} opened with mode {:?}.", mode)]
+    AlreadyOpen { path: String, mode: FileSystemMode, },
+    #[error("Don't have {path} opened with mode {:?}.", mode)]
+    NotCurrentlyOpen { path: String, mode: FileSystemMode, },
     //  path or underlying fs problems
     #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
     BadPathJoin { base_path: String, addend: String, },
@@ -164,8 +164,8 @@ pub enum FileSystemError {
     ReadFailed { path: String, error: String, },
     #[error("Failed to write {path}: {error}.")]
     WriteFailed { path: String, error: String, },
-    #[error("Failed to open {path} for {mode}: {error}.")]
-    OpenFailed { path: String, mode: String, error: String, },
+    #[error("Failed to open {path} for {:?}: {error}.", mode)]
+    OpenFailed { path: String, mode: FileSystemMode, error: String, },
     #[error("Filesystem error while {what} on {path}: {error}.")]
     FsError { what: String, path: String, error: String, },
 }
@@ -179,8 +179,7 @@ pub enum FileSystemAction {
     Read,
     Write,
     GetMetadata,
-    OpenRead,
-    OpenAppend,
+    Open(FileSystemMode),
     Append,
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
@@ -197,8 +196,7 @@ pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
-    OpenRead(String),
-    OpenAppend(String),
+    Open { uri_string: String, mode: FileSystemMode },
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
@@ -217,4 +215,9 @@ pub struct FileSystemMetadata {
     pub is_file: bool,
     pub is_symlink: bool,
     pub len: u64,
+}
+#[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub enum FileSystemMode {
+    Read,
+    Append,
 }

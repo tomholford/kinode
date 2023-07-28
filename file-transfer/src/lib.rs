@@ -36,10 +36,10 @@ pub enum FileSystemError {
     BadBytes { action: String },
     #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
     IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
-    #[error("Already have {path} opened with mode {mode}.")]
-    AlreadyOpen { path: String, mode: String, },
-    #[error("Don't have {path} opened with mode {mode}.")]
-    NotCurrentlyOpen { path: String, mode: String, },
+    #[error("Already have {path} opened with mode {:?}.", mode)]
+    AlreadyOpen { path: String, mode: FileSystemMode, },
+    #[error("Don't have {path} opened with mode {:?}.", mode)]
+    NotCurrentlyOpen { path: String, mode: FileSystemMode, },
     //  path or underlying fs problems
     #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
     BadPathJoin { base_path: String, addend: String, },
@@ -49,8 +49,8 @@ pub enum FileSystemError {
     ReadFailed { path: String, error: String, },
     #[error("Failed to write {path}: {error}.")]
     WriteFailed { path: String, error: String, },
-    #[error("Failed to open {path} for {mode}: {error}.")]
-    OpenFailed { path: String, mode: String, error: String, },
+    #[error("Failed to open {path} for {:?}: {error}.", mode)]
+    OpenFailed { path: String, mode: FileSystemMode, error: String, },
     #[error("Filesystem error while {what} on {path}: {error}.")]
     FsError { what: String, path: String, error: String, },
 }
@@ -64,8 +64,7 @@ pub enum FileSystemAction {
     Read,
     Write,
     GetMetadata,
-    OpenRead,
-    OpenAppend,
+    Open(FileSystemMode),
     Append,
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
@@ -82,8 +81,7 @@ pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
-    OpenRead(String),
-    OpenAppend(String),
+    Open { uri_string: String, mode: FileSystemMode },
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
@@ -102,6 +100,11 @@ pub struct FileSystemMetadata {
     pub is_file: bool,
     pub is_symlink: bool,
     pub len: u64,
+}
+#[derive(Eq, Hash, PartialEq, Debug, Serialize, Deserialize)]
+pub enum FileSystemMode {
+    Read,
+    Append,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq)]
@@ -268,25 +271,24 @@ fn handle_fs_error(
             panic!("")
         },
         FileSystemError::AlreadyOpen { path, mode, } => {
-            if "Append" == mode {
-                print_to_terminal("AlreadyOpen: Append");
+            match mode {
+                FileSystemMode::Append => {
+                    print_to_terminal("AlreadyOpen: Append");
 
-                let context: FileTransferContext = serde_json::from_str(&context).unwrap();
-                let downloading = downloads.get(&context.key).unwrap();
+                    let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+                    let downloading = downloads.get(&context.key).unwrap();
 
-                yield_get_piece(
-                    ProcessNode {
-                        node: context.key.server.clone(),
-                        process: process_name,
-                    },
-                    context.key.uri_string.clone(),
-                    downloading.metadata.chunk_size,
-                    downloading.received_pieces.len() as u32,
-                );
-            } else if "Read" == mode {
-                print_to_terminal("AlreadyOpen: Read");
-            } else {
-                panic!("")
+                    yield_get_piece(
+                        ProcessNode {
+                            node: context.key.server.clone(),
+                            process: process_name,
+                        },
+                        context.key.uri_string.clone(),
+                        downloading.metadata.chunk_size,
+                        downloading.received_pieces.len() as u32,
+                    );
+                },
+                FileSystemMode::Read => print_to_terminal("AlreadyOpen: Read"),
             }
         },
         FileSystemError::NotCurrentlyOpen { path, mode, } => {
@@ -616,7 +618,9 @@ impl bindings::MicrokernelProcess for Component {
                                                 json: Some(serde_json::to_string(
                                                     &FileSystemRequest {
                                                         uri_string: file_metadata.uri_string,
-                                                        action: FileSystemAction::OpenRead,
+                                                        action: FileSystemAction::Open(
+                                                            FileSystemMode::Read
+                                                        ),
                                                     }
                                                 ).unwrap()),
                                                 bytes: None,
@@ -626,27 +630,52 @@ impl bindings::MicrokernelProcess for Component {
                                     ),
                                 ].as_slice());
                             },
-                            FileSystemResponse::OpenRead(_uri_string) => {
-                                print_to_terminal("Successfully opened Read");
-                            },
-                            FileSystemResponse::OpenAppend(uri_string) => {
-                                print_to_terminal("OpenAppend");
-
-                                let context: FileTransferContext = serde_json::from_str(&context).unwrap();
-                                let key = context.key;
-                                let downloading = downloads.get(&key).unwrap();
-                                
-                                yield_get_piece(
-                                    ProcessNode {
-                                        node: key.server.clone(),
-                                        process: process_name.clone()
+                            FileSystemResponse::Open { uri_string, mode } => {
+                                match mode {
+                                    FileSystemMode::Read => {
+                                        print_to_terminal("Successfully opened Read")
                                     },
-                                    uri_string,
-                                    downloading.metadata.chunk_size,
-                                    downloading.received_pieces.len() as u32,
-                                );
-                                print_to_terminal("OpenAppend 2");
+                                    FileSystemMode::Append => {
+                                        print_to_terminal("OpenAppend");
+
+                                        let context: FileTransferContext =
+                                            serde_json::from_str(&context).unwrap();
+                                        let key = context.key;
+                                        let downloading = downloads.get(&key).unwrap();
+                                        
+                                        yield_get_piece(
+                                            ProcessNode {
+                                                node: key.server.clone(),
+                                                process: process_name.clone()
+                                            },
+                                            uri_string,
+                                            downloading.metadata.chunk_size,
+                                            downloading.received_pieces.len() as u32,
+                                        );
+                                    },
+                                }
                             },
+                            // FileSystemResponse::OpenRead(_uri_string) => {
+                            //     print_to_terminal("Successfully opened Read");
+                            // },
+                            // FileSystemResponse::OpenAppend(uri_string) => {
+                            //     print_to_terminal("OpenAppend");
+
+                            //     let context: FileTransferContext = serde_json::from_str(&context).unwrap();
+                            //     let key = context.key;
+                            //     let downloading = downloads.get(&key).unwrap();
+                            //     
+                            //     yield_get_piece(
+                            //         ProcessNode {
+                            //             node: key.server.clone(),
+                            //             process: process_name.clone()
+                            //         },
+                            //         uri_string,
+                            //         downloading.metadata.chunk_size,
+                            //         downloading.received_pieces.len() as u32,
+                            //     );
+                            //     print_to_terminal("OpenAppend 2");
+                            // },
                             FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
                                 print_to_terminal("ReadChunkFromOpen");
 
@@ -833,7 +862,9 @@ impl bindings::MicrokernelProcess for Component {
                                                 json: Some(serde_json::to_string(
                                                     &FileSystemRequest {
                                                         uri_string: uri_string.clone(),
-                                                        action: FileSystemAction::OpenAppend,
+                                                        action: FileSystemAction::Open(
+                                                            FileSystemMode::Append
+                                                        ),
                                                     }
                                                 ).unwrap()),
                                                 bytes: None,

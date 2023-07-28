@@ -133,11 +133,6 @@ struct FileTransferGetPiece {
     chunk_size: u64,
     piece_number: u32,
 }
-#[derive(Debug, Serialize, Deserialize)]
-struct FileTransferCancel {
-    target_ship: String,
-    uri_string: String,
-}
 // #[derive(Debug, Serialize, Deserialize)]
 // struct FileTransferReadyToReceive {
 //     uri_string: String,
@@ -145,12 +140,13 @@ struct FileTransferCancel {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum FileTransferRequest {
-    GetFile(FileTransferGetFile),    //  from user to requester
-    Start(FileTransferStart),        //  from requester to server
-    Cancel(FileTransferCancel),      //  from user to requester & requester to server
-    GetPiece(FileTransferGetPiece),  //  from requester to server
-    Done { uri_string: String },     //  from requester to server
-    DisplayOngoing,                  //  from user to requester
+    GetFile(FileTransferGetFile),                  //  from user to requester
+    Start(FileTransferStart),                      //  from requester to server
+    Cancel { node: String, uri_string: String, },  //  from user to requester & requester to server
+    Bail { node: String, uri_string: String, },    //  from server to requester
+    GetPiece(FileTransferGetPiece),                //  from requester to server
+    Done { uri_string: String },                   //  from requester to server
+    DisplayOngoing,                                //  from user to requester
 }
  
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,7 +179,6 @@ struct FileTransferError {
 enum FileTransferResponse {
     Started(FileTransferMetadata),     //  from server to requester
     FilePiece(FileTransferFilePiece),  //  from server to requester
-    // FileReceived(String),              //  uri_string to derive key
     Errored(FileTransferError),
 }
 
@@ -213,6 +208,12 @@ enum FileTransferAdditionalContext {
 fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
 }
+
+// fn bail(
+//     our_name: String,
+//     process_name: String,
+// ) {
+// }
 
 fn handle_networking_error(
     error: NetworkingError,
@@ -560,8 +561,119 @@ impl bindings::MicrokernelProcess for Component {
                                 &context,
                             )
                         },
-                        FileTransferRequest::Cancel(_uri_string) => {
-                            panic!("cancel: todo");
+                        FileTransferRequest::Cancel { node, uri_string } => {
+                            //  TODO: factor out w Bail?
+                            print_to_terminal("Cancel");
+
+                            if node == our_name {
+                                //  we are server; clean up state
+                                let key = FileTransferKey {
+                                    requester: message.wire.source_ship,
+                                    server: our_name.clone(),
+                                    uri_string: uri_string.clone(),
+                                };
+                                uploads.remove(&key);
+                                yield_close(
+                                    &our_name,
+                                    uri_string,
+                                    FileSystemMode::Read,
+                                    "",
+                                );
+                            } else {
+                                //  we are requester; clean up state & send Cancel to server
+                                let key = FileTransferKey {
+                                    requester: our_name.clone(),
+                                    server: node.clone(),
+                                    uri_string: uri_string.clone(),
+                                };
+                                downloads.remove(&key);
+                                yield_close(
+                                    &our_name,
+                                    uri_string.clone(),
+                                    FileSystemMode::Append,
+                                    "",
+                                );
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: false,
+                                                    target_ship: &node,
+                                                    target_app: &process_name,
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferRequest::Cancel {
+                                                        node: node.clone(),
+                                                        uri_string: uri_string,
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        "",
+                                    )
+                                ].as_slice());
+                            }
+                        },
+                        FileTransferRequest::Bail { node, uri_string } => {
+                            //  TODO: factor out w Cancel?
+                            print_to_terminal("Bail");
+
+                            if node != our_name {
+                                //  we are requester; clean up state
+                                let key = FileTransferKey {
+                                    requester: message.wire.source_ship,
+                                    server: our_name.clone(),
+                                    uri_string: uri_string.clone(),
+                                };
+                                downloads.remove(&key);
+                                yield_close(
+                                    &our_name,
+                                    uri_string.clone(),
+                                    FileSystemMode::Append,
+                                    "",
+                                );
+                            } else {
+                                //  we are server; clean up state & send Cancel to requester
+                                let key = FileTransferKey {
+                                    requester: our_name.clone(),
+                                    server: node.clone(),
+                                    uri_string: uri_string.clone(),
+                                };
+                                downloads.remove(&key);
+                                yield_close(
+                                    &our_name,
+                                    uri_string.clone(),
+                                    FileSystemMode::Read,
+                                    "",
+                                );
+                                bindings::yield_results(vec![
+                                    (
+                                        bindings::WitProtomessage {
+                                            protomessage_type: WitProtomessageType::Request(
+                                                WitRequestTypeWithTarget {
+                                                    is_expecting_response: false,
+                                                    target_ship: &node,
+                                                    target_app: &process_name,
+                                                },
+                                            ),
+                                            payload: &WitPayload {
+                                                json: Some(serde_json::to_string(
+                                                    &FileTransferRequest::Bail {
+                                                        node: node.clone(),
+                                                        uri_string: uri_string,
+                                                    }
+                                                ).unwrap()),
+                                                bytes: None,
+                                            },
+                                        },
+                                        "",
+                                    )
+                                ].as_slice());
+                            }
                         },
                         FileTransferRequest::GetPiece(get_piece) => {
                             print_to_terminal("GetPiece");
@@ -1188,17 +1300,6 @@ impl bindings::MicrokernelProcess for Component {
                                     ),
                                 ].as_slice());
                             },
-                            // FileTransferResponse::FileReceived(uri_string) => {
-                            //     print_to_terminal("FileReceived");
-
-                            //     let key = FileTransferKey {
-                            //         requester: message.wire.source_ship.clone(),
-                            //         server: our_name.clone(),
-                            //         uri_string,
-                            //     };
-
-                            //     uploads.remove(&key).unwrap();
-                            // },
                             FileTransferResponse::Errored(_error) => {
                                 panic!("errored: todo");
                             },

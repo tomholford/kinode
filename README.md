@@ -13,7 +13,7 @@ git clone git@github.com:uqbar-dao/operationOJ.git
 
 rustup target add wasm32-unknown-unknown
 cargo install cargo-wasi
-cargo install --git https://github.com/bytecodealliance/cargo-component --locked
+cargo install --git https://github.com/bytecodealliance/cargo-component --rev 84ad1dc
 
 # Build the runtime, along with 3 booted-at-startup WASM modules: process-manager, terminal, and http-bindings
 cargo build

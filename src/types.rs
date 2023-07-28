@@ -86,6 +86,16 @@ pub enum NetworkingError {
     #[error("Some bug in the networking code")]
     NetworkingBug,
 }
+impl std::fmt::Display for ProcessNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "ProcessNode {{ node: {}, process: {} }}",
+            self.node,
+            self.process,
+        )
+    }
+}
 
 impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -116,10 +126,15 @@ impl std::fmt::Display for Message {
 
 impl std::fmt::Display for WrappedMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let rsvp = match self.rsvp {
+            Some(ref rsvp) => format!("{}", rsvp),
+            None => "None".into(),
+        };
         write!(
             f,
-            "WrappedMessage {{ id: {}, message: {} }}",
+            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
             self.id,
+            rsvp,
             self.message,
         )
     }
@@ -179,6 +194,7 @@ pub enum FileSystemAction {
     Read,
     Write,
     GetMetadata,
+    ReadDir,
     Open(FileSystemMode),
     Close(FileSystemMode),
     Append,
@@ -197,6 +213,7 @@ pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
+    ReadDir(Vec<FileSystemMetadata>),
     Open { uri_string: String, mode: FileSystemMode },
     Close { uri_string: String, mode: FileSystemMode },
     Append(String),
@@ -212,10 +229,8 @@ pub struct FileSystemUriHash {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemMetadata {
     pub uri_string: String,
-    pub hash: u64,
-    pub is_dir: bool,
-    pub is_file: bool,
-    pub is_symlink: bool,
+    pub hash: Option<u64>,
+    pub entry_type: FileSystemEntryType,
     pub len: u64,
 }
 #[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -223,4 +238,10 @@ pub enum FileSystemMode {
     Read,
     Append,
     AppendOverwrite,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemEntryType {
+    Symlink,
+    File,
+    Dir,
 }

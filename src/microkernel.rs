@@ -91,6 +91,7 @@ struct Process {
 
 #[derive(Clone, Debug)]
 struct CauseMetadata {
+    id: u64,
     process_node: ProcessNode,
     rsvp: Rsvp,
     message_type: MessageType,
@@ -106,6 +107,7 @@ struct ProcessContext {
 impl CauseMetadata {
     fn new(wrapped_message: &WrappedMessage) -> Self {
         CauseMetadata {
+            id: wrapped_message.id.clone(),
             process_node: ProcessNode {
                 node: wrapped_message.message.wire.source_ship.clone(),
                 process: wrapped_message.message.wire.source_app.clone(),
@@ -246,25 +248,28 @@ async fn send_process_results_to_loop(
                             //   not expecting Response
                             match prompting_message {
                                 Some(ref prompting_message) => {
-                                    let rsvp = match prompting_message.message.message_type {
+                                    match prompting_message.message.message_type {
                                         MessageType::Request(prompting_message_is_expecting_response) => {
                                             if prompting_message_is_expecting_response {
-                                                Some(ProcessNode {
-                                                    node: prompting_message.message.wire.source_ship.clone(),
-                                                    process: prompting_message.message.wire.source_app.clone(),
-                                                })
+                                                (
+                                                    prompting_message.id.clone(), //  TODO: need to reference count?
+                                                    Some(ProcessNode {
+                                                        node: prompting_message.message.wire.source_ship.clone(),
+                                                        process: prompting_message.message.wire.source_app.clone(),
+                                                    }),
+                                                )
                                             } else {
-                                                prompting_message.rsvp.clone()
+                                                (
+                                                    prompting_message.id.clone(),  //  TODO: need to reference count?
+                                                    prompting_message.rsvp.clone(),
+                                                )
                                             }
                                         },
                                         MessageType::Response => {
-                                            panic!("oops")
+                                            (rand::random(), None)
+                                            // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
                                         },
-                                    };
-                                    (
-                                        prompting_message.id.clone(),
-                                        rsvp,
-                                    )
+                                    }
                                 },
                                 None => {
                                     (rand::random(), None)
@@ -284,11 +289,12 @@ async fn send_process_results_to_loop(
                         println!("need non-None prompting_message to handle Response");
                         continue;
                     };
-                    let (target_ship, target_app) =
+                    let (id, target_ship, target_app) =
                         match prompting_message.message.message_type {
                             MessageType::Request(is_expecting_response) => {
                                 if is_expecting_response {
                                     (
+                                        prompting_message.id.clone(),
                                         prompting_message.message.wire.source_ship.clone(),
                                         prompting_message.message.wire.source_app.clone(),
                                     )
@@ -297,7 +303,12 @@ async fn send_process_results_to_loop(
                                         println!("no rsvp set for response (prompting)");
                                         continue;
                                     };
-                                    (rsvp.node.clone(), rsvp.process.clone())
+
+                                    (
+                                        prompting_message.id.clone(),
+                                        rsvp.node.clone(),
+                                        rsvp.process.clone(),
+                                    )
                                 }
                             },
                             MessageType::Response => {
@@ -315,6 +326,7 @@ async fn send_process_results_to_loop(
                                     MessageType::Request(is_expecting_response) => {
                                         if is_expecting_response {
                                             (
+                                                ultimate.id.clone(),
                                                 ultimate.process_node.node.clone(),
                                                 ultimate.process_node.process.clone(),
                                             )
@@ -323,7 +335,11 @@ async fn send_process_results_to_loop(
                                                 println!("no rsvp set for response (ultimate)");
                                                 continue;
                                             };
-                                            (rsvp.node.clone(), rsvp.process.clone())
+                                            (
+                                                ultimate.id.clone(),
+                                                rsvp.node.clone(),
+                                                rsvp.process.clone(),
+                                            )
                                         }
                                     },
                                     MessageType::Response => {
@@ -334,7 +350,7 @@ async fn send_process_results_to_loop(
                             },
                         };
                     (
-                        prompting_message.id.clone(),
+                        id,
                         None,
                         target_ship,
                         target_app,

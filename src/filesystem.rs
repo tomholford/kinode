@@ -134,7 +134,35 @@ async fn get_file_bytes_left(file_path: &str, file: &mut fs::File) -> Result<u64
     Ok(metadata.len() - current_pos)
 }
 
-fn compute_truncated_hash(file_contents: &Vec<u8>) -> u64 {
+async fn compute_truncated_hash_reader(file_path: &str, mut file: fs::File) -> Result<u64, FileSystemError> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 1_024];  //  1kiB
+
+    loop {
+        println!("iter");
+        let count = match file.read_exact(&mut buffer).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(FileSystemError::ReadFailed {
+                    path: file_path.into(),
+                    error: format!("{}", e),
+                })
+            },
+        };
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+
+    let hash = hasher.finalize();
+    //  truncate
+    Ok(u64::from_be_bytes(
+        [hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]]
+    ))
+}
+
+fn compute_truncated_hash_bytes(file_contents: &Vec<u8>) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(file_contents);
     let hash = hasher.finalize();
@@ -358,7 +386,7 @@ async fn handle_request(
                     })
                 },
             };
-            let hash = compute_truncated_hash(&file_contents);
+            let hash = compute_truncated_hash_bytes(&file_contents);
             let _ = send_to_terminal.send(
                 Printout {
                     verbosity: 0,
@@ -404,7 +432,7 @@ async fn handle_request(
         },
         FileSystemAction::GetMetadata => {
             //  TODO: use read_exact()?
-            let mut file = match fs::OpenOptions::new()
+            let file = match fs::OpenOptions::new()
                     .read(true)
                     .open(&file_path)
                     .await {
@@ -427,15 +455,8 @@ async fn handle_request(
                     })
                 },
             };
-            let mut file_contents = vec![];
-            if let Err(e) = file.read_to_end(&mut file_contents).await {
-                return Err(FileSystemError::ReadFailed {
-                    path: file_path,
-                    error: format!("{}", e),
-                })
-            }
 
-            let hash = compute_truncated_hash(&file_contents);
+            let hash = compute_truncated_hash_reader(&file_path, file).await?;
 
             Payload {
                 json: Some(
@@ -702,7 +723,7 @@ async fn handle_request(
                     serde_json::to_value(
                         FileSystemResponse::ReadChunkFromOpen(FileSystemUriHash {
                             uri_string: request.uri_string,
-                            hash: compute_truncated_hash(&file_contents),
+                            hash: compute_truncated_hash_bytes(&file_contents),
                         })
                     )
                         .unwrap()

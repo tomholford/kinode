@@ -518,7 +518,7 @@ async fn make_process_loop(
         Process {
             metadata,
             recv_in_process,
-            send_to_loop,
+            send_to_loop: send_to_loop.clone(),
             send_to_terminal: send_to_terminal.clone(),
             prompting_message: None,
             contexts: HashMap::new(),
@@ -534,13 +534,51 @@ async fn make_process_loop(
             ).await.unwrap();
 
             //  process loop happens inside the WASM component process -- if desired
-            let _ = bindings.call_run_process(
+            match bindings.call_run_process(
                 &mut store,
                 &our_name,
                 &process_name,
-            ).await;
+            ).await {
+                Ok(()) => {},
+                Err(e) => {
+                    let _ = send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "mk: process {} ended with error: {:?}",
+                                process_name,
+                                e,
+                            ),
+                        })
+                        .await;
+                }
+            };
 
-            //  TODO: propagate error from process returning?
+            //  clean up process metadata & channels
+            send_to_loop
+                .send(WrappedMessage {
+                    id: rand::random(),
+                    rsvp: None,
+                    message: Message {
+                        message_type: MessageType::Request(false),
+                        wire: Wire {
+                            source_ship: our_name.clone(),
+                            source_app: "kernel".into(),
+                            target_ship: our_name.clone(),
+                            target_app: "process_manager".into(),
+                        },
+                        payload: Payload {
+                            json: Some(serde_json::json!({
+                                "type": "Stop",
+                                "process_name": process_name,
+                            })),
+                            bytes: None,
+                        },
+                    },
+                }
+                )
+                .await
+                .unwrap();
             Ok(())
         }
     )

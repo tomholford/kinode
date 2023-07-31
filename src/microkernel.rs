@@ -164,40 +164,13 @@ impl MicrokernelProcessImports for Process {
     }
 
     async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
-        let wrapped_message = self.recv_in_process.recv().await.unwrap();
-
-        // print_stack_to_terminal(
-        //     format!(
-        //         "{}: got message_stack",
-        //         self.metadata.process_name,
-        //     ).as_str(),
-        //     &next_message_stack,
-        //     self.send_to_terminal.clone(),
-        // ).await;
-
-        let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
-
-        let message_id = wrapped_message.id.clone();
-        let message_type = wrapped_message.message.message_type.clone();
+        let (wrapped_message, process_input) = send_loop_message_to_process(
+            &mut self.recv_in_process,
+            &mut self.send_to_terminal,
+            &self.contexts,
+        ).await;
         self.prompting_message = Some(wrapped_message);
-
-        match message_type {
-            MessageType::Request(_) => Ok((wit_message, "".to_string())),
-            MessageType::Response => {
-                match self.contexts.get(&message_id) {
-                    Some(ref context) => {
-                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
-                    },
-                    None => {
-                        self.send_to_terminal
-                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
-                            .await
-                            .unwrap();
-                        Ok((wit_message, "".to_string()))
-                    },
-                }
-            },
-        }
+        process_input
     }
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
@@ -220,6 +193,48 @@ impl MicrokernelProcessImports for Process {
     async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
         Ok(rand::random())
     }
+}
+
+async fn send_loop_message_to_process(
+    recv_in_process: &mut MessageReceiver,
+    send_to_terminal: &mut PrintSender,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    let wrapped_message = recv_in_process.recv().await.unwrap();
+
+    // print_stack_to_terminal(
+    //     format!(
+    //         "{}: got message_stack",
+    //         self.metadata.process_name,
+    //     ).as_str(),
+    //     &next_message_stack,
+    //     self.send_to_terminal.clone(),
+    // ).await;
+
+    let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
+
+    let message_id = wrapped_message.id.clone();
+    let message_type = wrapped_message.message.message_type.clone();
+    (
+        wrapped_message,
+        match message_type {
+            MessageType::Request(_) => Ok((wit_message, "".to_string())),
+            MessageType::Response => {
+                match contexts.get(&message_id) {
+                    Some(ref context) => {
+                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                    },
+                    None => {
+                        send_to_terminal
+                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
+                            .await
+                            .unwrap();
+                        Ok((wit_message, "".to_string()))
+                    },
+                }
+            },
+        },
+    )
 }
 
 async fn send_process_results_to_loop(

@@ -175,9 +175,9 @@ impl MicrokernelProcessImports for Process {
         process_input
     }
 
-    async fn yield_and_await_response(&mut self, result: (WitProtomessage, String)) -> Result<(WitMessage, String)> {
+    async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
         let ids = send_process_results_to_loop(
-            vec![result],
+            vec![(result, "".into())],
             self.metadata.our_name.clone(),
             self.metadata.process_name.clone(),
             self.send_to_loop.clone(),
@@ -228,7 +228,7 @@ async fn get_and_send_specific_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String)>) {
+) -> (WrappedMessage, Result<WitMessage>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -237,11 +237,18 @@ async fn get_and_send_specific_loop_message_to_process(
            & !(("ws" == wrapped_message.message.wire.source_app)
                & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
               ) {
-            return send_loop_message_to_process(
+            let message = send_loop_message_to_process(
                 wrapped_message,
                 send_to_terminal,
                 contexts,
             ).await;
+            return (
+                message.0,
+                match message.1 {
+                    Ok(r) => Ok(r.0),
+                    Err(e) => Err(e),
+                },
+            );
         }
 
         message_queue.push_back(wrapped_message);
@@ -254,6 +261,7 @@ async fn get_and_send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
         match message_queue.pop_front() {

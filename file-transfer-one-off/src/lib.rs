@@ -300,7 +300,7 @@ impl bindings::MicrokernelProcess for Component {
                                 );
 
                             //  TODO: error handle
-                            let (_, _) = bindings::yield_and_await_response((
+                            let _ = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -315,11 +315,10 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             //  TODO: error handle
-                            let (message, _) = bindings::yield_and_await_response((
+                            let message = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -334,11 +333,10 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             //  TODO: error handle
-                            let (message, _) = bindings::yield_and_await_response((
+                            let message = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: file_transfer_request_type.clone(),
                                     payload: &WitPayload {
@@ -353,8 +351,7 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             let Some(ref payload_json_string) = message.payload.json else {
                                 print_to_terminal(
@@ -375,7 +372,7 @@ impl bindings::MicrokernelProcess for Component {
 
                             let mut piece_number = 0;
                             loop {
-                                let (message, _) = bindings::yield_and_await_response((
+                                let message = bindings::yield_and_await_response(
                                     bindings::WitProtomessage {
                                         protomessage_type: file_transfer_request_type.clone(),
                                         payload: &WitPayload {
@@ -391,8 +388,7 @@ impl bindings::MicrokernelProcess for Component {
                                             bytes: None,
                                         },
                                     },
-                                    "",
-                                ));
+                                );
 
                                 let Some(ref payload_json_string) = message.payload.json else {
                                     print_to_terminal(
@@ -424,7 +420,7 @@ impl bindings::MicrokernelProcess for Component {
                                 };
 
                                 //  TODO: handle errors
-                                let (_, _) = bindings::yield_and_await_response((
+                                let _ = bindings::yield_and_await_response(
                                     bindings::WitProtomessage {
                                         protomessage_type: filesystem_request_type.clone(),
                                         payload: &WitPayload {
@@ -437,8 +433,7 @@ impl bindings::MicrokernelProcess for Component {
                                             bytes: Some(bytes),
                                         },
                                     },
-                                    "",
-                                ));
+                                );
 
                                 print_to_terminal(format!(
                                     "file_transfer: appended",
@@ -448,7 +443,7 @@ impl bindings::MicrokernelProcess for Component {
 
                                 if downloading.metadata.number_pieces == piece_number {
                                     //  received last piece; confirm file is good
-                                    let (message, _) = bindings::yield_and_await_response((
+                                    let message = bindings::yield_and_await_response(
                                         bindings::WitProtomessage {
                                             protomessage_type: filesystem_request_type.clone(),
                                             payload: &WitPayload {
@@ -461,8 +456,7 @@ impl bindings::MicrokernelProcess for Component {
                                                 bytes: None,
                                             },
                                         },
-                                        "",
-                                    ));
+                                    );
 
                                     let Some(ref payload_json_string) = message.payload.json else {
                                         print_to_terminal(
@@ -479,7 +473,7 @@ impl bindings::MicrokernelProcess for Component {
                                         //  file is good; clean up
 
                                         //  TODO: error handle
-                                        let (_, _) = bindings::yield_and_await_response((
+                                        let _ = bindings::yield_and_await_response(
                                             bindings::WitProtomessage {
                                                 protomessage_type: filesystem_request_type.clone(),
                                                 payload: &WitPayload {
@@ -494,8 +488,7 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: None,
                                                 },
                                             },
-                                            "",
-                                        ));
+                                        );
 
 
                                         print_to_terminal(format!(
@@ -548,7 +541,7 @@ impl bindings::MicrokernelProcess for Component {
                                 uri_string: start.uri_string.clone(),
                             };
 
-                            let (message, _) = bindings::yield_and_await_response((
+                            let message = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -561,8 +554,7 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             let Some(ref payload_json_string) = message.payload.json else {
                                 print_to_terminal(
@@ -614,7 +606,7 @@ impl bindings::MicrokernelProcess for Component {
                                 });
 
                             //  TODO: handle in case of errors
-                            let (_, _) = bindings::yield_and_await_response((
+                            let _ = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -629,8 +621,7 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             bindings::yield_results(vec![
                                 (
@@ -660,7 +651,7 @@ impl bindings::MicrokernelProcess for Component {
                                 panic!("file_transfer: GetPiece uploading must be set");
                             };
 
-                            let (message, _) = bindings::yield_and_await_response((
+                            let message = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -675,8 +666,7 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
                             let Some(ref payload_json_string) = message.payload.json else {
                                 print_to_terminal(
@@ -736,7 +726,7 @@ impl bindings::MicrokernelProcess for Component {
                             ].as_slice());
                         },
                         FileTransferRequest::Done { uri_string } => {
-                            let (_, _) = bindings::yield_and_await_response((
+                            let _ = bindings::yield_and_await_response(
                                 bindings::WitProtomessage {
                                     protomessage_type: filesystem_request_type.clone(),
                                     payload: &WitPayload {
@@ -751,8 +741,7 @@ impl bindings::MicrokernelProcess for Component {
                                         bytes: None,
                                     },
                                 },
-                                "",
-                            ));
+                            );
 
 
                             print_to_terminal(format!(

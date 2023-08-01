@@ -145,7 +145,6 @@ async fn compute_truncated_hash_reader(file_path: &str, mut file: fs::File) -> R
         number_bytes_left - number_iterations * HASH_READER_CHUNK_SIZE;
 
     while number_iterations > 0 {
-        println!("iter");
         let count = match file.read_exact(&mut buffer).await {
             Ok(c) => c,
             Err(e) => {
@@ -159,8 +158,6 @@ async fn compute_truncated_hash_reader(file_path: &str, mut file: fs::File) -> R
 
         number_iterations -= 1;
     }
-
-    println!("{} {}", number_bytes_left, number_bytes_left_after_loop);
 
     let mut buffer = vec![0; number_bytes_left_after_loop];
     let count = match file.read_exact(&mut buffer).await {

@@ -1,6 +1,6 @@
 use crossterm::{
     cursor,
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
     style::Print,
     terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
@@ -11,8 +11,10 @@ use std::io::{stdout, Write};
 
 use crate::types::*;
 
+#[derive(Debug)]
 struct CommandHistory {
     pub lines: VecDeque<String>,
+    pub working_line: Option<String>,
     pub max_size: usize,
     pub index: usize,
 }
@@ -21,12 +23,14 @@ impl CommandHistory {
     fn new(max_size: usize) -> Self {
         Self {
             lines: VecDeque::with_capacity(max_size),
+            working_line: None,
             max_size,
             index: 0,
         }
     }
 
     fn add(&mut self, line: String) {
+        self.working_line = None;
         self.lines.push_front(line);
         self.index = 0;
         if self.lines.len() > self.max_size {
@@ -34,23 +38,43 @@ impl CommandHistory {
         }
     }
 
-    fn get_prev(&mut self) -> String {
+    fn get_prev(&mut self, working_line: &str) -> Option<String> {
         if self.lines.len() == 0 || self.index == self.lines.len() {
-            return "".into();
+            return None;
         }
-        let line = self.lines[self.index].clone();
-        if self.index < self.lines.len() {
-            self.index += 1;
+        self.index += 1;
+        if self.index == 1 {
+            self.working_line = Some(working_line.into());
         }
-        line
+        let line = self.lines[self.index - 1].clone();
+        Some(line)
     }
 
-    fn get_next(&mut self) -> String {
-        if self.lines.len() == 0 || self.index == 0 {
-            return "".into();
+    fn get_next(&mut self) -> Option<String> {
+        if self.lines.len() == 0 || self.index == 0 || self.index == 1 {
+            self.index = 0;
+            if let Some(line) = self.working_line.clone() {
+                self.working_line = None;
+                return Some(line);
+            }
+            return None;
         }
         self.index -= 1;
-        self.lines[self.index].clone()
+        Some(self.lines[self.index - 1].clone())
+    }
+
+    /// if depth = 0, find most recent command in history that contains the
+    /// provided string. otherwise, skip the first <depth> matches.
+    /// yes this is O(n) to provide desired ordering, can revisit if slow
+    fn search(&mut self, find: &str, depth: usize) -> Option<String> {
+        let mut skips = 0;
+        for line in &self.lines {
+            if line.contains(find) && skips == depth {
+                return Some(line.to_string());
+            }
+            skips += 1;
+        }
+        None
     }
 }
 
@@ -65,7 +89,11 @@ pub async fn terminal(
     print_tx: PrintSender,
     mut print_rx: PrintReceiver,
 ) -> std::io::Result<()> {
-    execute!(stdout(), terminal::Clear(ClearType::All))?;
+    execute!(
+        stdout(),
+        EnableBracketedPaste,
+        terminal::SetTitle(format!("{}@{}", our.name, "uqbar"))
+    )?;
 
     // print initial splash screen
     println!(
@@ -102,13 +130,16 @@ pub async fn terminal(
     let stdout = stdout();
     let mut reader = EventStream::new();
     let mut current_line = format!("{} > ", our.name);
-    let prompt_len: u16 = (our.name.len() + 3).try_into().unwrap();
-    let (_win_cols, win_rows) = terminal::size().unwrap();
-    let mut cursor_col = prompt_len;
+    let prompt_len: usize = our.name.len() + 3;
+    let (mut win_cols, mut win_rows) = terminal::size().unwrap();
+    let mut cursor_col = prompt_len.try_into().unwrap();
+    let mut line_col: usize = cursor_col as usize;
     let mut in_step_through: bool = false;
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
     let mut verbose_mode: bool = true;
+    let mut search_mode: bool = false;
+    let mut search_depth: usize = 0;
 
     // TODO make adjustable max history length
     let mut command_history = CommandHistory::new(1000);
@@ -133,7 +164,8 @@ pub async fn terminal(
                         terminal::Clear(ClearType::CurrentLine),
                         Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", printout.content)),
                         cursor::MoveTo(0, win_rows),
-                        Print(&current_line),
+                        Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
+                        cursor::MoveTo(cursor_col, win_rows),
                     )?;
                 },
                 None => {
@@ -142,16 +174,43 @@ pub async fn terminal(
                 }
             },
             maybe_event = event => match maybe_event {
-
                 Some(Ok(event)) => {
                     let mut stdout = stdout.lock();
                     match event {
-                        // turn off the node
+                        // resize is super annoying because this event trigger often
+                        // comes "too late" to stop terminal from messing with the
+                        // already-printed lines. TODO figure out the right way
+                        // to compensate for this cross-platform and do this in a
+                        // generally stable way.
+                        Event::Resize(width, height) => {
+                            win_cols = width;
+                            win_rows = height;
+                        },
+                        // handle pasting of text from outside
+                        Event::Paste(pasted) => {
+                            current_line.insert_str(line_col, &pasted);
+                            line_col = current_line.len();
+                            cursor_col = std::cmp::min(line_col.try_into().unwrap_or(win_cols), win_cols);
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
+                                cursor::MoveTo(cursor_col, win_rows),
+                            )?;
+                        }
+                        // CTRL+C, CTRL+D: turn off the node
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('c'),
                             modifiers: KeyModifiers::CONTROL,
                             ..
+                        }) |
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('d'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
                         }) => {
+                            execute!(stdout, EnableBracketedPaste)?;
+                            disable_raw_mode()?;
                             break;
                         },
                         // CTRL+V: toggle verbose mode
@@ -162,10 +221,10 @@ pub async fn terminal(
                         }) => {
                             verbose_mode = !verbose_mode;
                         },
-                        // CTRL+D: toggle debug mode -- makes system-level event loop step-through
+                        // CTRL+J: toggle debug mode -- makes system-level event loop step-through
                         // CTRL+S: step through system-level event loop
                         Event::Key(KeyEvent {
-                            code: KeyCode::Char('d'),
+                            code: KeyCode::Char('j'),
                             modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
@@ -189,86 +248,286 @@ pub async fn terminal(
                             let _ = debug_event_loop.send(DebugCommand::Step).await;
                         },
                         //
+                        //  UP / CTRL+P: go up one command in history
+                        //  DOWN / CTRL+N: go down one command in history
+                        //
+                        Event::Key(KeyEvent { code: KeyCode::Up, .. }) |
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('p'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            // go up one command in history
+                            match command_history.get_prev(&current_line[prompt_len..]) {
+                                Some(line) => {
+                                    current_line = format!("{} > {}", our.name, line);
+                                    line_col = current_line.len();
+                                },
+                                None => {
+                                    print!("\x07");
+                                },
+                            }
+                            cursor_col = std::cmp::min(current_line.len() as u16, win_cols);
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                terminal::Clear(ClearType::CurrentLine),
+                                Print(truncate_rightward(&current_line, prompt_len, win_cols)),
+                            )?;
+                        },
+                        Event::Key(KeyEvent { code: KeyCode::Down, .. }) |
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('n'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            // go down one command in history
+                            match command_history.get_next() {
+                                Some(line) => {
+                                    current_line = format!("{} > {}", our.name, line);
+                                    line_col = current_line.len();
+                                },
+                                None => {
+                                    print!("\x07");
+                                },
+                            }
+                            cursor_col = std::cmp::min(current_line.len() as u16, win_cols);
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                terminal::Clear(ClearType::CurrentLine),
+                                Print(truncate_rightward(&current_line, prompt_len, win_cols)),
+                            )?;
+                        },
+                        //
+                        //  CTRL+A: jump to beginning of line
+                        //
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('a'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            line_col = prompt_len;
+                            cursor_col = prompt_len.try_into().unwrap();
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                Print(truncate_from_left(&current_line, prompt_len, win_cols, line_col)),
+                                cursor::MoveTo(cursor_col, win_rows),
+                            )?;
+                        },
+                        //
+                        //  CTRL+E: jump to end of line
+                        //
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('e'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            line_col = current_line.len();
+                            cursor_col = std::cmp::min(line_col.try_into().unwrap_or(win_cols), win_cols);
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                Print(truncate_from_right(&current_line, prompt_len, win_cols, line_col)),
+                            )?;
+                        },
+                        //
+                        //  CTRL+R: enter search mode
+                        //  if already in search mode, increase search depth
+                        //
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('r'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            if search_mode {
+                                search_depth += 1;
+                            }
+                            search_mode = true;
+                            if let Some(result) = command_history.search(&current_line[prompt_len..], search_depth) {
+                                // todo show search result with search query underlined
+                                // and cursor in correct spot
+                                execute!(
+                                    stdout,
+                                    cursor::MoveTo(0, win_rows),
+                                    Print(truncate_in_place(
+                                        &format!("{} * {}", our.name, result),
+                                        prompt_len,
+                                        win_cols,
+                                        (line_col, cursor_col))),
+                                    cursor::MoveTo(cursor_col, win_rows),
+                                )?;
+                            } else {
+                                execute!(
+                                    stdout,
+                                    cursor::MoveTo(0, win_rows),
+                                    Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
+                                    cursor::MoveTo(cursor_col, win_rows),
+                                )?;
+                            }
+                        },
+                        //
+                        //  CTRL+G: exit search mode
+                        //
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('g'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            // just show true current line as usual
+                            search_mode = false;
+                            search_depth = 0;
+                            execute!(
+                                stdout,
+                                cursor::MoveTo(0, win_rows),
+                                terminal::Clear(ClearType::CurrentLine),
+                                Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
+                                cursor::MoveTo(cursor_col, win_rows),
+                            )?;
+                        },
+                        //
                         //  handle keypress events
                         //
                         Event::Key(k) => {
                             match k.code {
                                 KeyCode::Char(c) => {
-                                    current_line.insert(cursor_col as usize, c);
-                                    cursor_col += 1;
+                                    current_line.insert(line_col, c);
+                                    if cursor_col < win_cols {
+                                        cursor_col += 1;
+                                    }
+                                    line_col += 1;
+                                    if search_mode {
+                                        if let Some(result) = command_history.search(&current_line[prompt_len..], search_depth) {
+                                            // todo show search result with search query underlined
+                                            // and cursor in correct spot
+                                            execute!(
+                                                stdout,
+                                                cursor::MoveTo(0, win_rows),
+                                                Print(truncate_in_place(
+                                                    &format!("{} * {}", our.name, result),
+                                                    prompt_len,
+                                                    win_cols,
+                                                    (line_col, cursor_col))),
+                                                cursor::MoveTo(cursor_col, win_rows),
+                                            )?;
+                                            continue
+                                        }
+                                    }
                                     execute!(
                                         stdout,
                                         cursor::MoveTo(0, win_rows),
-                                        Print(&current_line),
+                                        Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
                                         cursor::MoveTo(cursor_col, win_rows),
                                     )?;
                                 },
                                 KeyCode::Backspace => {
-                                    if cursor::position().unwrap().0 == prompt_len {
+                                    if line_col == prompt_len {
                                         continue;
                                     }
-                                    cursor_col -= 1;
-                                    current_line.remove(cursor_col as usize);
+                                    if cursor_col as usize == line_col {
+                                        cursor_col -= 1;
+                                    }
+                                    line_col -= 1;
+                                    current_line.remove(line_col);
+                                    if search_mode {
+                                        if let Some(result) = command_history.search(&current_line[prompt_len..], search_depth) {
+                                            // todo show search result with search query underlined
+                                            // and cursor in correct spot
+                                            execute!(
+                                                stdout,
+                                                cursor::MoveTo(0, win_rows),
+                                                Print(truncate_in_place(
+                                                    &format!("{} * {}", our.name, result),
+                                                    prompt_len,
+                                                    win_cols,
+                                                    (line_col, cursor_col))),
+                                                cursor::MoveTo(cursor_col, win_rows),
+                                            )?;
+                                            continue
+                                        }
+                                    }
                                     execute!(
                                         stdout,
                                         cursor::MoveTo(0, win_rows),
                                         terminal::Clear(ClearType::CurrentLine),
-                                        Print(&current_line),
+                                        Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
                                         cursor::MoveTo(cursor_col, win_rows),
                                     )?;
                                 },
                                 KeyCode::Left => {
-                                    if cursor::position().unwrap().0 == prompt_len {
-                                        continue;
+                                    if cursor_col as usize == prompt_len {
+                                        if line_col == prompt_len {
+                                            // at the very beginning of the current typed line
+                                            continue;
+                                        } else {
+                                            // virtual scroll leftward through line
+                                            line_col -= 1;
+                                            execute!(
+                                                stdout,
+                                                cursor::MoveTo(0, win_rows),
+                                                Print(truncate_from_left(&current_line, prompt_len, win_cols, line_col)),
+                                                cursor::MoveTo(cursor_col, win_rows),
+                                            )?;
+                                        }
+                                    } else {
+                                        // simply move cursor and line position left
+                                        execute!(
+                                            stdout,
+                                            cursor::MoveLeft(1),
+                                        )?;
+                                        cursor_col -= 1;
+                                        line_col -= 1;
                                     }
-                                    execute!(
-                                        stdout,
-                                        cursor::MoveLeft(1),
-                                    )?;
-                                    cursor_col -= 1;
                                 },
                                 KeyCode::Right => {
-                                    if cursor::position().unwrap().0 as usize == current_line.len() {
+                                    if line_col == current_line.len() {
+                                        // at the very end of the current typed line
                                         continue;
                                     }
-                                    execute!(
-                                        stdout,
-                                        cursor::MoveRight(1),
-                                    )?;
-                                    cursor_col += 1;
-                                },
-                                KeyCode::Up => {
-                                    // go up one command in history
-                                    current_line = format!("{} > {}", our.name, command_history.get_prev());
-                                    cursor_col = current_line.len() as u16;
-                                    execute!(
-                                        stdout,
-                                        cursor::MoveTo(0, win_rows),
-                                        terminal::Clear(ClearType::CurrentLine),
-                                        Print(&current_line),
-                                    )?;
-                                },
-                                KeyCode::Down => {
-                                    // go down one command in history
-                                    current_line = format!("{} > {}", our.name, command_history.get_next());
-                                    cursor_col = current_line.len() as u16;
-                                    execute!(
-                                        stdout,
-                                        cursor::MoveTo(0, win_rows),
-                                        terminal::Clear(ClearType::CurrentLine),
-                                        Print(&current_line),
-                                    )?;
+                                    if cursor_col < (win_cols - 1) {
+                                        // simply move cursor and line position right
+                                        execute!(
+                                            stdout,
+                                            cursor::MoveRight(1),
+                                        )?;
+                                        cursor_col += 1;
+                                        line_col += 1;
+                                    } else {
+                                        // virtual scroll rightward through line
+                                        line_col += 1;
+                                        execute!(
+                                            stdout,
+                                            cursor::MoveTo(0, win_rows),
+                                            Print(truncate_from_right(&current_line, prompt_len, win_cols, line_col)),
+                                        )?;
+                                    }
                                 },
                                 KeyCode::Enter => {
-                                    let command = current_line[prompt_len as usize..].to_string();
-                                    current_line = format!("{} > ", our.name);
+                                    // if we were in search mode, pull command from that
+                                    let command = if !search_mode {
+                                            current_line[prompt_len..].to_string()
+                                        } else {
+                                            command_history.search(
+                                                &current_line[prompt_len..],
+                                                search_depth
+                                            ).unwrap_or(current_line[prompt_len..].to_string())
+                                        };
+                                    let next = format!("{} > ", our.name);
                                     execute!(
                                         stdout,
-                                        Print("\r\n"),
+                                        cursor::MoveTo(0, win_rows),
+                                        terminal::Clear(ClearType::CurrentLine),
                                         Print(&current_line),
+                                        Print("\r\n"),
+                                        Print(&next),
                                     )?;
+                                    search_mode = false;
+                                    search_depth = 0;
+                                    current_line = next;
                                     command_history.add(command.clone());
-                                    cursor_col = prompt_len;
+                                    cursor_col = prompt_len.try_into().unwrap();
+                                    line_col = prompt_len;
                                     let _err = event_loop.send(
                                         WrappedMessage {
                                             id: rand::random(),
@@ -300,5 +559,56 @@ pub async fn terminal(
             }
         }
     }
+    execute!(stdout.lock(), EnableBracketedPaste)?;
     disable_raw_mode()
+}
+
+fn truncate_rightward(s: &str, prompt_len: usize, width: u16) -> String {
+    if s.len() <= width as usize {
+        // no adjustment to be made
+        return s.to_string();
+    }
+    let sans_prompt = &s[prompt_len..];
+    s[..prompt_len].to_string() + &sans_prompt[(s.len() - width as usize)..]
+}
+
+/// print prompt, then as many chars as will fit in term starting from line_col
+fn truncate_from_left(s: &str, prompt_len: usize, width: u16, line_col: usize) -> String {
+    if s.len() <= width as usize {
+        // no adjustment to be made
+        return s.to_string();
+    }
+    s[..prompt_len].to_string() + &s[line_col..(width as usize - prompt_len + line_col)]
+}
+
+/// print prompt, then as many chars as will fit in term leading up to line_col
+fn truncate_from_right(s: &str, prompt_len: usize, width: u16, line_col: usize) -> String {
+    if s.len() <= width as usize {
+        // no adjustment to be made
+        return s.to_string();
+    }
+    s[..prompt_len].to_string() + &s[(prompt_len + (line_col - width as usize))..line_col]
+}
+
+/// if line is wider than the terminal, truncate it intelligently,
+/// keeping the cursor in the same relative position.
+fn truncate_in_place(
+    s: &str,
+    prompt_len: usize,
+    width: u16,
+    (line_col, cursor_col): (usize, u16),
+) -> String {
+    if s.len() <= width as usize {
+        // no adjustment to be made
+        return s.to_string();
+    }
+    // always keep prompt at left
+    let prompt = &s[..prompt_len];
+    // print as much of the command fits left of col_in_command before cursor_col,
+    // then fill out the rest up to width
+    let end = width as usize + line_col - cursor_col as usize;
+    if end > s.len() {
+        return s.to_string();
+    }
+    prompt.to_string() + &s[(prompt_len + line_col - cursor_col as usize)..end]
 }

@@ -727,7 +727,6 @@ async fn make_event_loop(
     send_to_loop: MessageSender,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_keygen: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
     send_to_terminal: PrintSender,
@@ -737,7 +736,6 @@ async fn make_event_loop(
         async move {
             let mut senders: Senders = HashMap::new();
             senders.insert("filesystem".to_string(), send_to_fs);
-            senders.insert("keygen".to_string(), send_to_keygen);
             senders.insert("http_server".to_string(), send_to_http_server.clone());
             senders.insert("http_client".to_string(), send_to_http_client);
 
@@ -859,7 +857,6 @@ pub async fn kernel(
     recv_debug_in_loop: DebugReceiver,
     send_to_wss: MessageSender,
     send_to_fs: MessageSender,
-    send_to_keygen: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
 ) {
@@ -876,7 +873,6 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
-            send_to_keygen,
             send_to_http_server,
             send_to_http_client,
             send_to_terminal.clone(),
@@ -967,6 +963,34 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_http_bindings_message).await.unwrap();
+
+    // always start apps-home on boot
+    let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
+    let start_apps_home_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "apps_home".into(),
+                            wasm_bytes_uri: "apps_home.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(apps_home_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_apps_home_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

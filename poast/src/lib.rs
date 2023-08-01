@@ -28,6 +28,25 @@ impl bindings::MicrokernelProcess for Component {
                     }
                 },
                 "",
+            ), (
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: our.as_str(),
+                            target_app: "http_bindings",
+                        }
+                    ),
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/poast/:banger", // TODO at some point we need URL pattern matching...later...
+                            "app": dap
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+                "",
             )].as_slice()
         );
 
@@ -38,16 +57,14 @@ impl bindings::MicrokernelProcess for Component {
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
             bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str());
-            bindings::print_to_terminal(format!("ID: {}", message_from_loop["id"]).as_str());
             bindings::print_to_terminal(format!("METHOD: {}", message_from_loop["method"]).as_str());
-            if message_from_loop["method"] == "GET" {
+            if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/poast" {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
                         payload: &WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
-                                "id": message_from_loop["id"],
                                 "status": 201,
                                 "headers": {
                                     "Content-Type": "text/html",
@@ -58,14 +75,13 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     "",
                 )].as_slice());
-            } else if message_from_loop["method"] == "POST" {
+            } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/poast" {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
                         payload: &WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
-                                "id": message_from_loop["id"],
                                 "status": 201,
                                 "headers": {
                                     "Content-Type": "application/json",
@@ -78,6 +94,33 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     "",
                 )].as_slice());
+            } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/poast/:banger" {
+                let mut params = String::new();
+                for (key, value) in message_from_loop["url_params"].as_object().unwrap() {
+                    params.push_str(format!("{}={}&", key, value).as_str());
+                }
+                let mut query_params = String::new();
+                for (key, value) in message_from_loop["query_params"].as_object().unwrap() {
+                    query_params.push_str(format!("{}={}&", key, value).as_str());
+                }
+                bindings::yield_results(vec![(
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 201,
+                                "headers": {
+                                    "Content-Type": "application/json",
+                                },
+                            }).to_string()),
+                            bytes: Some(format!(
+                                "you just performed a GET with url params {:?} and query params {:?}", params, query_params
+                            ).as_bytes().to_vec())
+                        }
+                    },
+                    "",
+                )].as_slice());
             } else {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
@@ -85,7 +128,6 @@ impl bindings::MicrokernelProcess for Component {
                         payload: &WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
-                                "id": message_from_loop["id"],
                                 "status": 201,
                                 "headers": {
                                     "Content-Type": "application/json",

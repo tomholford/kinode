@@ -97,7 +97,8 @@ pub async fn handle_forwarding_connection(
     // abort pass-through connection handlers as needed.
     let mut pt_writer = pass_throughs.write().await;
     // XX is this necessary?
-    pt_writer.get_mut(&from.name)
+    pt_writer
+        .get_mut(&from.name)
         .unwrap_or(&mut HashMap::<String, (WriteStream, JoinHandle<()>)>::new())
         .iter_mut()
         .for_each(|(_, (writer, handle))| {
@@ -162,7 +163,7 @@ async fn aggregate_connection(
                 }
             }
             WrappedMessage::Handshake(handshake) => {
-                let their_id: Identity = match pki.get(&handshake.from) {
+                let their_id: Identity = match pki.read().await.get(&handshake.from) {
                     Some(v) => v.clone(),
                     None => continue,
                 };
@@ -324,7 +325,7 @@ async fn forwarding_connection(
                     None => {}
                 }
                 // no existing pass-through, make a new one
-                let target_id: Identity = match pki.get(&handshake.target) {
+                let target_id: Identity = match pki.read().await.get(&handshake.target) {
                     Some(v) => v.clone(),
                     None => {
                         let _err = forward_special_message(
@@ -393,7 +394,7 @@ async fn forwarding_connection(
                     None => {
                         // connect *in*directly
                         let router_name = target_id.allowed_routers.get(0).unwrap();
-                        let router_id: Identity = match pki.get(router_name) {
+                        let router_id: Identity = match pki.read().await.get(router_name) {
                             Some(v) => v.clone(),
                             None => {
                                 let _err = forward_special_message(
@@ -603,5 +604,6 @@ pub async fn one_way_pass_through_connection(
         peers.clone(),
         &forward_to,
         WrappedMessage::LostPeer(from.clone()),
-    ).await;
+    )
+    .await;
 }

@@ -12,14 +12,14 @@ fn parse_command(line: String) {
             let (target_server, tail) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
                 None => {
-                    bindings::print_to_terminal("invalid command");
+                    bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
             let (target_app, payload) = match tail.split_once(" ") {
                 Some((a, p)) => (a, p),
                 None => {
-                    bindings::print_to_terminal("invalid command");
+                    bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
@@ -42,7 +42,7 @@ fn parse_command(line: String) {
             );
         }
         _ => {
-            bindings::print_to_terminal("invalid command");
+            bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
         }
     }
 }

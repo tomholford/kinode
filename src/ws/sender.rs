@@ -250,7 +250,8 @@ async fn connect_to_router(
     router_name: &String,
     routers: Routers,
 ) -> Result<(), String> {
-    let router: &Identity = pki
+    let pki_read = pki.read().await;
+    let router: &Identity = pki_read
         .get(router_name)
         .ok_or("error: router not found in PKI")?;
     let router_ws_url: Url = match &router.ws_routing {
@@ -297,7 +298,7 @@ async fn connect_to_router(
             peers.write().await.insert(
                 router.name.clone(),
                 Peer {
-                    networking_address: router.address,
+                    networking_address: router.address.clone(),
                     ephemeral_secret: ephemeral_secret.clone(),
                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                     nonce: nonce.clone(),
@@ -383,7 +384,8 @@ async fn send_message(
         None => {
             drop(peer_write);
             // no connection with target, check for public networking info
-            let target_id: &Identity = match pki.get(target) {
+            let pki_read = pki.read().await;
+            let target_id: &Identity = match pki_read.get(target) {
                 Some(v) => v,
                 None => return Err(NetworkingError::PeerOffline),
             };
@@ -393,6 +395,9 @@ async fn send_message(
             match &target_id.ws_routing {
                 Some((ip, port)) => {
                     // connect directly
+                    let ip = if our.ws_routing.as_ref().unwrap().0 == *ip {
+                        "localhost"
+                    } else { ip };
                     let ws_url = match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
                         Ok(v) => v,
                         Err(_) => return Err(NetworkingError::PeerOffline),
@@ -447,7 +452,7 @@ async fn send_message(
                             peers.write().await.insert(
                                 target.clone(),
                                 Peer {
-                                    networking_address: target_id.address,
+                                    networking_address: target_id.address.clone(),
                                     ephemeral_secret: ephemeral_secret.clone(),
                                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                                     nonce: nonce.clone(),
@@ -476,7 +481,8 @@ async fn send_message(
                     let router_name = target_id.allowed_routers.get(0).unwrap();
 
                     // find the router
-                    let router: &Identity = match pki.get(router_name) {
+                    let pki_read = pki.read().await;
+                    let router: &Identity = match pki_read.get(router_name) {
                         Some(v) => v,
                         None => return Err(NetworkingError::PeerOffline),
                     };
@@ -538,7 +544,7 @@ async fn send_message(
                             peers.write().await.insert(
                                 target.clone(),
                                 Peer {
-                                    networking_address: target_id.address,
+                                    networking_address: target_id.address.clone(),
                                     ephemeral_secret: ephemeral_secret.clone(),
                                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                                     nonce: nonce.clone(),

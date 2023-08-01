@@ -1,21 +1,33 @@
-use ring::signature;
-use ring::signature::KeyPair;
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    Aes256Gcm,
+    Key, // Or `Aes128Gcm`
+};
+use lazy_static::__Deref;
+use reqwest;
+use ring::pbkdf2;
+use ring::pkcs8::Document;
+use ring::signature::{self, KeyPair};
 use std::collections::HashMap;
 use std::env;
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::{fs, time::timeout};
 
+use crate::http_server::find_open_port;
+use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
 mod engine;
 mod filesystem;
+mod http_client;
 mod http_server;
 mod microkernel;
+mod register;
 mod terminal;
 mod types;
 mod ws;
-mod keygen;
-mod http_client;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -23,10 +35,37 @@ const TERMINAL_CHANNEL_CAPACITY: usize = 32;
 const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
-const KEYGEN_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
+
+async fn indexing(blockchain_url: &str, pki: OnchainPKI, _print_sender: PrintSender) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let response = match reqwest::get(blockchain_url).await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    response
+                } else {
+                    continue;
+                }
+            }
+            Err(_) => continue,
+        };
+        let json = match response.json::<serde_json::Value>().await {
+            Ok(json) => json,
+            Err(_) => continue,
+        };
+        let mut pki = pki.write().await;
+        *pki = match serde_json::from_value::<HashMap<String, Identity>>(json) {
+            Ok(pki) => pki,
+            Err(_) => continue,
+        };
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -36,7 +75,9 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let process_manager_wasm_path = args[1].clone();
     let home_directory_path = &args[2];
-    let our_name: String = args[3].clone();
+    // read PKI from HTTP endpoint served by RPC
+    let blockchain_url = &args[3]; // "http://147.135.114.167:8083/blockchain.json";
+                                   // TODO unhardcode, generate with entropy, and save somewhere that can be recovered.
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -50,72 +91,235 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
-    // keygen creates networking keys and at-rest disk encryption key
-    let (keygen_message_sender, keygen_message_receiver): (MessageSender, MessageReceiver) =
-        mpsc::channel(KEYGEN_CHANNEL_CAPACITY);
     // http server channel (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
-    mpsc::channel(HTTP_CHANNEL_CAPACITY);
+        mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
-    let (http_client_message_sender, http_client_message_receiver): (MessageSender, MessageReceiver) =
-        mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    let (http_client_message_sender, http_client_message_receiver): (
+        MessageSender,
+        MessageReceiver,
+    ) = mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
-    // this will be replaced with actual chain reading from indexer module?
-    let blockchain =
-        std::fs::File::open("blockchain.json").expect("couldn't read from the chain lolz");
-    let json: serde_json::Value =
-        serde_json::from_reader(blockchain).expect("blockchain.json should be proper JSON");
-    let pki: OnchainPKI = Arc::new(
-        serde_json::from_value::<HashMap<String, Identity>>(json)
-            .expect("should be a JSON map of identities"),
-    );
-    // our identity in the uqbar PKI
-    let our = pki.get(&our_name).expect("we should be in the PKI").clone();
+    let (pki, local): (OnchainPKI, bool) = 'get_chain: {
+        if let Ok(response) = reqwest::get(blockchain_url).await {
+            if response.status().is_success() {
+                if let Ok(pki) = response.json::<HashMap<String, Identity>>().await {
+                    break 'get_chain (Arc::new(RwLock::new(pki)), false);
+                }
+            }
+        }
+        println!(
+            "failed to fetch PKI from {}, falling back to local blockchain.json",
+            blockchain_url
+        );
+        let blockchain = std::fs::File::open("blockchain.json").unwrap();
+        let json: serde_json::Value = serde_json::from_reader(blockchain).unwrap();
+        (
+            Arc::new(RwLock::new(
+                serde_json::from_value::<HashMap<String, Identity>>(json).unwrap(),
+            )),
+            true,
+        )
+    };
 
-    // fake local blockchain
-    // let uqchain = engine::UqChain::new();
-    // let my_txn: engine::Transaction = engine::Transaction {
-    //     from: our.address,
-    //     signature: None,
-    //     to: "0x0000000000000000000000000000000000000000000000000000000000005678"
-    //         .parse()
-    //         .unwrap(),
-    //     town_id: 0,
-    //     calldata: serde_json::to_value("hi").unwrap(),
-    //     nonce: U256::from(1),
-    //     gas_price: U256::from(0),
-    //     gas_limit: U256::from(0),
-    // };
-    // let _ = uqchain.run_batch(vec![my_txn]);
+    println!("finding public IP address...");
+    let our_ip = {
+        if let Ok(Some(ip)) = timeout(std::time::Duration::from_secs(5), public_ip::addr_v4()).await
+        {
+            ip.to_string()
+        } else {
+            println!("failed to find public IPv4 address: booting as a routed node");
+            "localhost".into()
+        }
+    };
 
-    // this will be replaced with a key manager module
-    let name_seed: [u8; 32] = our.address.into();
-    let networking_keypair = signature::Ed25519KeyPair::from_seed_unchecked(&name_seed).unwrap();
-    let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
-    assert!(hex_pubkey == our.networking_key);
+    // check if we have keys saved on disk, encrypted
+    // if so, prompt user for "password" to decrypt with
 
+    // once password is received, use to decrypt local keys file,
+    // and pass the keys into boot process as is done in registration.
+
+    // NOTE: when we log in, we MUST check the PKI to make sure our
+    // information matches what we think it should be. this includes
+    // username, address, networking key, and routing info.
+    // if any do not match, we should prompt user to create a "transaction"
+    // that updates their PKI info on-chain.
+    let registration_port = find_open_port(8000).await.unwrap();
+    let (kill_tx, kill_rx) = oneshot::channel::<bool>();
+    let keyfile = fs::read(format!("{}/network.keys", home_directory_path)).await;
+
+    let (our, networking_keypair): (Identity, signature::Ed25519KeyPair) = if keyfile.is_ok() {
+        // LOGIN flow
+        // get username from disk
+        let username = fs::read_to_string(format!("{}/.user", home_directory_path))
+            .await
+            .unwrap();
+
+        println!(
+            "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
+            format!("http://localhost:{}/login", registration_port),
+            format!(
+                "Welcome back, {}. Click here to log in to your node.",
+                username
+            ),
+        );
+        println!("(http://localhost:{}/login)", registration_port);
+        if our_ip != "localhost" {
+            println!(
+                "(if on a remote machine: http://{}:{})",
+                our_ip, registration_port
+            );
+        }
+
+        let (tx, mut rx) = mpsc::channel::<signature::Ed25519KeyPair>(1);
+        let networking_keypair = tokio::select! {
+            _ = register::login(tx, kill_rx, keyfile.unwrap(), registration_port, &username) => panic!("login failed"),
+            networking_keypair = async {
+                while let Some(fin) = rx.recv().await {
+                    return fin
+                }
+                panic!("login failed")
+            } => networking_keypair,
+        };
+
+        // check if Identity for this username has correct networking keys,
+        // if not, prompt user to reset them. TODO
+        let pki_read = pki.read().await;
+        let our_identity = match pki_read.get(&username) {
+            Some(identity) => identity,
+            None => panic!(
+                "TODO prompt registration: no identity found for username {}",
+                username
+            ),
+        };
+        (our_identity.clone(), networking_keypair)
+    } else {
+        // REGISTER flow
+        println!(
+            "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
+            format!("http://localhost:{}/register", registration_port),
+            "Click here to register your node.",
+        );
+        println!("(http://localhost:{}/register)", registration_port);
+        if our_ip != "localhost" {
+            println!(
+                "(if on a remote machine: http://{}:{})",
+                our_ip, registration_port
+            );
+        }
+        let (tx, mut rx) = mpsc::channel::<(Registration, Document, String)>(1);
+        let (registration, serialized_networking_keypair, signature) = tokio::select! {
+            _ = register::register(tx, kill_rx, registration_port) => panic!("registration failed"),
+            (registration, serialized_networking_keypair, signature) = async {
+                while let Some(fin) = rx.recv().await {
+                    return fin
+                }
+                panic!("registration failed")
+            } => (registration, serialized_networking_keypair, signature),
+        };
+
+        println!("generating disk encryption keys...");
+        let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
+        pbkdf2::derive(
+            PBKDF2_ALG,
+            NonZeroU32::new(ITERATIONS).unwrap(),
+            DISK_KEY_SALT,
+            registration.password.as_bytes(),
+            &mut disk_key,
+        );
+        println!(
+            "saving encrypted networking keys to {}/network.keys",
+            home_directory_path
+        );
+        let key = Key::<Aes256Gcm>::from_slice(&disk_key);
+        let cipher = Aes256Gcm::new(&key);
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+        let ciphertext: Vec<u8> = cipher
+            .encrypt(&nonce, serialized_networking_keypair.as_ref())
+            .unwrap();
+        fs::write(
+            format!("{}/network.keys", home_directory_path),
+            [nonce.deref().to_vec(), ciphertext].concat(),
+        )
+        .await
+        .unwrap();
+        let networking_keypair =
+            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+
+        // TODO: if IP is localhost, assign a router...
+        let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
+        let ws_port = find_open_port(9000).await.unwrap();
+        let our = Identity {
+            name: registration.username.clone(),
+            address: registration.address.clone(),
+            networking_key: hex_pubkey.clone(),
+            ws_routing: if our_ip == "localhost" {
+                None
+            } else {
+                Some((our_ip, ws_port))
+            },
+            allowed_routers: vec![],
+            routing_for: vec![],
+        };
+
+        let id_transaction = IdentityTransaction {
+            from: registration.address.clone(),
+            signature: Some(signature),
+            to: "0x0".into(),
+            town_id: 0,
+            calldata: our.clone(),
+            nonce: "0".into(),
+        };
+
+        // make POST
+        if !local {
+            let response = reqwest::Client::new()
+                .post(blockchain_url)
+                .body(bincode::serialize(&id_transaction).unwrap())
+                .send()
+                .await
+                .unwrap();
+
+            assert!(response.status().is_success());
+        } else {
+            pki.write().await.insert(our.name.clone(), our.clone());
+            fs::write(
+                "blockchain.json",
+                serde_json::to_string(&*pki.read().await).unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+        println!("registration complete!");
+        (our, networking_keypair)
+    };
+    let _ = kill_tx.send(true);
     let _ = print_sender
         .send(Printout {
             verbosity: 0,
-            content: format!("{}.. now online", our_name),
+            content: format!("{}.. now online", our.name),
         })
         .await;
     let _ = print_sender
         .send(Printout {
             verbosity: 0,
-            content: format!("our networking public key: {}", hex_pubkey),
+            content: format!("our networking public key: {}", our.networking_key),
         })
         .await;
 
-    /*  we are currently running 5 I/O modules:
+    // at boot, always save username to disk for login
+    fs::write(format!("{}/.user", home_directory_path), our.name.clone())
+        .await
+        .unwrap();
+
+    /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,
      *      http-server,
-     *      keygen
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
      *
@@ -144,7 +348,6 @@ async fn main() {
             kernel_debug_message_receiver,
             wss_message_sender.clone(),
             fs_message_sender.clone(),
-            keygen_message_sender.clone(),
             http_server_sender.clone(),
             http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
@@ -157,31 +360,32 @@ async fn main() {
             wss_message_receiver,
             wss_message_sender.clone(),
         ) => { "websocket sender died".to_string() },
+        // temporary process to keep up-to-date on chain,
+        // will replace with full-fledged indexing
+        _ = indexing(
+            blockchain_url,
+            pki.clone(),
+            print_sender.clone(),
+        ) => { "indexing died".to_string() },
         _ = filesystem::fs_sender(
-            &our_name,
+            &our.name,
             home_directory_path,
             kernel_message_sender.clone(),
             print_sender.clone(),
             fs_message_receiver
-        ) => { "".to_string() },
-        _ = keygen::keygen(
-            &our_name,
-            kernel_message_sender.clone(),
-            keygen_message_receiver,
-            print_sender.clone(),
-        ) => { "keygen died".to_string() },
+        ) => { "filesystem died".to_string() },
         _ = http_server::http_server(
-            &our_name,
+            &our.name,
             http_server_receiver,
             kernel_message_sender.clone(),
             print_sender.clone(),
         ) => { "http_server died".to_string() },
         _ = http_client::http_client(
-            &our_name,
+            &our.name,
             kernel_message_sender.clone(),
             http_client_message_receiver,
             print_sender.clone(),
-        ) => { "keygen died".to_string() },
+        ) => { "http-client died".to_string() },
     };
     println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);

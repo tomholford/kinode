@@ -38,19 +38,31 @@ Replace `file-transfer` with the desired component.
 
 ### Boot
 
-Boot takes 3 arguments: the desired process manager, the home directory, and the name of the node. You can just use `process_manager.wasm`, which will already be built. Use the home directory you created previously and select a name for the node. This name argument will soon be eliminated and replaced with the login page.
+Boot takes 3 arguments: the desired process manager, the home directory, and the URL of a "blockchain" RPC endpoint. You can just use `process_manager.wasm`, which will already be built. Use the home directory you created previously and select a name for the node. For the third argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run process_manager.wasm home your_name
+cargo run process_manager.wasm home http://147.135.114.167:8083/blockchain.json
 ```
+
+If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
+
+In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up, replacing your_name as necessary:
+`!message <<your_name>> process_manager {"type": "Start", "process_name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm"}`
+
+You will be prompted to navigate to `localhost:8000/register`. This should appear as a screen to input a username and password. After submitting these and signing the metamask prompt, your node should connect and insert itself to the chain. You can check by going to the URL endpoint served at either that IP or your local "chain" node.
 
 Now that the node has started, look to the example usage section below to see what kind of commands are available.
 
 ### Terminal syntax
 
-- CTRL+C to kill node
+- CTRL+C or CTRL+D to shutdown node
 - CTRL+V to toggle verbose mode, which is on by default
-- CTRL+D to toggle debug mode
+- CTRL+J to toggle debug mode
 - CTRL+S to step through events in debug mode
+
+- CTRL+A to jump to beginning of input
+- CTRL+E to jump to end of input
+- UpArrow/DownArrow or CTRL+P/CTRL+N to move up and down through command history
+- CTRL+R to search history, CTRL+R again to toggle through search results, CTRL+G to cancel search
 
 - `!message <name> <app> <json>`: send a card with a JSON value to another node or yourself
 - more to come

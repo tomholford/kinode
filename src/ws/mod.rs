@@ -33,7 +33,7 @@ type WriteStream = SplitSink<Sock, tungstenite::Message>;
 type PassThroughs = Arc<RwLock<HashMap<String, HashMap<String, (WriteStream, JoinHandle<()>)>>>>;
 
 pub struct Peer {
-    pub networking_address: H256,
+    pub networking_address: String,
     pub ephemeral_secret: Arc<EphemeralSecret<Secp256k1>>,
     pub their_ephemeral_pk: Arc<PublicKey<Secp256k1>>,
     pub nonce: Arc<Nonce>,

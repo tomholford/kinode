@@ -59,7 +59,7 @@ async fn create_connection(
     let (mut write_stream, mut read_stream) = ws_stream.split();
     // receive handshake, parse handshake
     let handshake: Handshake = get_handshake(&mut read_stream).await?;
-    let their_id: Identity = match pki.get(&handshake.from) {
+    let their_id: Identity = match pki.read().await.get(&handshake.from) {
         Some(v) => v.clone(),
         None => return Err("peer not found in onchain pki".into()),
     };
@@ -95,7 +95,7 @@ async fn create_connection(
             peers.write().await.insert(
                 their_id.name.clone(),
                 Peer {
-                    networking_address: their_id.address,
+                    networking_address: their_id.address.clone(),
                     ephemeral_secret: ephemeral_secret.clone(),
                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                     nonce: nonce.clone(),
@@ -124,7 +124,7 @@ async fn create_connection(
             peers.write().await.insert(
                 their_id.name.clone(),
                 Peer {
-                    networking_address: their_id.address,
+                    networking_address: their_id.address.clone(),
                     ephemeral_secret: ephemeral_secret.clone(),
                     their_ephemeral_pk: their_ephemeral_pk.clone(),
                     nonce: nonce.clone(),
@@ -134,7 +134,7 @@ async fn create_connection(
             );
 
             tokio::spawn(connections::handle_direct_connection(
-                their_id,
+                their_id.clone(),
                 read_stream,
                 peers.clone(),
                 ephemeral_secret.clone(),
@@ -147,7 +147,7 @@ async fn create_connection(
     } else {
         // handshake.target is not us.
         // try to make a matching pass-through
-        match pki.get(&handshake.target) {
+        match pki.read().await.get(&handshake.target) {
             Some(target_id) => {
                 if target_id.ws_routing.is_none()
                     && target_id.allowed_routers.contains(&our.name)
@@ -167,9 +167,7 @@ async fn create_connection(
                     let mut pt_writer = pass_throughs.write().await;
                     match pt_writer.get_mut(&target_id.name) {
                         None => return Err("target not routable".into()),
-                        Some(map) => {
-                            map.insert(their_id.name, (write_stream, pass_through_handle))
-                        }
+                        Some(map) => map.insert(their_id.name, (write_stream, pass_through_handle)),
                     };
 
                     Ok(())

@@ -1,9 +1,8 @@
-use http::uri::InvalidUri;
 use std::{collections::HashMap, sync::Arc};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
-
-use ethers::prelude::*;
+use tokio::sync::RwLock;
+use ring::digest;
 
 pub type MessageSender = tokio::sync::mpsc::Sender<WrappedMessage>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
@@ -14,16 +13,33 @@ pub type PrintReceiver = tokio::sync::mpsc::Receiver<Printout>;
 pub type DebugSender = tokio::sync::mpsc::Sender<DebugCommand>;
 pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
 
-pub type OnchainPKI = Arc<HashMap<String, Identity>>;
+pub type OnchainPKI = Arc<RwLock<HashMap<String, Identity>>>;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Registration {
+    pub username: String,
+    pub password: String,
+    pub address: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
-    pub address: H256,
+    pub address: String,
     pub networking_key: String,
     pub ws_routing: Option<(String, u16)>,
     pub allowed_routers: Vec<String>,
     pub routing_for: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityTransaction {
+    pub from: String,
+    pub signature: Option<String>,
+    pub to: String, // contract address
+    pub town_id: u32,
+    pub calldata: Identity,
+    pub nonce: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -239,9 +255,14 @@ pub enum FileSystemMode {
     Append,
     AppendOverwrite,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemEntryType {
     Symlink,
     File,
     Dir,
 }
+
+// keygen types
+pub const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
+pub type DiskKey = [u8; CREDENTIAL_LEN];

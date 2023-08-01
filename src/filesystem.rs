@@ -19,6 +19,8 @@ lazy_static::lazy_static! {
     ].into_iter().collect();
 }
 
+const HASH_READER_CHUNK_SIZE: usize = 1_024;
+
 #[derive(Eq, Hash, PartialEq)]
 struct FileRef {
     path: String,
@@ -136,9 +138,13 @@ async fn get_file_bytes_left(file_path: &str, file: &mut fs::File) -> Result<u64
 
 async fn compute_truncated_hash_reader(file_path: &str, mut file: fs::File) -> Result<u64, FileSystemError> {
     let mut hasher = Sha256::new();
-    let mut buffer = [0; 1_024];  //  1kiB
+    let mut buffer = [0; HASH_READER_CHUNK_SIZE];  //  1kiB
+    let number_bytes_left = get_file_bytes_left(&file_path, &mut file).await? as usize;
+    let mut number_iterations = number_bytes_left / HASH_READER_CHUNK_SIZE;
+    let number_bytes_left_after_loop =
+        number_bytes_left - number_iterations * HASH_READER_CHUNK_SIZE;
 
-    loop {
+    while number_iterations > 0 {
         println!("iter");
         let count = match file.read_exact(&mut buffer).await {
             Ok(c) => c,
@@ -149,11 +155,24 @@ async fn compute_truncated_hash_reader(file_path: &str, mut file: fs::File) -> R
                 })
             },
         };
-        if count == 0 {
-            break;
-        }
         hasher.update(&buffer[..count]);
+
+        number_iterations -= 1;
     }
+
+    println!("{} {}", number_bytes_left, number_bytes_left_after_loop);
+
+    let mut buffer = vec![0; number_bytes_left_after_loop];
+    let count = match file.read_exact(&mut buffer).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(FileSystemError::ReadFailed {
+                path: file_path.into(),
+                error: format!("{}", e),
+            })
+        },
+    };
+    hasher.update(&buffer[..count]);
 
     let hash = hasher.finalize();
     //  truncate

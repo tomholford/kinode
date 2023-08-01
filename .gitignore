@@ -3,6 +3,7 @@
 *.swp
 /home
 /file-transfer/target
+/file-transfer-one-off/target
 /hi-lus-lus/target
 /http-bindings/target
 /poast/target

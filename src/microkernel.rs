@@ -231,7 +231,12 @@ async fn get_and_send_specific_loop_message_to_process(
 ) -> (WrappedMessage, Result<(WitMessage, String)>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
-        if awaited_message_id == wrapped_message.id {
+        //  if message id matches the one we sent out
+        //   AND the message is not a websocket ack
+        if (awaited_message_id == wrapped_message.id)
+           & !(("ws" == wrapped_message.message.wire.source_app)
+               & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
+              ) {
             return send_loop_message_to_process(
                 wrapped_message,
                 send_to_terminal,
@@ -249,11 +254,14 @@ async fn get_and_send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
-        if !message_queue.is_empty() {
-            message_queue.pop_front().unwrap()
-        } else {
-            recv_in_process.recv().await.unwrap()
+        match message_queue.pop_front() {
+            Some(m) => {
+                message_queue.push_back(wrapped_message);
+                m
+            },
+            None => wrapped_message,
         };
 
     send_loop_message_to_process(

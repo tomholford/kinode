@@ -77,21 +77,27 @@ mkdir home
 mkdir home/tuna
 mkdir home/dolph
 mkdir home/dolph/file_transfer
+mkdir home/dolph/file_transfer_one_off
 cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/tuna/
 cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/dolph/
 cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/tuna/
 cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/dolph/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/tuna/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/dolph/
 cp README.md home/dolph/file_transfer/
+cp README.md home/dolph/file_transfer_one_off/
 
 # Terminal A: add hi++ apps to process_manager
 cargo r process_manager.wasm home/tuna tuna
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
+!message tuna process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}
 
 # Terminal B: While A is still running add hi++ to process_manager
 cargo r process_manager.wasm home/dolph dolph
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 !message dolph process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
+!message dolph process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
 !message dolph hi_lus_lus {"target": "tuna", "action": "send", "contents": "hello from dolph"}
@@ -101,6 +107,7 @@ cargo r process_manager.wasm home/dolph dolph
 
 # Terminal A: get a file from B using file_transfer:
 !message tuna file_transfer {"type": "GetFile", "target_ship": "dolph", "uri_string": "fs://README.md", "chunk_size": 1024}
+!message tuna file_transfer_one_off {"type": "GetFile", "target_ship": "dolph", "uri_string": "fs://README.md", "chunk_size": 1024}
 !message tuna file_transfer {"type": "DisplayOngoing"}
 !message tuna file_transfer {"type": "ReadDir", "target_node": "dolph", "uri_string": "fs://."}
 

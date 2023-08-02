@@ -13,8 +13,8 @@ use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
 use crate::microkernel::component::microkernel_process::types::WitMessageType;
-use crate::microkernel::component::microkernel_process::types::WitPayload;
 use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
+use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
 use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
@@ -175,9 +175,23 @@ impl MicrokernelProcessImports for Process {
         process_input
     }
 
-    async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
+    // async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
+    async fn yield_and_await_response(
+        &mut self,
+        target: WitProcessNode,
+        payload: WitPayload,
+    ) -> Result<WitMessage> {
+        let protomessage = WitProtomessage {
+            protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
+                is_expecting_response: true,
+                target_ship: target.node,
+                target_app: target.process,
+            }),
+            payload,
+        };
+
         let ids = send_process_results_to_loop(
-            vec![(result, "".into())],
+            vec![(protomessage, "".into())],
             self.metadata.our_name.clone(),
             self.metadata.process_name.clone(),
             self.send_to_loop.clone(),

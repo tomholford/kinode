@@ -48,3 +48,12 @@ pub fn make_payload(
         bytes,
     }
 }
+
+pub fn parse_message_json<T>(json_string: Option<String>) -> Result<T, anyhow::Error>
+where for<'a> T: serde::Deserialize<'a> {
+    let parsed: T = serde_json::from_str(
+        json_string.ok_or(anyhow::anyhow!("json payload empty"))?
+                   .as_str()
+    )?;
+    Ok(parsed)
+}

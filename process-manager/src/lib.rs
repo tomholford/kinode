@@ -1,10 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 use bindings::print_to_terminal;
+use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitPayload;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 mod component_lib;
 
@@ -91,11 +89,11 @@ fn send_stop_to_loop(
     our_name: String,
     process_name: String,
     is_expecting_response: bool,
-) -> () {
+) -> anyhow::Result<()> {
     let payload = component_lib::make_payload(
         Some(serde_json::to_string(
             &KernelRequest::StopProcess(KernelStopProcess { process_name })
-        ).unwrap()),
+        )?),
         None,
     );
     let kernel_stop_process_request = component_lib::make_request(
@@ -107,6 +105,160 @@ fn send_stop_to_loop(
     );
 
     bindings::yield_results(vec![kernel_stop_process_request].as_slice());
+    Ok(())
+}
+
+fn handle_message(
+    message: WitMessage,
+    context: String,
+    metadatas: &mut ProcessMetadatas,
+    our_name: &str,
+    process_name: &str,
+    reserved_process_names: &HashSet<String>,
+) -> anyhow::Result<()> {
+    match message.message_type {
+        WitMessageType::Request(_is_expecting_response) => {
+            let process_manager_command: ProcessManagerCommand =
+                component_lib::parse_message_json(message.payload.json)?;
+            match process_manager_command {
+                ProcessManagerCommand::Start(start) => {
+                    print_to_terminal("process manager: start");
+                    if reserved_process_names.contains(&start.process_name) {
+                        return Err(anyhow::anyhow!(
+                            "cannot add process {} with name amongst {:?}",
+                            &start.process_name,
+                            reserved_process_names.iter().collect::<Vec<_>>(),
+                        ))
+                    }
+
+                    let context = serde_json::to_string(&FileSystemReadContext {
+                        process_name: start.process_name,
+                        wasm_bytes_uri: start.wasm_bytes_uri.clone(),
+                    })?;
+                    let payload = component_lib::make_payload(
+                        Some(serde_json::to_string(&FileSystemRequest {
+                            uri_string: start.wasm_bytes_uri,
+                            action: FileSystemAction::Read,
+                        })?),
+                        None,
+                    );
+                    let get_bytes_request = component_lib::make_request(
+                        true,
+                        our_name,
+                        "filesystem",
+                        &payload,
+                        &context,
+                    );
+                    bindings::yield_results(vec![get_bytes_request].as_slice());
+                },
+                ProcessManagerCommand::Stop(stop) => {
+                    print_to_terminal("process manager: stop");
+                    let _ = metadatas
+                        .remove(&stop.process_name)
+                        .ok_or(anyhow::anyhow!("no process data found to remove"))?;
+
+                    send_stop_to_loop(
+                        our_name.into(),
+                        stop.process_name,
+                        false,
+                    )?;
+
+                    println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
+                },
+                ProcessManagerCommand::Restart(restart) => {
+                    print_to_terminal("process manager: restart");
+
+                    send_stop_to_loop(
+                        our_name.into(),
+                        restart.process_name,
+                        true,
+                    )?;
+                },
+            }
+        },
+        WitMessageType::Response => {
+            match (
+                message.wire.source_ship,
+                message.wire.source_app.as_str(),
+                message.payload.bytes,
+            ) {
+                (
+                    our_name,
+                    "filesystem",
+                    Some(wasm_bytes),
+                ) => {
+                    let context: FileSystemReadContext = serde_json::from_str(&context)?;
+
+                    let payload = component_lib::make_payload(
+                        Some(serde_json::to_string(&KernelRequest::StartProcess(
+                            ProcessStart {
+                                process_name: context.process_name,
+                                wasm_bytes_uri: context.wasm_bytes_uri,
+                            }
+                        ))?),
+                        Some(wasm_bytes),
+                    );
+                    let kernel_start_process_request = component_lib::make_request(
+                        true,
+                        &our_name,
+                        "kernel",
+                        &payload,
+                        "",
+                    );
+
+                    bindings::yield_results(
+                        vec![kernel_start_process_request].as_slice(),
+                    );
+                },
+                (
+                    our_name,
+                    "kernel",
+                    None,
+                ) => {
+                    let kernel_response: KernelResponse =
+                        component_lib::parse_message_json(message.payload.json)?;
+                    match kernel_response {
+                        KernelResponse::StartProcess(metadata) => {
+                            metadatas.insert(
+                                metadata.process_name.clone(),
+                                metadata,
+                            );
+                            //  TODO: response?
+                        },
+                        KernelResponse::StopProcess(stop) => {
+                            let removed = metadatas
+                                .remove(&stop.process_name)
+                                .ok_or(anyhow::anyhow!("no process data found to remove"))?;
+
+                            let payload = component_lib::make_payload(
+                                Some(serde_json::to_string(
+                                    &ProcessManagerCommand::Start(ProcessStart {
+                                        process_name: removed.process_name,
+                                        wasm_bytes_uri: removed.wasm_bytes_uri,
+                                    })
+                                )?),
+                                None,
+                            );
+                            let pm_start_request = component_lib::make_request(
+                                true,
+                                &our_name,
+                                process_name,
+                                &payload,
+                                "",
+                            );
+
+                            bindings::yield_results(vec![pm_start_request].as_slice());
+                        },
+                    }
+                },
+                _ => {
+                    //  TODO: handle error or bail?
+                    return Err(anyhow::anyhow!("unexpected Response case"))
+                },
+            };
+        },
+    }
+    Ok(())
 }
 
 impl bindings::MicrokernelProcess for Component {
@@ -125,180 +277,23 @@ impl bindings::MicrokernelProcess for Component {
         loop {
             let (message, context) = bindings::await_next_message();
             //  TODO: validate source/target?
-            let Some(s) = message.payload.json else {
-                print_to_terminal(
-                    format!(
-                        "process manager: got payload with no json source, target: {:?}, {:?} {:?} {:?}",
-                        message.wire.source_ship,
-                        message.wire.source_app,
-                        message.wire.target_ship,
-                        message.wire.target_app,
-                    ).as_str()
-                );
-                continue;
+            match handle_message(
+                message,
+                context,
+                &mut metadatas,
+                &our_name,
+                &process_name,
+                &reserved_process_names
+            ) {
+                Ok(()) => {},
+                Err(e) => {
+                    print_to_terminal(format!(
+                        "{}: error: {:?}",
+                        process_name,
+                        e,
+                    ).as_str());
+                },
             };
-            match message.message_type {
-                WitMessageType::Request(_is_expecting_response) => {
-                    let process_manager_command: ProcessManagerCommand =
-                        serde_json::from_str(&s)
-                        .expect("process manager: could not parse to command");
-                    match process_manager_command {
-                        ProcessManagerCommand::Start(start) => {
-                            print_to_terminal("process manager: start");
-                            if reserved_process_names.contains(&start.process_name) {
-                                print_to_terminal(
-                                    format!(
-                                        "process manager: cannot add process {} with name amongst {:?}",
-                                        &start.process_name,
-                                        reserved_process_names.iter().collect::<Vec<_>>(),
-                                    ).as_str()
-                                );
-                                continue;
-                            }
-
-
-
-                            let context = serde_json::to_string(&FileSystemReadContext {
-                                process_name: start.process_name,
-                                wasm_bytes_uri: start.wasm_bytes_uri.clone(),
-                            }).unwrap();
-                            let payload = component_lib::make_payload(
-                                Some(serde_json::to_string(&FileSystemRequest {
-                                    uri_string: start.wasm_bytes_uri,
-                                    action: FileSystemAction::Read,
-                                }).unwrap()),
-                                None,
-                            );
-                            let get_bytes_request = component_lib::make_request(
-                                true,
-                                &our_name,
-                                "filesystem",
-                                &payload,
-                                &context,
-                            );
-                            bindings::yield_results(vec![get_bytes_request].as_slice());
-                        },
-                        ProcessManagerCommand::Stop(stop) => {
-                            print_to_terminal("process manager: stop");
-                            let _ = metadatas
-                                .remove(&stop.process_name)
-                                .unwrap();
-
-                            send_stop_to_loop(
-                                our_name.clone(),
-                                stop.process_name,
-                                false,
-                            );
-
-                            println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
-                        },
-                        ProcessManagerCommand::Restart(restart) => {
-                            print_to_terminal("process manager: restart");
-
-                            send_stop_to_loop(
-                                our_name.clone(),
-                                restart.process_name,
-                                true,
-                            );
-                        },
-                    }
-                },
-                WitMessageType::Response => {
-                    match (
-                        message.wire.source_ship,
-                        message.wire.source_app.as_str(),
-                        message.payload.bytes,
-                    ) {
-                        (
-                            our_name,
-                            "filesystem",
-                            Some(wasm_bytes),
-                        ) => {
-                            let context: FileSystemReadContext =
-                                serde_json::from_str(&context).unwrap();
-
-                            let payload = component_lib::make_payload(
-                                Some(serde_json::to_string(&KernelRequest::StartProcess(
-                                    ProcessStart {
-                                        process_name: context.process_name,
-                                        wasm_bytes_uri: context.wasm_bytes_uri,
-                                    }
-                                )).unwrap()),
-                                Some(wasm_bytes),
-                            );
-                            let kernel_start_process_request = component_lib::make_request(
-                                true,
-                                &our_name,
-                                "kernel",
-                                &payload,
-                                "",
-                            );
-
-                            bindings::yield_results(
-                                vec![kernel_start_process_request].as_slice(),
-                            );
-                        },
-                        (
-                            our_name,
-                            "kernel",
-                            None,
-                        ) => {
-                            match serde_json::from_str(&s) {
-                                Ok(KernelResponse::StartProcess(metadata)) => {
-                                    metadatas.insert(
-                                        metadata.process_name.clone(),
-                                        metadata,
-                                    );
-                                    //  TODO: response?
-                                    continue;
-                                },
-                                Ok(KernelResponse::StopProcess(stop)) => {
-                                    let removed = metadatas
-                                        .remove(&stop.process_name)
-                                        .unwrap();
-
-                                    let payload = component_lib::make_payload(
-                                        Some(serde_json::to_string(
-                                            &ProcessManagerCommand::Start(ProcessStart {
-                                                process_name: removed.process_name,
-                                                wasm_bytes_uri: removed.wasm_bytes_uri,
-                                            })
-                                        ).unwrap()),
-                                        None,
-                                    );
-                                    let pm_start_request = component_lib::make_request(
-                                        true,
-                                        &our_name,
-                                        &process_name,
-                                        &payload,
-                                        "",
-                                    );
-
-                                    bindings::yield_results(vec![pm_start_request].as_slice());
-                                    continue;
-                                },
-                                Err(e) => {
-                                    print_to_terminal(
-                                        format!(
-                                            "{}: kernel response unexpected case; error: {} stack",
-                                            process_name,
-                                            e,
-                                            ).as_str(),
-                                    );
-                                    continue;
-                                },
-                            }
-                        },
-                        _ => {
-                            //  TODO: handle error or bail?
-                            print_to_terminal(
-                                "process_manager: response unexpected case; stack",
-                            );
-                            continue;
-                        },
-                    }
-                },
-            }
         }
     }
 }

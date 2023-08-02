@@ -154,14 +154,14 @@ enum FileTransferRequest {
     DisplayOngoing,                                       //  from user to requester
     ReadDir { target_node: String, uri_string: String, }  //  from user to requester to server
 }
- 
+
 #[derive(Debug, Serialize, Deserialize)]
 struct FileTransferFilePiece {
     uri_string: String,
     piece_number: u32,
     piece_hash: u64,
 }
- 
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FileTransferMetadata {
     key: FileTransferKey,

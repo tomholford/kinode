@@ -2,7 +2,7 @@ use anyhow::Result;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store};
 use tokio::sync::mpsc;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
@@ -87,6 +87,7 @@ struct Process {
     send_to_terminal: PrintSender,
     prompting_message: Option<WrappedMessage>,
     contexts: HashMap<u64, ProcessContext>,
+    message_queue: VecDeque<WrappedMessage>,
 }
 
 #[derive(Clone, Debug)]
@@ -152,7 +153,7 @@ impl Host for Process {
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for Process {
     async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
-        send_process_results_to_loop(
+        let _ = send_process_results_to_loop(
             results,
             self.metadata.our_name.clone(),
             self.metadata.process_name.clone(),
@@ -164,40 +165,39 @@ impl MicrokernelProcessImports for Process {
     }
 
     async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
-        let wrapped_message = self.recv_in_process.recv().await.unwrap();
-
-        // print_stack_to_terminal(
-        //     format!(
-        //         "{}: got message_stack",
-        //         self.metadata.process_name,
-        //     ).as_str(),
-        //     &next_message_stack,
-        //     self.send_to_terminal.clone(),
-        // ).await;
-
-        let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
-
-        let message_id = wrapped_message.id.clone();
-        let message_type = wrapped_message.message.message_type.clone();
+        let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
+            &mut self.message_queue,
+            &mut self.recv_in_process,
+            &mut self.send_to_terminal,
+            &self.contexts,
+        ).await;
         self.prompting_message = Some(wrapped_message);
+        process_input
+    }
 
-        match message_type {
-            MessageType::Request(_) => Ok((wit_message, "".to_string())),
-            MessageType::Response => {
-                match self.contexts.get(&message_id) {
-                    Some(ref context) => {
-                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
-                    },
-                    None => {
-                        self.send_to_terminal
-                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
-                            .await
-                            .unwrap();
-                        Ok((wit_message, "".to_string()))
-                    },
-                }
-            },
+    async fn yield_and_await_response(&mut self, result: (WitProtomessage, String)) -> Result<(WitMessage, String)> {
+        let ids = send_process_results_to_loop(
+            vec![result],
+            self.metadata.our_name.clone(),
+            self.metadata.process_name.clone(),
+            self.send_to_loop.clone(),
+            &self.prompting_message,
+            &mut self.contexts,
+        ).await;
+
+        if 1 != ids.len() {
+            panic!("yield_and_await_response: must receive only 1 id back");
         }
+
+        let (wrapped_message, process_input) = get_and_send_specific_loop_message_to_process(
+            ids[0],
+            &mut self.message_queue,
+            &mut self.recv_in_process,
+            &mut self.send_to_terminal,
+            &self.contexts,
+        ).await;
+        self.prompting_message = Some(wrapped_message);
+        process_input
     }
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
@@ -222,6 +222,95 @@ impl MicrokernelProcessImports for Process {
     }
 }
 
+async fn get_and_send_specific_loop_message_to_process(
+    awaited_message_id: u64,
+    message_queue: &mut VecDeque<WrappedMessage>,
+    recv_in_process: &mut MessageReceiver,
+    send_to_terminal: &mut PrintSender,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    loop {
+        let wrapped_message = recv_in_process.recv().await.unwrap();
+        //  if message id matches the one we sent out
+        //   AND the message is not a websocket ack
+        if (awaited_message_id == wrapped_message.id)
+           & !(("ws" == wrapped_message.message.wire.source_app)
+               & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
+              ) {
+            return send_loop_message_to_process(
+                wrapped_message,
+                send_to_terminal,
+                contexts,
+            ).await;
+        }
+
+        message_queue.push_back(wrapped_message);
+    }
+}
+
+async fn get_and_send_loop_message_to_process(
+    message_queue: &mut VecDeque<WrappedMessage>,
+    recv_in_process: &mut MessageReceiver,
+    send_to_terminal: &mut PrintSender,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    let wrapped_message = recv_in_process.recv().await.unwrap();
+    let wrapped_message =
+        match message_queue.pop_front() {
+            Some(m) => {
+                message_queue.push_back(wrapped_message);
+                m
+            },
+            None => wrapped_message,
+        };
+
+    send_loop_message_to_process(
+        wrapped_message,
+        send_to_terminal,
+        contexts,
+    ).await
+}
+
+async fn send_loop_message_to_process(
+    wrapped_message: WrappedMessage,
+    send_to_terminal: &mut PrintSender,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    // print_stack_to_terminal(
+    //     format!(
+    //         "{}: got message_stack",
+    //         self.metadata.process_name,
+    //     ).as_str(),
+    //     &next_message_stack,
+    //     self.send_to_terminal.clone(),
+    // ).await;
+
+    let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
+
+    let message_id = wrapped_message.id.clone();
+    let message_type = wrapped_message.message.message_type.clone();
+    (
+        wrapped_message,
+        match message_type {
+            MessageType::Request(_) => Ok((wit_message, "".to_string())),
+            MessageType::Response => {
+                match contexts.get(&message_id) {
+                    Some(ref context) => {
+                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                    },
+                    None => {
+                        send_to_terminal
+                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
+                            .await
+                            .unwrap();
+                        Ok((wit_message, "".to_string()))
+                    },
+                }
+            },
+        },
+    )
+}
+
 async fn send_process_results_to_loop(
     results: Vec<(WitProtomessage, String)>,
     source_ship: String,
@@ -229,7 +318,8 @@ async fn send_process_results_to_loop(
     send_to_loop: MessageSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
-) -> () {
+) -> Vec<u64> {
+    let mut ids: Vec<u64> = Vec::new();
     for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
         let new_context = match serde_json::from_str(new_context_string) {
             Ok(r) => Some(r),
@@ -367,7 +457,7 @@ async fn send_process_results_to_loop(
             bytes: payload.bytes.clone(),
         };
         let wrapped_message = WrappedMessage {
-            id,
+            id: id.clone(),
             rsvp,
             message: Message {
                 message_type,
@@ -467,7 +557,10 @@ async fn send_process_results_to_loop(
             .send(wrapped_message)
             .await
             .unwrap();
+
+        ids.push(id);
     }
+    ids
 }
 
 async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
@@ -522,6 +615,7 @@ async fn make_process_loop(
             send_to_terminal: send_to_terminal.clone(),
             prompting_message: None,
             contexts: HashMap::new(),
+            message_queue: VecDeque::new(),
         },
     );
 

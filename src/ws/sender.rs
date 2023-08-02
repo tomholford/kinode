@@ -9,6 +9,7 @@ use aes_gcm_siv::{
 };
 use ring::signature::Ed25519KeyPair;
 use std::sync::Arc;
+use tokio::time::timeout;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::{self};
 use url::Url;
@@ -28,39 +29,46 @@ pub async fn ws_sender(
     let routers: Routers = Arc::new(RwLock::new(HashMap::new()));
 
     if our.ws_routing.is_none() {
-        // TODO connect to all
-        let router_name: &String = our
-            .allowed_routers
-            .get(0)
-            .expect("fatal error: need at least one router if non-public");
-        let result = connect_to_router(
-            our.clone(),
-            keypair.clone(),
-            pki.clone(),
-            peers.clone(),
-            self_message_tx.clone(),
-            kernel_message_tx.clone(),
-            &router_name,
-            routers.clone(),
-        )
-        .await;
-
-        match result {
-            Ok(_) => {
-                routers.write().await.insert(
-                    router_name.clone(),
-                    Router {
-                        name: router_name.clone(),
-                        pending_peers: HashMap::new(),
-                    },
-                );
+        for router_name in &our.allowed_routers {
+            let result = connect_to_router(
+                our.clone(),
+                keypair.clone(),
+                pki.clone(),
+                peers.clone(),
+                self_message_tx.clone(),
+                kernel_message_tx.clone(),
+                &router_name,
+                routers.clone(),
+            )
+            .await;
+            match result {
+                Ok(_) => {
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!("successfully connected to router {}", router_name),
+                        })
+                        .await;
+                    routers.write().await.insert(
+                        router_name.clone(),
+                        Router {
+                            name: router_name.clone(),
+                            pending_peers: HashMap::new(),
+                        },
+                    );
+                }
+                Err(_) => {}
             }
-            Err(e) => {
-                panic!(
-                    "fatal error: failed to connect to at least one router: {}",
-                    e
-                )
-            }
+        }
+        // must succeed at connecting to at least one router
+        if routers.read().await.len() == 0 {
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 0,
+                    content: "networking: fatal: failed to connect to any routers".into(),
+                })
+                .await;
+            return;
         }
     }
 
@@ -121,31 +129,49 @@ pub async fn ws_sender(
 
         let result = match our.ws_routing {
             Some(_) => {
-                send_message(
-                    &our,
-                    keypair.clone(),
-                    pki.clone(),
-                    peers.clone(),
-                    message.clone(),
-                    kernel_message_tx.clone(),
+                match timeout(
+                    std::time::Duration::from_secs(MESSAGE_TIMEOUT),
+                    send_message(
+                        &our,
+                        keypair.clone(),
+                        pki.clone(),
+                        peers.clone(),
+                        message.clone(),
+                        kernel_message_tx.clone(),
+                    ),
                 )
                 .await
+                {
+                    Ok(v) => v,
+                    Err(_) => Ok(SuccessOrTimeout::Timeout),
+                }
             }
             None => {
                 // TODO "select" a router here
-                send_message_routed(
-                    &our,
-                    routers.clone(),
-                    keypair.clone(),
-                    peers.clone(),
-                    message.clone(),
+                match timeout(
+                    std::time::Duration::from_secs(MESSAGE_TIMEOUT),
+                    send_message_routed(
+                        &our,
+                        routers.clone(),
+                        keypair.clone(),
+                        peers.clone(),
+                        message.clone(),
+                    ),
                 )
                 .await
+                {
+                    Ok(v) => v,
+                    Err(_) => Ok(SuccessOrTimeout::Timeout),
+                }
             }
         };
 
         match result {
             Ok(res) => match res {
+                SuccessOrTimeout::Success => continue,
+                SuccessOrTimeout::TryAgain => {
+                    let _ = self_message_tx.send(message.clone()).await;
+                }
                 SuccessOrTimeout::Timeout => {
                     let _ = print_tx
                         .send(Printout {
@@ -153,9 +179,9 @@ pub async fn ws_sender(
                             content: "ws: message timed out".into(),
                         })
                         .await;
-                    if let MessageType::Request(false) = message.message.message_type {
-                        continue;
-                    }
+                    // if let MessageType::Request(false) = message.message.message_type {
+                    //     continue;
+                    // }
                     let timeout_message = KernelWrappedMessage {
                         id: message.id.clone(),
                         rsvp: None,
@@ -176,34 +202,6 @@ pub async fn ws_sender(
                         },
                     };
                     let _ = kernel_message_tx.send(timeout_message).await;
-                }
-                SuccessOrTimeout::TryAgain => {
-                    let _ = self_message_tx.send(message.clone()).await;
-                }
-                SuccessOrTimeout::Success => {
-                    if let MessageType::Request(false) = message.message.message_type {
-                        continue;
-                    }
-                    let success_message = KernelWrappedMessage {
-                        id: message.id.clone(),
-                        rsvp: None,
-                        message: Message {
-                            message_type: MessageType::Response,
-                            wire: Wire {
-                                source_ship: our.name.clone(),
-                                source_app: "ws".into(),
-                                target_ship: our.name.clone(),
-                                target_app: message.message.wire.source_app.clone(),
-                            },
-                            payload: Payload {
-                                json: Some(
-                                    serde_json::to_value(SuccessOrTimeout::Success).unwrap(),
-                                ),
-                                bytes: None,
-                            },
-                        },
-                    };
-                    let _ = kernel_message_tx.send(success_message).await;
                 }
             },
             Err(e) => {
@@ -255,11 +253,9 @@ async fn connect_to_router(
         .get(router_name)
         .ok_or("error: router not found in PKI")?;
     let router_ws_url: Url = match &router.ws_routing {
-        Some((ip, port)) => match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+        Some((ip, port)) => match make_ws_url(&our, ip, port) {
             Ok(v) => v,
-            Err(_) => {
-                return Err("error: failed to parse router websocket address".into());
-            }
+            Err(_) => return Err("error: router has no websocket address".into()),
         },
         None => {
             return Err("error: router has no websocket address".into());
@@ -355,7 +351,12 @@ async fn send_message(
             };
 
             match peer.direct_write_stream.as_mut() {
-                None => Err(NetworkingError::PeerOffline),
+                None => {
+                    // if a peer's write stream has disappeared, remove them
+                    // from peer mapping and try sending the message again
+                    peer_write.remove(target);
+                    return Ok(SuccessOrTimeout::TryAgain);
+                }
                 Some(stream) => {
                     // if we're their router, wrap in a RoutedFrom
                     let wrapped = match &peer.router {
@@ -376,7 +377,10 @@ async fn send_message(
                     };
                     match stream.send(tungstenite::Message::Binary(wrapped)).await {
                         Ok(_) => return Ok(SuccessOrTimeout::Success),
-                        Err(_) => return Err(NetworkingError::MessageTimeout),
+                        Err(_) => {
+                            peer_write.remove(target);
+                            return Ok(SuccessOrTimeout::TryAgain);
+                        }
                     }
                 }
             }
@@ -395,12 +399,9 @@ async fn send_message(
             match &target_id.ws_routing {
                 Some((ip, port)) => {
                     // connect directly
-                    let ip = if our.ws_routing.as_ref().unwrap().0 == *ip {
-                        "localhost"
-                    } else { ip };
-                    let ws_url = match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+                    let ws_url = match make_ws_url(our, ip, port) {
                         Ok(v) => v,
-                        Err(_) => return Err(NetworkingError::PeerOffline),
+                        Err(e) => return Err(e),
                     };
                     match connect_async(ws_url).await {
                         Err(_) => {
@@ -408,7 +409,6 @@ async fn send_message(
                         }
                         Ok((ws_stream, _response)) => {
                             let (mut write_stream, mut read_stream) = ws_stream.split();
-
                             // create our handshake
                             let (ephemeral_secret, our_handshake) = match make_secret_and_handshake(
                                 our,
@@ -420,7 +420,6 @@ async fn send_message(
                                 Ok(v) => v,
                                 Err(_) => return Err(NetworkingError::NetworkingBug),
                             };
-
                             // send our handshake
                             let _ = match write_stream
                                 .send(tungstenite::Message::Text(
@@ -431,15 +430,13 @@ async fn send_message(
                                 Ok(_) => (),
                                 Err(_) => return Err(NetworkingError::PeerOffline),
                             };
-
                             // get the target's handshake
                             let their_handshake: Handshake =
                                 match get_handshake(&mut read_stream).await {
                                     Ok(v) => v,
                                     Err(_) => return Err(NetworkingError::PeerOffline),
                                 };
-
-                            // verify handshake
+                            // verify target's handshake
                             let (their_ephemeral_pk, nonce) = match validate_handshake(
                                 &their_handshake,
                                 &target_id,
@@ -448,7 +445,6 @@ async fn send_message(
                                 Ok(v) => v,
                                 Err(_) => return Err(NetworkingError::PeerOffline),
                             };
-
                             peers.write().await.insert(
                                 target.clone(),
                                 Peer {
@@ -460,7 +456,6 @@ async fn send_message(
                                     direct_write_stream: Some(write_stream),
                                 },
                             );
-
                             tokio::spawn(handle_direct_connection(
                                 target_id.clone(),
                                 read_stream,
@@ -470,7 +465,6 @@ async fn send_message(
                                 nonce,
                                 kernel_message_tx.clone(),
                             ));
-
                             return Ok(SuccessOrTimeout::TryAgain);
                         }
                     }
@@ -478,32 +472,30 @@ async fn send_message(
                 None => {
                     // use a router
                     // for now, just try the first one
-                    let router_name = target_id.allowed_routers.get(0).unwrap();
-
+                    // TODO break out into a loop in ws_sender with router as hint
+                    let router_name = match target_id.allowed_routers.get(0) {
+                        Some(v) => v,
+                        None => return Err(NetworkingError::PeerOffline),
+                    };
                     // find the router
                     let pki_read = pki.read().await;
                     let router: &Identity = match pki_read.get(router_name) {
                         Some(v) => v,
                         None => return Err(NetworkingError::PeerOffline),
                     };
-
                     let (ip, port) = match &router.ws_routing {
                         Some(v) => v,
                         None => return Err(NetworkingError::PeerOffline),
                     };
-
                     // connect to router
-                    let ws_url = match Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+                    let ws_url = match make_ws_url(our, ip, port) {
                         Ok(v) => v,
-                        Err(_) => return Err(NetworkingError::PeerOffline),
+                        Err(e) => return Err(e),
                     };
                     match connect_async(ws_url).await {
-                        Err(_) => {
-                            return Err(NetworkingError::PeerOffline);
-                        }
+                        Err(_) => Err(NetworkingError::PeerOffline),
                         Ok((ws_stream, _response)) => {
                             let (mut write_stream, mut read_stream) = ws_stream.split();
-
                             // create our handshake
                             let (ephemeral_secret, our_handshake) = match make_secret_and_handshake(
                                 our,
@@ -526,7 +518,6 @@ async fn send_message(
                                 Err(_) => return Err(NetworkingError::PeerOffline),
                             };
                             // get the target's handshake
-                            // XX NEED A MANUAL TIMEOUT HERE?
                             let their_handshake: Handshake =
                                 match get_handshake(&mut read_stream).await {
                                     Ok(v) => v,
@@ -561,7 +552,6 @@ async fn send_message(
                                 nonce,
                                 kernel_message_tx.clone(),
                             ));
-
                             Ok(SuccessOrTimeout::TryAgain)
                         }
                     }
@@ -599,45 +589,56 @@ async fn send_message_routed(
                 Ok(v) => v,
                 Err(_) => return Err(NetworkingError::NetworkingBug),
             };
-
             let wrapped: WrappedMessage = WrappedMessage::To {
                 to: target.clone(),
                 contents: encrypted,
             };
-
             let wrapped_bytes = serde_json::to_vec(&wrapped).unwrap();
-
             match peer.direct_write_stream.as_mut() {
                 Some(stream) => match stream
                     .send(tungstenite::Message::Binary(wrapped_bytes))
                     .await
                 {
-                    Ok(_) => return Ok(SuccessOrTimeout::Success),
-                    Err(_) => return Err(NetworkingError::MessageTimeout),
+                    Ok(_) => Ok(SuccessOrTimeout::Success),
+                    Err(_) => {
+                        peer_write.remove(target);
+                        Ok(SuccessOrTimeout::TryAgain)
+                    }
                 },
                 None => {
                     // use our router to send the message
                     let router = match peer.router.clone() {
                         Some(v) => v,
-                        None => return Err(NetworkingError::PeerOffline),
+                        None => {
+                            peer_write.remove(target);
+                            return Ok(SuccessOrTimeout::TryAgain);
+                        }
                     };
                     match peer_write.get_mut(&router) {
-                        Some(router) => match router.direct_write_stream.as_mut() {
+                        Some(router_peer) => match router_peer.direct_write_stream.as_mut() {
                             Some(stream) => {
                                 match stream
                                     .send(tungstenite::Message::Binary(wrapped_bytes))
                                     .await
                                 {
-                                    Ok(_) => return Ok(SuccessOrTimeout::Success),
-                                    Err(_) => return Err(NetworkingError::MessageTimeout),
+                                    Ok(_) => Ok(SuccessOrTimeout::Success),
+                                    Err(_) => {
+                                        peer_write.remove(target);
+                                        peer_write.remove(&router);
+                                        Ok(SuccessOrTimeout::TryAgain)
+                                    }
                                 }
                             }
                             None => {
-                                return Err(NetworkingError::PeerOffline);
+                                peer_write.remove(target);
+                                peer_write.remove(&router);
+                                Ok(SuccessOrTimeout::TryAgain)
                             }
                         },
                         None => {
-                            return Err(NetworkingError::PeerOffline);
+                            peer_write.remove(target);
+                            peer_write.remove(&router);
+                            Ok(SuccessOrTimeout::TryAgain)
                         }
                     }
                 }
@@ -648,14 +649,13 @@ async fn send_message_routed(
             // TODO expand on this, select a router for real
             let mut routers_write = routers.write().await;
             let router = routers_write.iter_mut().next().unwrap().1;
-
+            let router_name = router.name.clone();
             // create a handshake for them to forward
             let (ephemeral_secret, our_handshake) =
                 match make_secret_and_handshake(our, keypair.clone(), target.into(), None, false) {
                     Ok(v) => v,
                     Err(_) => return Err(NetworkingError::NetworkingBug),
                 };
-
             // save ephemeral secret to use later, and message to send at that point
             router.pending_peers.insert(
                 target.clone(),
@@ -665,27 +665,34 @@ async fn send_message_routed(
                     message,
                 ),
             );
-
             // send handshake to our router
             // we will get response as a message from them back on our aggregate connection
             let wrapped: WrappedMessage = WrappedMessage::Handshake(our_handshake);
             let wrapped_bytes = serde_json::to_vec(&wrapped).unwrap();
-
-            let router = match peer_write.get_mut(&router.name) {
+            let router = match peer_write.get_mut(&router_name) {
                 Some(v) => v,
-                None => return Err(NetworkingError::PeerOffline),
+                None => {
+                    routers_write.remove(&router_name);
+                    peer_write.remove(&router_name);
+                    return Ok(SuccessOrTimeout::TryAgain);
+                }
             };
-
             match router.direct_write_stream.as_mut() {
                 Some(stream) => match stream
                     .send(tungstenite::Message::Binary(wrapped_bytes))
                     .await
                 {
                     Ok(_) => return Ok(SuccessOrTimeout::Success),
-                    Err(_) => return Err(NetworkingError::MessageTimeout),
+                    Err(_) => {
+                        routers_write.remove(&router_name);
+                        peer_write.remove(&router_name);
+                        Ok(SuccessOrTimeout::TryAgain)
+                    }
                 },
                 None => {
-                    return Err(NetworkingError::PeerOffline);
+                    routers_write.remove(&router_name);
+                    peer_write.remove(&router_name);
+                    Ok(SuccessOrTimeout::TryAgain)
                 }
             }
         }

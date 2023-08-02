@@ -169,7 +169,7 @@ async fn main() {
         println!("(http://localhost:{}/login)", registration_port);
         if our_ip != "localhost" {
             println!(
-                "(if on a remote machine: http://{}:{})",
+                "(if on a remote machine: http://{}:{}/login)",
                 our_ip, registration_port
             );
         }
@@ -206,7 +206,7 @@ async fn main() {
         println!("(http://localhost:{}/register)", registration_port);
         if our_ip != "localhost" {
             println!(
-                "(if on a remote machine: http://{}:{})",
+                "(if on a remote machine: http://{}:{}/register)",
                 our_ip, registration_port
             );
         }
@@ -256,13 +256,16 @@ async fn main() {
             name: registration.username.clone(),
             address: registration.address.clone(),
             networking_key: hex_pubkey.clone(),
-            ws_routing: if our_ip == "localhost" {
+            ws_routing: if our_ip == "localhost" || !registration.direct {
                 None
             } else {
-                Some((our_ip, ws_port))
+                Some((our_ip.clone(), ws_port))
             },
-            allowed_routers: vec![],
-            routing_for: vec![],
+            allowed_routers: if our_ip == "localhost" || !registration.direct {
+                vec!["routeroflastresort".into()]
+            } else {
+                vec![]
+            },
         };
 
         let id_transaction = IdentityTransaction {
@@ -293,6 +296,8 @@ async fn main() {
             .await
             .unwrap();
         }
+        println!("\"posting\" \"transaction\" to \"blockchain\"...");
+        std::thread::sleep(std::time::Duration::from_secs(5));
         println!("registration complete!");
         (our, networking_keypair)
     };
@@ -359,7 +364,7 @@ async fn main() {
             print_sender.clone(),
             wss_message_receiver,
             wss_message_sender.clone(),
-        ) => { "websocket sender died".to_string() },
+        ) => { "websockets died".to_string() },
         // temporary process to keep up-to-date on chain,
         // will replace with full-fledged indexing
         _ = indexing(

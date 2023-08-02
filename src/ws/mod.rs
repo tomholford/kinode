@@ -1,6 +1,6 @@
 // use crate::types::*;
 use crate::types::{
-    Identity, MessageReceiver, MessageSender, OnchainPKI, PrintSender, Printout,
+    Identity, MessageReceiver, MessageSender, NetworkingError, OnchainPKI, PrintSender, Printout,
     WrappedMessage as KernelWrappedMessage,
 };
 use crate::ws::connections::*;
@@ -25,6 +25,8 @@ mod connections;
 mod listener;
 mod sender;
 
+const MESSAGE_TIMEOUT: u64 = 5; // seconds
+
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type Routers = Arc<RwLock<HashMap<String, Router>>>;
 type Sock = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -37,7 +39,7 @@ pub struct Peer {
     pub ephemeral_secret: Arc<EphemeralSecret<Secp256k1>>,
     pub their_ephemeral_pk: Arc<PublicKey<Secp256k1>>,
     pub nonce: Arc<Nonce>,
-    // must have exactly one of these two
+    // must have at least one of these two
     pub router: Option<String>,
     pub direct_write_stream: Option<WriteStream>,
 }
@@ -142,8 +144,8 @@ pub async fn websockets(
 
             // listen on our port for new connections, and
             // listen on our receiver for messages to send to peers
-            tokio::join!(
-                listener::ws_listener(
+            tokio::select!(
+                _ = listener::ws_listener(
                     our.clone(),
                     keypair.clone(),
                     pki.clone(),
@@ -151,8 +153,8 @@ pub async fn websockets(
                     message_tx.clone(),
                     print_tx.clone(),
                     tcp_listener,
-                ),
-                sender::ws_sender(
+                ) => {},
+                _ = sender::ws_sender(
                     our.clone(),
                     keypair.clone(),
                     pki.clone(),
@@ -161,9 +163,27 @@ pub async fn websockets(
                     print_tx.clone(),
                     message_rx,
                     self_message_tx.clone(),
-                ),
+                ) => {},
             );
         }
+    }
+}
+
+/*
+ *  networking utils
+ */
+
+fn make_ws_url(our: &Identity, ip: &str, port: &u16) -> Result<url::Url, NetworkingError> {
+    // if we have the same public IP as target, route locally,
+    // otherwise they will appear offline due to loopback stuff
+    let our_ip = match our.ws_routing {
+        Some((ref ip, _)) => ip,
+        None => "",
+    };
+    let ip = if our_ip == ip { "localhost" } else { ip };
+    match url::Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(NetworkingError::PeerOffline),
     }
 }
 

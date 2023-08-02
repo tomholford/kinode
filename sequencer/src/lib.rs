@@ -99,7 +99,6 @@ struct Identity {
     pub networking_key: String,
     pub ws_routing: Option<(String, u16)>,
     pub allowed_routers: Vec<String>,
-    pub routing_for: Vec<String>,
 }
 
 //

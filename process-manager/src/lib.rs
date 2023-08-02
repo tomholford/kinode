@@ -4,7 +4,7 @@ use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitMessageType;
 
-mod component_lib;
+mod process_lib;
 
 struct Component;
 
@@ -90,22 +90,14 @@ fn send_stop_to_loop(
     process_name: String,
     is_expecting_response: bool,
 ) -> anyhow::Result<()> {
-    let payload = component_lib::make_payload(
-        Some(serde_json::to_string(
-            &KernelRequest::StopProcess(KernelStopProcess { process_name })
-        )?),
-        None,
-    );
-    let kernel_stop_process_request = component_lib::make_request(
+    process_lib::yield_one_request(
         is_expecting_response,
         &our_name,
         "kernel",
-        &payload,
-        "",
-    );
-
-    bindings::yield_results(vec![kernel_stop_process_request].as_slice());
-    Ok(())
+        Some(KernelRequest::StopProcess(KernelStopProcess { process_name })),
+        None,
+        None::<FileSystemReadContext>,
+    )
 }
 
 fn handle_message(
@@ -118,9 +110,7 @@ fn handle_message(
 ) -> anyhow::Result<()> {
     match message.message_type {
         WitMessageType::Request(_is_expecting_response) => {
-            let process_manager_command: ProcessManagerCommand =
-                component_lib::parse_message_json(message.payload.json)?;
-            match process_manager_command {
+            match process_lib::parse_message_json(message.payload.json)? {
                 ProcessManagerCommand::Start(start) => {
                     print_to_terminal("process manager: start");
                     if reserved_process_names.contains(&start.process_name) {
@@ -131,25 +121,20 @@ fn handle_message(
                         ))
                     }
 
-                    let context = serde_json::to_string(&FileSystemReadContext {
-                        process_name: start.process_name,
-                        wasm_bytes_uri: start.wasm_bytes_uri.clone(),
-                    })?;
-                    let payload = component_lib::make_payload(
-                        Some(serde_json::to_string(&FileSystemRequest {
-                            uri_string: start.wasm_bytes_uri,
-                            action: FileSystemAction::Read,
-                        })?),
-                        None,
-                    );
-                    let get_bytes_request = component_lib::make_request(
+                    process_lib::yield_one_request(
                         true,
                         our_name,
                         "filesystem",
-                        &payload,
-                        &context,
-                    );
-                    bindings::yield_results(vec![get_bytes_request].as_slice());
+                        Some(FileSystemRequest {
+                            uri_string: start.wasm_bytes_uri.clone(),
+                            action: FileSystemAction::Read,
+                        }),
+                        None,
+                        Some(FileSystemReadContext {
+                            process_name: start.process_name,
+                            wasm_bytes_uri: start.wasm_bytes_uri,
+                        }),
+                    )?;
                 },
                 ProcessManagerCommand::Stop(stop) => {
                     print_to_terminal("process manager: stop");
@@ -189,35 +174,24 @@ fn handle_message(
                 ) => {
                     let context: FileSystemReadContext = serde_json::from_str(&context)?;
 
-                    let payload = component_lib::make_payload(
-                        Some(serde_json::to_string(&KernelRequest::StartProcess(
-                            ProcessStart {
-                                process_name: context.process_name,
-                                wasm_bytes_uri: context.wasm_bytes_uri,
-                            }
-                        ))?),
-                        Some(wasm_bytes),
-                    );
-                    let kernel_start_process_request = component_lib::make_request(
+                    process_lib::yield_one_request(
                         true,
                         &our_name,
                         "kernel",
-                        &payload,
-                        "",
-                    );
-
-                    bindings::yield_results(
-                        vec![kernel_start_process_request].as_slice(),
-                    );
+                        Some(KernelRequest::StartProcess(ProcessStart {
+                            process_name: context.process_name,
+                            wasm_bytes_uri: context.wasm_bytes_uri,
+                        })),
+                        Some(wasm_bytes),
+                        None::<FileSystemReadContext>,
+                    )?;
                 },
                 (
                     our_name,
                     "kernel",
                     None,
                 ) => {
-                    let kernel_response: KernelResponse =
-                        component_lib::parse_message_json(message.payload.json)?;
-                    match kernel_response {
+                    match process_lib::parse_message_json(message.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
                             metadatas.insert(
                                 metadata.process_name.clone(),
@@ -230,24 +204,17 @@ fn handle_message(
                                 .remove(&stop.process_name)
                                 .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
-                            let payload = component_lib::make_payload(
-                                Some(serde_json::to_string(
-                                    &ProcessManagerCommand::Start(ProcessStart {
-                                        process_name: removed.process_name,
-                                        wasm_bytes_uri: removed.wasm_bytes_uri,
-                                    })
-                                )?),
-                                None,
-                            );
-                            let pm_start_request = component_lib::make_request(
+                            process_lib::yield_one_request(
                                 true,
                                 &our_name,
                                 process_name,
-                                &payload,
-                                "",
-                            );
-
-                            bindings::yield_results(vec![pm_start_request].as_slice());
+                                Some(ProcessManagerCommand::Start(ProcessStart {
+                                    process_name: removed.process_name,
+                                    wasm_bytes_uri: removed.wasm_bytes_uri,
+                                })),
+                                None,
+                                None::<FileSystemReadContext>,
+                            )?;
                         },
                     }
                 },

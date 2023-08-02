@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
+
+mod process_lib;
+
 use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types::WitMessageType;
 use bindings::component::microkernel_process::types::WitPayload;
@@ -241,13 +244,17 @@ impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         print_to_terminal("file_transfer_one_off: begin");
 
-        let filesystem_request_type = WitProtomessageType::Request(
-            WitRequestTypeWithTarget {
-                is_expecting_response: true,
-                target_ship: &our_name,
-                target_app: "filesystem",
-            },
-        );
+        // let filesystem_request_type = WitProtomessageType::Request(
+        //     WitRequestTypeWithTarget {
+        //         is_expecting_response: true,
+        //         target_ship: &our_name,
+        //         target_app: "filesystem",
+        //     },
+        // );
+        let our_filesystem = bindings::WitProcessNode {
+            node: &our_name,
+            process: "filesystem",
+        };
 
         let mut uploading: Option<Uploading> = None;
 
@@ -298,58 +305,50 @@ impl bindings::MicrokernelProcess for Component {
                                         target_app: &process_name,
                                     },
                                 );
+                            let their_file_transfer = bindings::WitProcessNode {
+                                node: &get_file.target_ship,
+                                process: &process_name,
+                            };
 
                             //  TODO: error handle
                             let _ = bindings::yield_and_await_response(
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: get_file.uri_string.clone(),
-                                                action: FileSystemAction::Close(
-                                                    FileSystemMode::Append
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
+                                &our_filesystem,
+                                &WitPayload {
+                                    json: Some(serde_json::to_string(&FileSystemRequest {
+                                        uri_string: get_file.uri_string.clone(),
+                                        action: FileSystemAction::Close(
+                                            FileSystemMode::Append
+                                        ),
+                                    }).unwrap()),
+                                    bytes: None,
                                 },
                             );
 
                             //  TODO: error handle
                             let message = bindings::yield_and_await_response(
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: get_file.uri_string.clone(),
-                                                action: FileSystemAction::Open(
-                                                    FileSystemMode::AppendOverwrite
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
+                                &our_filesystem,
+                                &WitPayload {
+                                    json: Some(serde_json::to_string(&FileSystemRequest {
+                                        uri_string: get_file.uri_string.clone(),
+                                        action: FileSystemAction::Open(
+                                            FileSystemMode::AppendOverwrite
+                                        ),
+                                    }).unwrap()),
+                                    bytes: None,
                                 },
                             );
 
                             //  TODO: error handle
                             let message = bindings::yield_and_await_response(
-                                bindings::WitProtomessage {
-                                    protomessage_type: file_transfer_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileTransferRequest::Start(
-                                                FileTransferStart {
-                                                    uri_string: get_file.uri_string.clone(),
-                                                    chunk_size: get_file.chunk_size.clone(),
-                                                }
-                                            )
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
+                                &their_file_transfer,
+                                &WitPayload {
+                                    json: Some(serde_json::to_string(
+                                        &FileTransferRequest::Start(FileTransferStart {
+                                            uri_string: get_file.uri_string.clone(),
+                                            chunk_size: get_file.chunk_size.clone(),
+                                        })
+                                    ).unwrap()),
+                                    bytes: None,
                                 },
                             );
 
@@ -373,20 +372,18 @@ impl bindings::MicrokernelProcess for Component {
                             let mut piece_number = 0;
                             loop {
                                 let message = bindings::yield_and_await_response(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: file_transfer_request_type.clone(),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferRequest::GetPiece(
-                                                    FileTransferGetPiece {
-                                                        uri_string: get_file.uri_string.clone(),
-                                                        chunk_size: get_file.chunk_size.clone(),
-                                                        piece_number,
-                                                    }
-                                                )
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+                                    &their_file_transfer,
+                                    &WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileTransferRequest::GetPiece(
+                                                FileTransferGetPiece {
+                                                    uri_string: get_file.uri_string.clone(),
+                                                    chunk_size: get_file.chunk_size.clone(),
+                                                    piece_number,
+                                                }
+                                            )
+                                        ).unwrap()),
+                                        bytes: None,
                                     },
                                 );
 
@@ -421,17 +418,13 @@ impl bindings::MicrokernelProcess for Component {
 
                                 //  TODO: handle errors
                                 let _ = bindings::yield_and_await_response(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: filesystem_request_type.clone(),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: file_piece.uri_string,
-                                                    action: FileSystemAction::Append,
-                                                }
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
+                                    &our_filesystem,
+                                    &WitPayload {
+                                        json: Some(serde_json::to_string(&FileSystemRequest {
+                                            uri_string: file_piece.uri_string,
+                                            action: FileSystemAction::Append,
+                                        }).unwrap()),
+                                        bytes: Some(bytes),
                                     },
                                 );
 
@@ -444,17 +437,15 @@ impl bindings::MicrokernelProcess for Component {
                                 if downloading.metadata.number_pieces == piece_number {
                                     //  received last piece; confirm file is good
                                     let message = bindings::yield_and_await_response(
-                                        bindings::WitProtomessage {
-                                            protomessage_type: filesystem_request_type.clone(),
-                                            payload: &WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileSystemRequest {
-                                                        uri_string: get_file.uri_string.clone(),
-                                                        action: FileSystemAction::GetMetadata,
-                                                    }
-                                                ).unwrap()),
-                                                bytes: None,
-                                            },
+                                        &our_filesystem,
+                                        &WitPayload {
+                                            json: Some(serde_json::to_string(
+                                                &FileSystemRequest {
+                                                    uri_string: get_file.uri_string.clone(),
+                                                    action: FileSystemAction::GetMetadata,
+                                                }
+                                            ).unwrap()),
+                                            bytes: None,
                                         },
                                     );
 

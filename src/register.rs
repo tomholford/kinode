@@ -11,7 +11,7 @@ use ring::signature::{self, KeyPair};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use warp::{redirect, Filter};
+use warp::Filter;
 
 use crate::types::*;
 
@@ -69,7 +69,7 @@ pub async fn register(tx: RegistrationSender, kill_rx: oneshot::Receiver<bool>, 
                 .and_then(handle_put)),
     );
 
-    open::that(format!("http://localhost:{}/register", port)).unwrap();
+    let _ = open::that(format!("http://localhost:{}/register", port));
     warp::serve(routes)
         .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
             kill_rx.await.ok();
@@ -89,7 +89,7 @@ async fn handle_put(
         .await
         .unwrap();
     // TODO make this redirect work correctly
-    Ok(redirect::found(format!("http://localhost:{}", 8080).parse::<Uri>().unwrap()))
+    Ok(warp::http::StatusCode::NO_CONTENT)
 }
 
 /// Serve the login page, just get a password
@@ -116,7 +116,7 @@ pub async fn login(
                 .and_then(handle_password)),
     );
 
-    open::that(format!("http://localhost:{}/login", port)).unwrap();
+    let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)
         .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
             kill_rx.await.ok();
@@ -162,5 +162,5 @@ async fn handle_password(
     tx.send(networking_keypair).await.unwrap();
     // TODO unhappy paths where key has changed / can't be decrypted
     // TODO make this redirect work correctly
-    Ok(redirect::found(format!("http://localhost:{}", 8080).parse::<Uri>().unwrap()))
+    Ok(warp::http::StatusCode::NO_CONTENT)
 }

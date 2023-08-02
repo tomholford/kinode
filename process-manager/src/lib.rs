@@ -6,6 +6,8 @@ use bindings::component::microkernel_process::types::WitPayload;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
+mod component_lib;
+
 struct Component;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,25 +92,21 @@ fn send_stop_to_loop(
     process_name: String,
     is_expecting_response: bool,
 ) -> () {
-    let kernel_stop_process_request = bindings::WitProtomessage {
-        protomessage_type: WitProtomessageType::Request(
-            WitRequestTypeWithTarget {
-                is_expecting_response,
-                target_ship: &our_name,
-                target_app: "kernel",
-            },
-        ),
-        payload: &WitPayload {
-            json: Some(
-                serde_json::to_string(
-                    &KernelRequest::StopProcess(KernelStopProcess { process_name })
-                ).unwrap()
-            ),
-            bytes: None,
-        },
-    };
+    let payload = component_lib::make_payload(
+        Some(serde_json::to_string(
+            &KernelRequest::StopProcess(KernelStopProcess { process_name })
+        ).unwrap()),
+        None,
+    );
+    let kernel_stop_process_request = component_lib::make_request(
+        is_expecting_response,
+        &our_name,
+        "kernel",
+        &payload,
+        "",
+    );
 
-    bindings::yield_results(vec![(kernel_stop_process_request, "")].as_slice());
+    bindings::yield_results(vec![kernel_stop_process_request].as_slice());
 }
 
 impl bindings::MicrokernelProcess for Component {
@@ -158,31 +156,27 @@ impl bindings::MicrokernelProcess for Component {
                                 continue;
                             }
 
-                            let get_bytes_request = bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &our_name,
-                                        target_app: "filesystem",
-                                    },
-                                ),
-                                payload: &WitPayload {
-                                    json: Some(
-                                        serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: start.wasm_bytes_uri.clone(),
-                                                action: FileSystemAction::Read,
-                                            }
-                                        ).unwrap()
-                                    ),
-                                    bytes: None,
-                                },
-                            };
+
+
                             let context = serde_json::to_string(&FileSystemReadContext {
                                 process_name: start.process_name,
-                                wasm_bytes_uri: start.wasm_bytes_uri,
+                                wasm_bytes_uri: start.wasm_bytes_uri.clone(),
                             }).unwrap();
-                            bindings::yield_results(vec![(get_bytes_request, context.as_str())].as_slice());
+                            let payload = component_lib::make_payload(
+                                Some(serde_json::to_string(&FileSystemRequest {
+                                    uri_string: start.wasm_bytes_uri,
+                                    action: FileSystemAction::Read,
+                                }).unwrap()),
+                                None,
+                            );
+                            let get_bytes_request = component_lib::make_request(
+                                true,
+                                &our_name,
+                                "filesystem",
+                                &payload,
+                                &context,
+                            );
+                            bindings::yield_results(vec![get_bytes_request].as_slice());
                         },
                         ProcessManagerCommand::Stop(stop) => {
                             print_to_terminal("process manager: stop");
@@ -223,29 +217,25 @@ impl bindings::MicrokernelProcess for Component {
                             let context: FileSystemReadContext =
                                 serde_json::from_str(&context).unwrap();
 
-                            let kernel_start_process_request = bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &our_name,
-                                        target_app: "kernel",
-                                    },
-                                ),
-                                payload: &WitPayload {
-                                    json: Some(
-                                        serde_json::to_string(
-                                            &KernelRequest::StartProcess(ProcessStart {
-                                                process_name: context.process_name,
-                                                wasm_bytes_uri: context.wasm_bytes_uri,
-                                            })
-                                        ).unwrap()
-                                    ),
-                                    bytes: Some(wasm_bytes),
-                                },
-                            };
+                            let payload = component_lib::make_payload(
+                                Some(serde_json::to_string(&KernelRequest::StartProcess(
+                                    ProcessStart {
+                                        process_name: context.process_name,
+                                        wasm_bytes_uri: context.wasm_bytes_uri,
+                                    }
+                                )).unwrap()),
+                                Some(wasm_bytes),
+                            );
+                            let kernel_start_process_request = component_lib::make_request(
+                                true,
+                                &our_name,
+                                "kernel",
+                                &payload,
+                                "",
+                            );
 
                             bindings::yield_results(
-                                vec![(kernel_start_process_request, "")].as_slice(),
+                                vec![kernel_start_process_request].as_slice(),
                             );
                         },
                         (
@@ -267,28 +257,24 @@ impl bindings::MicrokernelProcess for Component {
                                         .remove(&stop.process_name)
                                         .unwrap();
 
-                                    let pm_start_request = bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target_ship: &our_name,
-                                                target_app: &process_name,
-                                            },
-                                        ),
-                                        payload: &WitPayload {
-                                            json: Some(
-                                                serde_json::to_string(
-                                                    &ProcessManagerCommand::Start(ProcessStart {
-                                                        process_name: removed.process_name,
-                                                        wasm_bytes_uri: removed.wasm_bytes_uri,
-                                                    })
-                                                ).unwrap()
-                                            ),
-                                            bytes: None,
-                                        },
-                                    };
+                                    let payload = component_lib::make_payload(
+                                        Some(serde_json::to_string(
+                                            &ProcessManagerCommand::Start(ProcessStart {
+                                                process_name: removed.process_name,
+                                                wasm_bytes_uri: removed.wasm_bytes_uri,
+                                            })
+                                        ).unwrap()),
+                                        None,
+                                    );
+                                    let pm_start_request = component_lib::make_request(
+                                        true,
+                                        &our_name,
+                                        &process_name,
+                                        &payload,
+                                        "",
+                                    );
 
-                                    bindings::yield_results(vec![(pm_start_request, "")].as_slice());
+                                    bindings::yield_results(vec![pm_start_request].as_slice());
                                     continue;
                                 },
                                 Err(e) => {

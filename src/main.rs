@@ -152,6 +152,7 @@ async fn main() {
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
     let registration_port = find_open_port(8000).await.unwrap();
+    let http_server_port = find_open_port(8080).await.unwrap();
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
     let keyfile = fs::read(format!("{}/network.keys", home_directory_path)).await;
 
@@ -180,7 +181,13 @@ async fn main() {
 
         let (tx, mut rx) = mpsc::channel::<signature::Ed25519KeyPair>(1);
         let networking_keypair = tokio::select! {
-            _ = register::login(tx, kill_rx, keyfile.unwrap(), registration_port, &username) => panic!("login failed"),
+            _ = register::login(tx,
+                                kill_rx,
+                                keyfile.unwrap(),
+                                registration_port,
+                                http_server_port,
+                                &username)
+                => panic!("login failed"),
             networking_keypair = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
@@ -214,9 +221,11 @@ async fn main() {
                 our_ip, registration_port
             );
         }
+
         let (tx, mut rx) = mpsc::channel::<(Registration, Document, String)>(1);
         let (registration, serialized_networking_keypair, signature) = tokio::select! {
-            _ = register::register(tx, kill_rx, registration_port) => panic!("registration failed"),
+            _ = register::register(tx, kill_rx, registration_port, http_server_port, pki.clone())
+                => panic!("registration failed"),
             (registration, serialized_networking_keypair, signature) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
@@ -385,6 +394,7 @@ async fn main() {
         ) => { "filesystem died".to_string() },
         _ = http_server::http_server(
             &our.name,
+            http_server_port,
             http_server_receiver,
             kernel_message_sender.clone(),
             print_sender.clone(),

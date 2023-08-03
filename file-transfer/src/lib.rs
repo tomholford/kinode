@@ -617,18 +617,16 @@ impl bindings::MicrokernelProcess for Component {
                                     "Content-Type": "text/html",
                                 },
                             }).to_string()),
-                            bytes: Some(FILE_TRANSFER_PAGE.as_bytes().to_vec())
+                            bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
                         }
                     },
                     "",
                 )].as_slice());
-            }
-
-            if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
+            } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
                 let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let uri_string = String::from("fs://.");
 
-                if (target_node.is_empty()) {
+                if target_node.is_empty() {
                     print_to_terminal("file_transfer: target_node is empty");
                     bindings::yield_results(vec![(
                         bindings::WitProtomessage {
@@ -658,27 +656,51 @@ impl bindings::MicrokernelProcess for Component {
                     additional: FileTransferAdditionalContext::Empty,
                 }).unwrap();
 
-                let (message, _) = bindings::yield_and_await_response((
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Request(
-                            WitRequestTypeWithTarget {
-                                is_expecting_response: true,
-                                target_ship: &target_node,
-                                target_app: &process_name,
+                let (message, _) = if our_name == target_node {
+                    bindings::yield_and_await_response((
+                        bindings::WitProtomessage {
+                            protomessage_type: WitProtomessageType::Request(
+                                WitRequestTypeWithTarget {
+                                    is_expecting_response: true,
+                                    target_ship: &our_name,
+                                    target_app: "filesystem",
+                                },
+                            ),
+                            payload: &WitPayload {
+                                json: Some(serde_json::to_string(
+                                    &FileSystemRequest {
+                                        uri_string,
+                                        action: FileSystemAction::ReadDir,
+                                    }
+                                ).unwrap()),
+                                bytes: None,
                             },
-                        ),
-                        payload: &WitPayload {
-                            json: Some(serde_json::to_string(
-                                &FileTransferRequest::ReadDir {
-                                    target_node: target_node.to_string(),
-                                    uri_string: uri_string.clone(),
-                                }
-                            ).unwrap()),
-                            bytes: None,
                         },
-                    },
-                    context.as_str(),
-                ));
+                        context.as_str(),
+                    ))
+                } else {
+                    bindings::yield_and_await_response((
+                        bindings::WitProtomessage {
+                            protomessage_type: WitProtomessageType::Request(
+                                WitRequestTypeWithTarget {
+                                    is_expecting_response: true,
+                                    target_ship: &target_node,
+                                    target_app: &process_name,
+                                },
+                            ),
+                            payload: &WitPayload {
+                                json: Some(serde_json::to_string(
+                                    &FileTransferRequest::ReadDir {
+                                        target_node: target_node.to_string(),
+                                        uri_string: uri_string.clone(),
+                                    }
+                                ).unwrap()),
+                                bytes: None,
+                            },
+                        },
+                        context.as_str(),
+                    ))
+                };
 
                 let Some(ref payload_json_string) = message.payload.json else {
                     print_to_terminal("file_transfer: require non-empty json payload");
@@ -701,10 +723,6 @@ impl bindings::MicrokernelProcess for Component {
                     continue;
                 };
 
-                print_to_terminal(
-                    format!("READ DIR RESULT: {}", payload_json_string).as_str()
-                );
-
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
@@ -718,6 +736,40 @@ impl bindings::MicrokernelProcess for Component {
                             }).to_string()),
                             // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
                             bytes: Some(payload_json_string.as_bytes().to_vec())
+                        }
+                    },
+                    "",
+                )].as_slice());
+            } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
+                // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
+                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_json_string = match String::from_utf8(body_bytes) {
+                    Ok(s) => s,
+                    Err(_) => String::new()
+                };
+                print_to_terminal(format!("BODY: {}", body_json_string).as_str());
+                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+
+                yield_get_file(
+                    &our_name,
+                    &process_name,
+                    body["target_node"].as_str().unwrap_or("").to_string(),
+                    format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+                    body["chunk_size"].as_u64().unwrap_or(1024),
+                );
+
+                bindings::yield_results(vec![(
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 204,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("Success".as_bytes().to_vec())
                         }
                     },
                     "",

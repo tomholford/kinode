@@ -164,6 +164,20 @@
         max-width: 420px;
       }
 
+      #current-username {
+        cursor: pointer;
+        padding: 0.5em;
+        border: 1px solid white;
+        border-radius: 4px;
+        margin: 1em 0;
+      }
+
+      #current-username:hover {
+        border: 1px solid white;
+        color: #027;
+        background-color: white;
+      }
+
       #connect-wallet {
         max-width: 420px;
       }
@@ -317,11 +331,7 @@
             document.getElementById('signup-form').style.display = 'block'
             // TODO: check if the address already has an uqname
             try {
-              const usernameResponse = await fetch('/current-username', {
-                method: 'POST',
-                'Content-Type': 'application/json',
-                body: JSON.stringify({ address })
-              })
+              const usernameResponse = await fetch(`/check-address/${address}`)
 
               if (usernameResponse.status < 400) {
                 const username = await usernameResponse.text()
@@ -329,12 +339,14 @@
                 if (username) {
                   document.getElementById('current-username-display').style.display = 'block'
                   document.getElementById('current-username').innerText = username
+                  document.getElementById('current-username').addEventListener('click', () => {
+                    document.querySelector('input[name="uq-name"]').value = username
+                    document.getElementById('password')?.focus()
+                  })
                 }
               }
 
-            } catch (err) {
-
-            }
+            } catch (err) {}
           })
           .catch((err) => {
             console.error(err)
@@ -375,12 +387,9 @@
             input.reportValidity();
             return false
           } else {
-            // TODO: replace regex with endpoint call that checks if name exists
-            const alreadyTaken = uqName === 'myname';
+            const alreadyTaken = await fetch(`/check-username/${uqName}`)
 
-
-
-            if (alreadyTaken) {
+            if (alreadyTaken.status === 409 && uqName !== document.getElementById('current-username').innerText) {
               input.setCustomValidity('Uq name already taken');
               input.reportValidity();
               return false
@@ -391,6 +400,8 @@
             }
           }
         } catch (err) {
+          input.setCustomValidity('Uq name already taken');
+          input.reportValidity();
           return false
         }
       }
@@ -443,15 +454,15 @@
             return false
           }
 
-          await fetch('/register', {
+          const registerResult = await fetch('/register', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(signature)
           })
 
-          setTimeout(() => {
-            window.location.replace('http://localhost:8080/')
-          }, 8000)
+          const httpServerPort = await registerResult.text()
+
+          setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 10000)
         } catch (err) {
           console.error(err)
           window.alert(CONNECTION_ERROR)

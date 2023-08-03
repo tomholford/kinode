@@ -293,6 +293,18 @@
           });
 
           if (result.status === 200) {
+            const httpServerPort = await result.text()
+            setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 3000)
+          } else if (result.status === 405) {
+            window.alert('Incorrect password. Please try again.')
+            document.getElementById('loading').style.display = 'none'
+            document.getElementById('login-form').style.display = 'block'
+            const pwInput = document.getElementById('password')
+            if (pwInput) {
+              pwInput.value = ''
+              pwInput.focus()
+            }
+          } else {
             window.alert('Your on-chain registration must be updated on this node. Please sign the message to continue.')
             const address = await loadWallet().catch(() => null)
             if (!address) {
@@ -307,24 +319,14 @@
               document.getElementById('login-form').style.display = 'block'
               return false
             }
-            await fetch('/login', {
+            const loginResult = await fetch('/login', {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(signature)
             })
-          } else if (result.status === 405) {
-            window.alert('Incorrect password. Please try again.')
-            document.getElementById('loading').style.display = 'none'
-            document.getElementById('login-form').style.display = 'block'
-            const pwInput = document.getElementById('password')
-            if (pwInput) {
-              pwInput.value = ''
-              pwInput.focus()
-            }
-          } else {
-            setTimeout(() => {
-              window.location.replace('http://localhost:8080/')
-            }, 3000)
+
+            const httpServerPort = await loginResult.text()
+            setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 3000)
           }
 
         } catch (err) {

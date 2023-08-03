@@ -160,13 +160,49 @@
         opacity: 1;
       }
 
-      form {
-        max-width: calc(100vw - 4em);
-        width: 420px;
-      }
-
       p {
         line-height: 1.5em;
+      }
+
+      .files {
+        min-width: 800px;
+        max-width: 90vw;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .files > .col {
+        width: 50%;
+        min-width: 400px;
+      }
+
+      .file-list {
+        width: 100%;
+      }
+
+      .remote-file {
+        width: 100%;
+        justify-content: space-between;
+        margin: 1em 0 0;
+      }
+
+      .file-name {
+
+      }
+
+      #remote-file-list-container, #our-file-list-container {
+        width: 100%;
+      }
+
+      .go-back {
+        text-decoration: underline;
+        cursor: pointer;
+      }
+
+      button.small {
+        width: auto;
+        padding: 0.5em 1em;
+        font-size: 0.75em;
       }
     </style>
   </head>
@@ -178,56 +214,123 @@
       </div>
       <h3 id="uq-name">File Transfer</h3>
 
-      <form id="view-files-form" class="col" action="/view-files" method="post">
-        <div class="row">
-          <label for="target-node">Target Node:</label>
-          <input type="text" name="target-node" id="target-node" />
+      <div class="row files">
+        <div class="col">
+          <h4>Your Files</h4>
+          <div id="our-file-list" class="col file-list">
+            <div id="our-file-list-container" class="col"></div>
+          </div>
         </div>
-        <button type="submit">Get File List</button>
-      </form>
-
-      <div id="file-list" class="col" style="display: none;">
-        <h3>File List</h3>
-        <div id="file-list-container" class="col" />
+        <div class="col">
+          <h4>Remote Files</h4>
+          <form id="view-files-form" class="col" action="/view-files" method="post">
+            <div class="row">
+              <label for="target-node">Target Node:</label>
+              <input type="text" name="target-node" id="target-node" />
+            </div>
+            <button type="submit">Get File List</button>
+          </form>
+          <div id="remote-file-list" class="col file-list" style="display: none;">
+            <div onclick="enterNewRemote()" class="go-back">Go Back</div>
+            <div id="remote-file-list-container" class="col"></div>
+          </div>
+        </div>
       </div>
+
     </div>
+    <div id="our" data-value="${our}"></div>
     <script>
-      async function viewFiles (e) {
-        e.preventDefault();
-        e.stopPropagation();
+      let currentTarget = null
 
-        const targetNode = document.getElementById('target-node').value
-        const result = await fetch(`/file-transfer/view-files/${targetNode}`).then(r => r.json()).catch(() => null)
+      async function getOurFiles() {
+        const ourName = document.getElementById('our')?.attributes?.['data-value']?.value
+        if (!ourName) return
 
-        if (!result || !result.ReadDir) {
-          alert('Error viewing files')
-          return
-        }
+        const result = await fetch(`/file-transfer/view-files/${ourName}`).then(r => r.json()).catch(() => null)
+        if (!result || !result.ReadDir) return
 
         const files = result.ReadDir
-        document.getElementById('view-files-form').style.display = 'none'
-        document.getElementById('file-list').style.display = 'flex'
-        // TODO: append files to file-list-container where a file object is in the format: {"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}
-        // append the file with the uri_string as the content
-        const fileListContainer = document.getElementById('file-list-container')
+
+        const fileListContainer = document.getElementById('our-file-list-container')
+        if (files.length === fileListContainer.children.length) return
+
+        fileListContainer.innerHTML = ''
         files.forEach(file => {
           const fileDiv = document.createElement('div')
+          fileDiv.classList.add('row')
           fileDiv.innerHTML = `
-            <div class="file-entry row">
-              <div class="file-name">${file.uri_string}</div>
-              <button onclick="getFile('${file.uri_string}')">Download</button>
-            </div>
+            <div class="file-name">${file.uri_string}</div>
           `
           fileListContainer.appendChild(fileDiv)
         })
       }
 
+      async function viewFiles (e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+          const targetNode = document.getElementById('target-node').value
+          const result = await fetch(`/file-transfer/view-files/${targetNode}`).then(r => r.json()).catch(() => null)
+  
+          if (!result || !result.ReadDir) {
+            alert('Error viewing files')
+            return
+          }
+  
+          currentTarget = targetNode
+  
+          const files = result.ReadDir
+          document.getElementById('view-files-form').style.display = 'none'
+          document.getElementById('remote-file-list').style.display = 'flex'
+          const fileListContainer = document.getElementById('remote-file-list-container')
+          fileListContainer.innerHTML = ''
+          files.forEach(file => {
+            const fileDiv = document.createElement('div')
+            fileDiv.classList.add('remote-file')
+            fileDiv.classList.add('row')
+            fileDiv.innerHTML = `
+                <div class="file-name">${file.uri_string}</div>
+                <button class="small" onclick="getFile('${file.uri_string}')">Download</button>
+            `
+            fileListContainer.appendChild(fileDiv)
+          })
+        } catch (e) {
+          alert('Error viewing files')
+        }
+      }
+
       async function getFile(fileName) {
-        alert(fileName)
+        await fetch('/file-transfer/get-file', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            target_node: currentTarget,
+            uri_string: fileName,
+            chunk_size: 1024,
+          })
+        })
+
+        setTimeout(getOurFiles(), 1000)
+      }
+
+      function enterNewRemote() {
+        currentTarget = null
+        document.getElementById('view-files-form').style.display = 'flex'
+        document.getElementById('remote-file-list').style.display = 'none'
+        document.getElementById('target-node').value = ''
+        document.getElementById('remote-file-list-container').innerHTML = ''
       }
 
       const viewFilesForm = document.getElementById('view-files-form')
       viewFilesForm.addEventListener('submit', viewFiles)
+
+      document.addEventListener('DOMContentLoaded', () => {
+        getOurFiles()
+        setInterval(getOurFiles, 5000)
+      })
     </script>
   </body>
 </html>

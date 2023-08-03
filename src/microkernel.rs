@@ -783,22 +783,34 @@ async fn handle_kernel_request(
             return;
         },
         KernelRequest::StopProcess(cmd) => {
-            let _ = senders.remove(&cmd.process_name);
-            let process_handle = process_handles
-                .remove(&cmd.process_name).unwrap();
-            process_handle.abort();
-            let MessageType::Request(
-                is_expecting_response
-            ) = message.message_type else {
+            let MessageType::Request(is_expecting_response) = message.message_type else {
                 send_to_terminal
                     .send(Printout {
-                        verbosity: 1,
+                        verbosity: 0,
                         content: "kernel: StopProcess requires Request, got Response".into()
                     })
                     .await
                     .unwrap();
                 return;
             };
+            let _ = senders.remove(&cmd.process_name);
+            let process_handle = match process_handles.remove(&cmd.process_name) {
+                Some(ph) => ph,
+                None => {
+                    send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "kernel: no such process {} to Stop",
+                                cmd.process_name,
+                            ),
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                },
+            };
+            process_handle.abort();
             if !is_expecting_response {
                 return;
             }

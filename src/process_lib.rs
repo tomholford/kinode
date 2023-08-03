@@ -124,3 +124,22 @@ where
 
     Ok(())
 }
+
+pub fn yield_and_await_response<T>(
+    target_node: &str,
+    target_process: &str,
+    json_struct: Option<T>,
+    bytes: Option<Vec<u8>>,
+) -> anyhow::Result<types::WitMessage>
+where
+     T: serde::Serialize,
+{
+    let payload = make_payload(json_struct, bytes)?;
+    Ok(bindings::yield_and_await_response(
+        types::WitProcessNode {
+            node: target_node,
+            process: target_process,
+        },
+        &payload,
+    ))
+}

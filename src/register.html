@@ -164,6 +164,21 @@
         max-width: 420px;
       }
 
+      #current-address {
+        margin-left: 1em;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 1.25em;
+        font-weight: 600;
+      }
+
+      #current-username {
+        cursor: pointer;
+        padding: 0.5em;
+        border: 1px solid white;
+        border-radius: 4px;
+        margin: 1em 0;
+      }
+
       #current-username {
         cursor: pointer;
         padding: 0.5em;
@@ -259,6 +274,10 @@
           <label for="nft-contract">NFT ID</label>
         </div>
         <input type="text" required name="nft-id" placeholder="ID #" /> -->
+        <div class="row" style="margin: 0 0 1em;">
+          <div style="font-size: 0.75em;">Address:</div>
+          <div id="current-address"></div>
+        </div>
         <div class="row label-row" id="current-username-display" style="display: none;">
           <label for="nft-contract">Current Username:</label>
           <div id="current-username"></div>
@@ -298,6 +317,11 @@
       const UQBAR_NETWORK_HEX = '0x7261627175'
       const UQBAR_NETWORK_INT = 491260113269
       const CONNECTION_ERROR = 'There was an error connecting to your wallet. Please try again.'
+
+      function formatAddress(address) {
+        return `${address.slice(0, 6)}...${address.slice(-4)}`
+      }
+
       async function loadWallet() {
         try {
           const accounts = await ethereum.request({ method: 'eth_requestAccounts' })
@@ -324,29 +348,33 @@
         }
       }
 
+      async function checkAddress(address) {
+        try {
+          const usernameResponse = await fetch(`/check-address/${address}`)
+
+          if (usernameResponse.status < 400) {
+            const username = await usernameResponse.text()
+
+            if (username) {
+              document.getElementById('current-username-display').style.display = 'block'
+              document.getElementById('current-username').innerText = username
+              document.getElementById('current-username').addEventListener('click', () => {
+                document.querySelector('input[name="uq-name"]').value = username
+                document.getElementById('password')?.focus()
+              })
+            }
+          }
+
+        } catch (err) {}
+      }
+
       function connectWallet() {
         loadWallet()
-          .then(async (address) => {
+          .then((address) => {
             document.getElementById('connect-wallet').style.display = 'none'
             document.getElementById('signup-form').style.display = 'block'
-            // TODO: check if the address already has an uqname
-            try {
-              const usernameResponse = await fetch(`/check-address/${address}`)
-
-              if (usernameResponse.status < 400) {
-                const username = await usernameResponse.text()
-
-                if (username) {
-                  document.getElementById('current-username-display').style.display = 'block'
-                  document.getElementById('current-username').innerText = username
-                  document.getElementById('current-username').addEventListener('click', () => {
-                    document.querySelector('input[name="uq-name"]').value = username
-                    document.getElementById('password')?.focus()
-                  })
-                }
-              }
-
-            } catch (err) {}
+            document.getElementById('current-address').innerText = formatAddress(address)
+            checkAddress(address)
           })
           .catch((err) => {
             console.error(err)
@@ -477,6 +505,11 @@
       form.addEventListener('submit', signAndSubmit)
 
       document.addEventListener('DOMContentLoaded', () => {
+        window.ethereum?.on('accountsChanged', function (accounts) {
+          document.getElementById('current-address').innerText = formatAddress(accounts[0])
+          checkAddress(accounts[0])
+        })
+
         document.getElementById('loading').style.display = 'none'
         if (window.ethereum) {
           document.getElementById('connect-wallet').style.display = 'block'

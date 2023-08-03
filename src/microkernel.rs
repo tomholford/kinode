@@ -13,8 +13,8 @@ use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
 use crate::microkernel::component::microkernel_process::types::WitMessageType;
-use crate::microkernel::component::microkernel_process::types::WitPayload;
 use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
+use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
 use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
@@ -175,9 +175,23 @@ impl MicrokernelProcessImports for Process {
         process_input
     }
 
-    async fn yield_and_await_response(&mut self, result: (WitProtomessage, String)) -> Result<(WitMessage, String)> {
+    // async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
+    async fn yield_and_await_response(
+        &mut self,
+        target: WitProcessNode,
+        payload: WitPayload,
+    ) -> Result<WitMessage> {
+        let protomessage = WitProtomessage {
+            protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
+                is_expecting_response: true,
+                target_ship: target.node,
+                target_app: target.process,
+            }),
+            payload,
+        };
+
         let ids = send_process_results_to_loop(
-            vec![result],
+            vec![(protomessage, "".into())],
             self.metadata.our_name.clone(),
             self.metadata.process_name.clone(),
             self.send_to_loop.clone(),
@@ -228,7 +242,7 @@ async fn get_and_send_specific_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String)>) {
+) -> (WrappedMessage, Result<WitMessage>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -237,11 +251,18 @@ async fn get_and_send_specific_loop_message_to_process(
            & !(("ws" == wrapped_message.message.wire.source_app)
                & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
               ) {
-            return send_loop_message_to_process(
+            let message = send_loop_message_to_process(
                 wrapped_message,
                 send_to_terminal,
                 contexts,
             ).await;
+            return (
+                message.0,
+                match message.1 {
+                    Ok(r) => Ok(r.0),
+                    Err(e) => Err(e),
+                },
+            );
         }
 
         message_queue.push_back(wrapped_message);
@@ -254,6 +275,7 @@ async fn get_and_send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
         match message_queue.pop_front() {
@@ -761,22 +783,34 @@ async fn handle_kernel_request(
             return;
         },
         KernelRequest::StopProcess(cmd) => {
-            let _ = senders.remove(&cmd.process_name);
-            let process_handle = process_handles
-                .remove(&cmd.process_name).unwrap();
-            process_handle.abort();
-            let MessageType::Request(
-                is_expecting_response
-            ) = message.message_type else {
+            let MessageType::Request(is_expecting_response) = message.message_type else {
                 send_to_terminal
                     .send(Printout {
-                        verbosity: 1,
+                        verbosity: 0,
                         content: "kernel: StopProcess requires Request, got Response".into()
                     })
                     .await
                     .unwrap();
                 return;
             };
+            let _ = senders.remove(&cmd.process_name);
+            let process_handle = match process_handles.remove(&cmd.process_name) {
+                Some(ph) => ph,
+                None => {
+                    send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "kernel: no such process {} to Stop",
+                                cmd.process_name,
+                            ),
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                },
+            };
+            process_handle.abort();
             if !is_expecting_response {
                 return;
             }

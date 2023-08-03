@@ -658,27 +658,21 @@ impl bindings::MicrokernelProcess for Component {
                     additional: FileTransferAdditionalContext::Empty,
                 }).unwrap();
 
-                let (message, _) = bindings::yield_and_await_response((
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Request(
-                            WitRequestTypeWithTarget {
-                                is_expecting_response: true,
-                                target_ship: &target_node,
-                                target_app: &process_name,
-                            },
-                        ),
-                        payload: &WitPayload {
-                            json: Some(serde_json::to_string(
-                                &FileTransferRequest::ReadDir {
-                                    target_node: target_node.to_string(),
-                                    uri_string: uri_string.clone(),
-                                }
-                            ).unwrap()),
-                            bytes: None,
-                        },
+                let message = bindings::yield_and_await_response(
+                    bindings::WitProcessNode {
+                        node: &target_node,
+                        process: &process_name,
                     },
-                    context.as_str(),
-                ));
+                    &WitPayload {
+                        json: Some(serde_json::to_string(
+                            &FileTransferRequest::ReadDir {
+                                target_node: target_node.to_string(),
+                                uri_string: uri_string.clone(),
+                            }
+                        ).unwrap()),
+                        bytes: None,
+                    },
+                );
 
                 let Some(ref payload_json_string) = message.payload.json else {
                     print_to_terminal("file_transfer: require non-empty json payload");

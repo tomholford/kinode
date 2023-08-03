@@ -1,1 +1,1 @@
-{"mr_sequencer":{"name":"mr_sequencer","address":"0x00000000000000000000000000000000000000000000000000000000deadbeef","networking_key":"6077987c998066ed7dea3e30555add0523482475c705fb92c0c8e78307b8e62c","ws_routing":["localhost",9000],"allowed_routers":[],"routing_for":[]},"asdf":{"name":"asdf","address":"0xf42f908b5327069d38ef652e46ac9da59cee6e27","networking_key":"0272c08c83a7745b075e328e37400fc46dd0384b65766332a7380cb01f7d7784","ws_routing":["75.197.160.191",9000],"allowed_routers":[],"routing_for":[]}}
+{}

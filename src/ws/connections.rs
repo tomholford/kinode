@@ -343,7 +343,10 @@ async fn forwarding_connection(
                 match &target_id.ws_routing {
                     Some((ip, port)) => {
                         // connect directly
-                        let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                        let ws_url = match make_ws_url(&our, ip, port) {
+                            Ok(v) => v,
+                            Err(_) => return Err("error making ws url".into()),
+                        };
                         match connect_async(ws_url).await {
                             Err(_) => {
                                 let _err = forward_special_message(
@@ -407,7 +410,10 @@ async fn forwarding_connection(
                             }
                         };
                         let (ip, port) = router_id.ws_routing.as_ref().unwrap();
-                        let ws_url = Url::parse(&format!("ws://{}:{}/ws", ip, port)).unwrap();
+                        let ws_url = match make_ws_url(&our, ip, port) {
+                            Ok(v) => v,
+                            Err(_) => return Err("error making ws url".into()),
+                        };
                         match connect_async(ws_url).await {
                             Err(_) => {
                                 let _err = forward_special_message(

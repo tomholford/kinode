@@ -269,6 +269,8 @@
         </div>
         <input type="password" id="confirm-password" required minlength="6" name="confirm-password" placeholder="Min 6 characters" oninput="clearPasswordCheck()" />
 
+        <label for="direct">Register as a direct node (only do this if you are hosting your node somewhere stable)</label>
+        <input type="checkbox" id="direct" name="direct" />
         <button type="submit">Sign & Submit</button>
       </form>
       <div id="loading" class="col">
@@ -329,7 +331,7 @@
                   document.getElementById('current-username').innerText = username
                 }
               }
-  
+
             } catch (err) {
 
             }
@@ -376,7 +378,7 @@
             // TODO: replace regex with endpoint call that checks if name exists
             const alreadyTaken = uqName === 'myname';
 
-            
+
 
             if (alreadyTaken) {
               input.setCustomValidity('Uq name already taken');
@@ -417,11 +419,12 @@
           // const nftId = document.querySelector('input[name="nft-id"]').value
           const uqName = document.querySelector('input[name="uq-name"]').value
           const password = document.querySelector('input[name="password"]').value
+          const direct = document.querySelector('input[name="direct"]').checked
 
           const message = await fetch('/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: uqName, password, address })
+            body: JSON.stringify({ username: uqName, password, address, direct })
           }).then((res) => res.text()).catch(() => null)
 
           if (!message) {

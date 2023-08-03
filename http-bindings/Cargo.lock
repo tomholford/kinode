@@ -66,11 +66,19 @@ dependencies = [
 name = "http-bindings"
 version = "0.1.0"
 dependencies = [
+ "http_bindings-bindings",
  "jsonwebtoken",
  "regex",
  "serde",
  "serde_json",
  "url",
+ "wit-bindgen",
+]
+
+[[package]]
+name = "http_bindings-bindings"
+version = "0.1.0"
+dependencies = [
  "wit-bindgen",
 ]
 

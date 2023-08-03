@@ -141,7 +141,8 @@ pub async fn terminal(
     let mut in_step_through: bool = false;
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
-    let mut verbose_mode: bool = true;
+    // DEMO: default to false
+    let mut verbose_mode: bool = false;
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 
@@ -223,6 +224,15 @@ pub async fn terminal(
                             modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
+                            let _ = print_tx.send(
+                                Printout {
+                                    verbosity: 0,
+                                    content: match verbose_mode {
+                                        true => "verbose mode off".into(),
+                                        false => "verbose mode on".into(),
+                                    }
+                                }
+                            ).await;
                             verbose_mode = !verbose_mode;
                         },
                         // CTRL+J: toggle debug mode -- makes system-level event loop step-through

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wasmtime::component::*;
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -8,6 +8,8 @@ use std::pin::Pin;
 use tokio::task::JoinHandle;
 use tokio::fs;
 use serde::{Serialize, Deserialize};
+
+use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
 
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
@@ -90,6 +92,12 @@ struct Process {
     message_queue: VecDeque<WrappedMessage>,
 }
 
+struct ProcessWasi {
+    process: Process,
+    table: Table,
+    wasi: WasiCtx,
+}
+
 #[derive(Clone, Debug)]
 struct CauseMetadata {
     id: u64,
@@ -147,31 +155,46 @@ fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
 }
 
-impl Host for Process {
+impl Host for ProcessWasi {
+}
+
+impl WasiView for ProcessWasi {
+    fn table(&self) -> &Table {
+        &self.table
+    }
+    fn table_mut(&mut self) -> &mut Table {
+        &mut self.table
+    }
+    fn ctx(&self) -> &WasiCtx {
+        &self.wasi
+    }
+    fn ctx_mut(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
 }
 
 #[async_trait::async_trait]
-impl MicrokernelProcessImports for Process {
+impl MicrokernelProcessImports for ProcessWasi {
     async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
         let _ = send_process_results_to_loop(
             results,
-            self.metadata.our_name.clone(),
-            self.metadata.process_name.clone(),
-            self.send_to_loop.clone(),
-            &self.prompting_message,
-            &mut self.contexts,
+            self.process.metadata.our_name.clone(),
+            self.process.metadata.process_name.clone(),
+            self.process.send_to_loop.clone(),
+            &self.process.prompting_message,
+            &mut self.process.contexts,
         ).await;
         Ok(())
     }
 
     async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
         let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
-            &mut self.message_queue,
-            &mut self.recv_in_process,
-            &mut self.send_to_terminal,
-            &self.contexts,
+            &mut self.process.message_queue,
+            &mut self.process.recv_in_process,
+            &mut self.process.send_to_terminal,
+            &self.process.contexts,
         ).await;
-        self.prompting_message = Some(wrapped_message);
+        self.process.prompting_message = Some(wrapped_message);
         process_input
     }
 
@@ -192,11 +215,11 @@ impl MicrokernelProcessImports for Process {
 
         let ids = send_process_results_to_loop(
             vec![(protomessage, "".into())],
-            self.metadata.our_name.clone(),
-            self.metadata.process_name.clone(),
-            self.send_to_loop.clone(),
-            &self.prompting_message,
-            &mut self.contexts,
+            self.process.metadata.our_name.clone(),
+            self.process.metadata.process_name.clone(),
+            self.process.send_to_loop.clone(),
+            &self.process.prompting_message,
+            &mut self.process.contexts,
         ).await;
 
         if 1 != ids.len() {
@@ -205,17 +228,17 @@ impl MicrokernelProcessImports for Process {
 
         let (wrapped_message, process_input) = get_and_send_specific_loop_message_to_process(
             ids[0],
-            &mut self.message_queue,
-            &mut self.recv_in_process,
-            &mut self.send_to_terminal,
-            &self.contexts,
+            &mut self.process.message_queue,
+            &mut self.process.recv_in_process,
+            &mut self.process.send_to_terminal,
+            &self.process.contexts,
         ).await;
-        self.prompting_message = Some(wrapped_message);
+        self.process.prompting_message = Some(wrapped_message);
         process_input
     }
 
     async fn print_to_terminal(&mut self, message: String) -> Result<()> {
-        self.send_to_terminal
+        self.process.send_to_terminal
             .send(Printout { verbosity: 1, content: message })
             .await
             .expect("print_to_terminal: error sending");
@@ -626,24 +649,32 @@ async fn make_process_loop(
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
-    MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
+    MicrokernelProcess::add_to_linker(&mut linker, |state: &mut ProcessWasi| state).unwrap();
 
+    let mut table = Table::new();
+    let wasi = WasiCtxBuilder::new().inherit_stdio().build(&mut table).unwrap();
+
+    wasi::command::add_to_linker(&mut linker).unwrap();
     let mut store = Store::new(
         engine,
-        Process {
-            metadata,
-            recv_in_process,
-            send_to_loop: send_to_loop.clone(),
-            send_to_terminal: send_to_terminal.clone(),
-            prompting_message: None,
-            contexts: HashMap::new(),
-            message_queue: VecDeque::new(),
+        ProcessWasi {
+            process: Process {
+                metadata,
+                recv_in_process,
+                send_to_loop: send_to_loop.clone(),
+                send_to_terminal: send_to_terminal.clone(),
+                prompting_message: None,
+                contexts: HashMap::new(),
+                message_queue: VecDeque::new(),
+            },
+            table,
+            wasi,
         },
     );
 
     Box::pin(
         async move {
-            let (bindings, _) = MicrokernelProcess::instantiate_async(
+            let (bindings, _bindings) = MicrokernelProcess::instantiate_async(
                 &mut store,
                 &component,
                 &linker
@@ -989,8 +1020,10 @@ pub async fn kernel(
     send_to_http_client: MessageSender,
 ) {
     let mut config = Config::new();
-    config.async_support(true);
+    config.cache_config_load_default().unwrap();
+    config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
     config.wasm_component_model(true);
+    config.async_support(true);
     let engine = Engine::new(&config).unwrap();
 
     let event_loop_handle = tokio::spawn(

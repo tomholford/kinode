@@ -28,6 +28,7 @@ mod register;
 mod terminal;
 mod types;
 mod ws;
+mod net;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -72,19 +73,18 @@ async fn main() {
     // For use with https://github.com/tokio-rs/console
     // console_subscriber::init();
 
-    // DEMO ONLY: remove all CLI arguments
-    // let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect();
     // let process_manager_wasm_path = args[1].clone();
     let process_manager_wasm_path = "process_manager.wasm";
-    // let home_directory_path = &args[2];
-    let home_directory_path = "home";
+    let home_directory_path = &args[1];
+    // let home_directory_path = "home";
     // create home directory if it does not already exist
     if let Err(e) = fs::create_dir_all(home_directory_path).await {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
     // let blockchain_url = &args[3];
-    let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
+    let blockchain_url = "http://localhost:8080/blockchain.json";
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -278,7 +278,7 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["routeroflastresort".into()]
+                vec!["rolr".into()]
             } else {
                 vec![]
             },
@@ -372,15 +372,25 @@ async fn main() {
             http_server_sender.clone(),
             http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
-        _ = ws::websockets(
+        // _ = ws::websockets(
+        //     our.clone(),
+        //     networking_keypair,
+        //     pki.clone(),
+        //     kernel_message_sender.clone(),
+        //     print_sender.clone(),
+        //     wss_message_receiver,
+        //     wss_message_sender.clone(),
+        // ) => { "websockets died".to_string() },
+        _ = net::networking(
             our.clone(),
+            our_ip,
             networking_keypair,
             pki.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
             wss_message_receiver,
             wss_message_sender.clone(),
-        ) => { "websockets died".to_string() },
+        ) => { "networking module died".to_string() },
         // temporary process to keep up-to-date on chain,
         // will replace with full-fledged indexing
         _ = indexing(

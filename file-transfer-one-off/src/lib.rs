@@ -809,7 +809,7 @@ impl bindings::MicrokernelProcess for Component {
                                 );
                             },
                         }
-                    } else if "ws" == message.wire.source_app {
+                    } else if "net" == message.wire.source_app {
                         if let Ok(networking_error) =
                                 serde_json::from_str::<NetworkingError>(payload_json_string) {
 

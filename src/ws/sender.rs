@@ -375,6 +375,7 @@ async fn send_message(
                             }
                         }
                     };
+                    stream.send(tungstenite::Message::Ping(vec![])).await.unwrap();
                     match stream.send(tungstenite::Message::Binary(wrapped)).await {
                         Ok(_) => return Ok(SuccessOrTimeout::Success),
                         Err(_) => {

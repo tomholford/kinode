@@ -141,8 +141,7 @@ pub async fn terminal(
     let mut in_step_through: bool = false;
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
-    // DEMO: default to false
-    let mut verbose_mode: bool = false;
+    let mut verbose_mode: bool = true;
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 

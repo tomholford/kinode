@@ -153,29 +153,32 @@ async fn create_connection(
                     && target_id.allowed_routers.contains(&our.name)
                     && peers.read().await.contains_key(&handshake.target)
                 {
-                    // ok, we can route to them!
-
-                    // spawn a new one-way pass-through
-                    let pass_through_handle = tokio::spawn(one_way_pass_through_connection(
-                        handshake.target.clone(),
-                        their_id.name.clone(),
-                        read_stream,
-                        peers.clone(),
-                        Some(handshake),
-                    ));
-
                     let mut pt_writer = pass_throughs.write().await;
                     match pt_writer.get_mut(&target_id.name) {
                         None => return Err("target not routable".into()),
-                        Some(map) => map.insert(their_id.name, (write_stream, pass_through_handle)),
-                    };
-
-                    Ok(())
+                        Some(map) => {
+                            // ok, we can route to them!
+                            // spawn a new one-way pass-through
+                            let pass_through_handle = tokio::spawn(one_way_pass_through_connection(
+                                handshake.target.clone(),
+                                their_id.name.clone(),
+                                read_stream,
+                                peers.clone(),
+                                Some(handshake),
+                            ));
+                            map.insert(their_id.name, (write_stream, pass_through_handle));
+                            Ok(())
+                        },
+                    }
                 } else {
+                    let _ = write_stream.reunite(read_stream).unwrap().close(None).await;
                     return Err("target not routable".into());
                 }
             }
-            None => return Err("target not found in onchain pki".into()),
+            None => {
+                let _ = write_stream.reunite(read_stream).unwrap().close(None).await;
+                return Err("target not found in onchain pki".into())
+            }
         }
     }
 }

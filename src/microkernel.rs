@@ -234,7 +234,7 @@ async fn get_and_send_specific_loop_message_to_process(
         //  if message id matches the one we sent out
         //   AND the message is not a websocket ack
         if (awaited_message_id == wrapped_message.id)
-           & !(("ws" == wrapped_message.message.wire.source_app)
+           & !(("net" == wrapped_message.message.wire.source_app)
                & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
               ) {
             return send_loop_message_to_process(
@@ -906,7 +906,7 @@ async fn make_event_loop(
                                 ).await;
                             //  XX temporary branch to assist in pure networking debugging
                             //  can be removed when ws WASM module is ready
-                            } else if to == "ws" {
+                            } else if to == "net" {
                                 let _ = send_to_wss.send(wrapped_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
@@ -1085,34 +1085,6 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_apps_home_message).await.unwrap();
-
-    // DEMO ONLY: start file_transfer app at boot
-    let ft_bytes = fs::read("file_transfer.wasm").await.unwrap();
-    let start_apps_ft = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "file_transfer".into(),
-                            wasm_bytes_uri: "file_transfer.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(ft_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_apps_ft).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

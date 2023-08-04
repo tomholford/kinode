@@ -977,7 +977,7 @@ async fn make_event_loop(
 
 
 pub async fn kernel(
-    our: &Identity,
+    our: Identity,
     process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,

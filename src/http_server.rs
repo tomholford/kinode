@@ -3,8 +3,8 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use serde_urlencoded;
 use std::collections::HashMap;
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use warp::http::{header::HeaderName, header::HeaderValue, HeaderMap, StatusCode};
@@ -22,12 +22,13 @@ type HttpResponseSenders = Arc<Mutex<HashMap<u64, HttpSender>>>;
 
 /// http driver
 pub async fn http_server(
-    our: &String,
+    our: String,
     message_rx: MessageReceiver,
     message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
     let http_response_senders = Arc::new(Mutex::new(HashMap::new()));
+
 
     tokio::join!(
         http_serve(
@@ -51,34 +52,23 @@ async fn http_handle_messages(
     };
         let request: HttpResponse = serde_json::from_value(value).unwrap();
 
-        let mut locked_senders = http_response_senders.lock();
-        match locked_senders {
-            Ok(mut senders) => {
-                match senders.remove(&wm.id) {
-                    Some(channel) => {
-                        let _ = channel.send(HttpResponse {
-                            status: request.status,
-                            headers: request.headers,
-                            body: wm.message.payload.bytes,
-                        });
-                    }
-                    None => {
-                        // TODO: this should be a panic because something has gotten incredibly out of sync
-                        let _ = print_tx
-                            .send(Printout {
-                                verbosity: 1,
-                                content: format!(
-                                    "http_server: NO KEY FOUND FOR ID {}",
-                                    wm.id
-                                ),
-                            })
-                            .await;
-                    }
-                }
+        let mut senders = http_response_senders.lock().await;
+        match senders.remove(&wm.id) {
+            Some(channel) => {
+                let _ = channel.send(HttpResponse {
+                    status: request.status,
+                    headers: request.headers,
+                    body: wm.message.payload.bytes,
+                });
             }
-            Err(e) => {
-                // handle the mutex error
-                panic!("Mutex error: {}", e);
+            None => {
+                // TODO: this should be a panic because something has gotten incredibly out of sync
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 1,
+                        content: format!("http_server: NO KEY FOUND FOR ID {}", wm.id),
+                    })
+                    .await;
             }
         }
     }
@@ -171,7 +161,7 @@ async fn handler(
     let (response_sender, response_receiver) = oneshot::channel();
     http_response_senders
         .lock()
-        .unwrap()
+        .await
         .insert(id, response_sender);
 
     message_tx.send(message).await.unwrap();

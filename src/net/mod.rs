@@ -7,7 +7,7 @@ use aes_gcm::KeyInit;
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
-use ethers::prelude::k256::Secp256k1;
+use ethers::prelude::k256::{self, Secp256k1};
 use futures::future::Join;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -20,16 +20,18 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
+mod connections;
+
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-struct Peer {
-    pub identity: Identity,
-    pub direct: bool,
+pub struct Peer {
+    pub networking_address: String,
     pub is_ward: bool,
-    pub websocket: WebSocket,
+    pub sender: mpsc::UnboundedSender<WrappedMessage>,
+    pub handler: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 /// parsed from Binary websocket message on an Indirect route
@@ -37,6 +39,7 @@ struct Peer {
 enum NetworkMessage {
     From { from: String, contents: Vec<u8> },
     To { to: String, contents: Vec<u8> },
+    Ack(u64),
     Handshake(Handshake),
     LostPeer(String),
     PeerOffline(String),
@@ -71,7 +74,6 @@ pub async fn networking(
     mut message_rx: MessageReceiver,
     self_message_tx: MessageSender,
 ) {
-    // if we do routing for a node, they're stored here
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = Arc::new(keypair);
 
@@ -89,6 +91,7 @@ pub async fn networking(
             // spawn the listener
             tokio::spawn(receive_incoming_connections(
                 our.clone(),
+                keypair.clone(),
                 *port,
                 pki.clone(),
                 peers.clone(),
@@ -182,11 +185,13 @@ async fn router_connection(
 /// only used if direct. should live forever
 async fn receive_incoming_connections(
     our: Identity,
+    keypair: Arc<Ed25519KeyPair>,
     port: u16,
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) {
+    println!("receive_incoming_connections");
     let tcp = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
         .expect(format!("fatal error: can't listen on port {}", port).as_str());
@@ -194,70 +199,19 @@ async fn receive_incoming_connections(
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
-                tokio::spawn(handle_incoming_connection(
+                tokio::spawn(connections::build_connection(
                     our.clone(),
-                    websocket,
+                    keypair.clone(),
+                    None,
+                    None,
                     pki.clone(),
                     peers.clone(),
+                    websocket,
                     kernel_message_tx.clone(),
                 ));
             }
             // ignore connections we failed to accept
             Err(_) => {}
-        }
-    }
-}
-
-async fn handle_incoming_connection(
-    our: Identity,
-    mut websocket: WebSocket,
-    pki: OnchainPKI,
-    peers: Peers,
-    kernel_message_tx: MessageSender,
-) {
-    // receive message
-    // if target is us:
-    //    send pong with message id
-    //    close if get nothing within timeout
-    // otherwise:
-    //    decide if we can or should route to them
-    //    if we want to, route to them
-    //    only pong original sender once we get pong from routed-to
-    //
-    if let Ok(Some(Ok(ws_message))) = timeout(TIMEOUT, websocket.next()).await {
-        match ws_message {
-            tungstenite::Message::Text(msg) => {
-                // this is a networking protocol message
-                // TODO do more than assume it's a request for routing
-                let their_name = msg;
-                if let Some(their_id) = pki.read().await.get(&their_name) {
-                    let ward_peer = Peer {
-                        identity: their_id.clone(),
-                        direct: true,
-                        is_ward: true,
-                        websocket,
-                    };
-                    peers.write().await.insert(their_name, ward_peer);
-                    return;
-                }
-            }
-            tungstenite::Message::Binary(bin) => {
-                let msg = serde_json::from_slice::<WrappedMessage>(&bin).unwrap();
-                if msg.message.wire.target_ship == our.name {
-                    let _ = websocket.send(tungstenite::Message::Pong(vec![])).await;
-                    let _ = kernel_message_tx.send(msg).await;
-                } else {
-                    if let Some(peer) = peers.write().await.get_mut(&msg.message.wire.target_ship) {
-                        match send_routed_message(msg, peer).await {
-                            Ok(()) => {
-                                let _ = websocket.send(tungstenite::Message::Pong(vec![])).await;
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -273,18 +227,26 @@ async fn message_to_peer(
     kernel_message_tx: MessageSender,
     self_message_tx: MessageSender,
 ) {
+    println!("message_to_peer");
     let target = &wm.message.wire.target_ship;
-    match peers.write().await.get_mut(target) {
-        Some(peer) => match send_routed_message(wm.clone(), peer).await {
-            Ok(()) => return,
-            Err(e) => {
+    let mut peers_write = peers.write().await;
+    match peers_write.get_mut(target) {
+        Some(peer) => {
+            // if we have the peer, simply send the message to their sender
+            let _ = peer.sender.send(wm.clone());
+            drop(peers_write);
+            // if, after this, they are still in our peermap, message was sent OR timeout.
+            // otherwise, they're offline
+            if peers.read().await.contains_key(target) {
+                // woohoo
+            } else {
                 let _ = kernel_message_tx
-                    .send(make_kernel_response(&our, wm, e))
+                    .send(make_kernel_response(&our, wm, NetworkError::Offline))
                     .await;
-                return;
             }
-        },
+        }
         None => {
+            drop(peers_write);
             // search PKI for peer and attempt to create a connection, then resend
             match pki.read().await.get(target) {
                 None => {
@@ -299,15 +261,32 @@ async fn message_to_peer(
                             //
                             //  can connect directly to peer
                             //
-                            match send_direct_message(&our, &our_ip, wm.clone(), ip, port).await {
-                                Ok(()) => return,
-                                Err(e) => {
-                                    let _ = kernel_message_tx
-                                        .send(make_kernel_response(&our, wm, e))
-                                        .await;
-                                    return;
+                            if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
+                                if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                                    connections::build_connection(
+                                        our.clone(),
+                                        keypair,
+                                        Some(peer_id.clone()),
+                                        Some(wm.clone()),
+                                        pki.clone(),
+                                        peers.clone(),
+                                        websocket,
+                                        kernel_message_tx.clone(),
+                                    )
+                                    .await;
+                                    println!("bottomed out");
+                                    // if, after this, they are in our peermap, message was sent OR timeout.
+                                    // otherwise, they're offline
+                                    if peers.read().await.contains_key(target) {
+                                        // woohoo
+                                        println!("woohoo?");
+                                        return;
+                                    }
                                 }
                             }
+                            let _ = kernel_message_tx
+                                .send(make_kernel_response(&our, wm, NetworkError::Offline))
+                                .await;
                         }
                         None => {
                             //
@@ -316,18 +295,7 @@ async fn message_to_peer(
                             for router in &peer_id.allowed_routers {
                                 if let Some(router_id) = pki.read().await.get(router) {
                                     if let Some((ip, port)) = &router_id.ws_routing {
-                                        match send_direct_message(
-                                            &our,
-                                            &our_ip,
-                                            wm.clone(),
-                                            ip,
-                                            port,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => return,
-                                            Err(_) => continue,
-                                        }
+                                        unimplemented!("gotta route")
                                     }
                                 }
                             }
@@ -342,93 +310,6 @@ async fn message_to_peer(
             }
         }
     }
-}
-
-async fn send_direct_message(
-    our: &Identity,
-    our_ip: &String,
-    wm: WrappedMessage,
-    ip: &str,
-    port: &u16,
-) -> Result<(), NetworkError> {
-    //
-    //  can make direct connection to peer
-    //
-    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-        // TODO *optimize* by keeping this websocket OPEN and reusing it!!
-        if let Ok((mut websocket, _response)) = connect_async(ws_url).await {
-            let _ = websocket
-                .send(tungstenite::Message::Binary(
-                    serde_json::to_vec(&wm).unwrap(),
-                ))
-                .await;
-            // either we get pong, or we get timeout
-            if let Ok(sent) = timeout(TIMEOUT, websocket.next()).await {
-                match sent {
-                    None => {
-                        // what does this mean?
-                        return Err(NetworkError::Offline);
-                    }
-                    Some(Err(e)) => {
-                        // what does this mean?
-                        // could be different depending on error
-                        // can treat as offline
-                        return Err(NetworkError::Offline);
-                    }
-                    Some(Ok(tungstenite::Message::Pong(_))) => {
-                        // woohoo success
-                        return Ok(());
-                    }
-                    _ => {
-                        // got response other than Pong
-                        return Err(NetworkError::Timeout);
-                    }
-                }
-            }
-            // timeout
-            return Err(NetworkError::Timeout);
-        }
-        // offline, couldn't connect to given URL
-    }
-    // offline, couldn't make URL
-    Err(NetworkError::Offline)
-}
-
-async fn send_routed_message(wm: WrappedMessage, peer: &mut Peer) -> Result<(), NetworkError> {
-    if peer.is_ward {
-        let _ = peer
-            .websocket
-            .send(tungstenite::Message::Binary(
-                serde_json::to_vec(&wm).unwrap(),
-            ))
-            .await;
-        // either we get pong, or we get timeout
-        if let Ok(sent) = timeout(TIMEOUT, peer.websocket.next()).await {
-            match sent {
-                None => {
-                    // what does this mean?
-                    return Err(NetworkError::Offline);
-                }
-                Some(Err(_e)) => {
-                    // what does this mean?
-                    // could be different depending on error
-                    // can treat as offline
-                    return Err(NetworkError::Offline);
-                }
-                Some(Ok(tungstenite::Message::Pong(_))) => {
-                    // woohoo success
-                    return Ok(());
-                }
-                _ => {
-                    // got response other than Pong
-                    return Err(NetworkError::Timeout);
-                }
-            }
-        }
-        // timeout
-        return Err(NetworkError::Timeout);
-    }
-    Err(NetworkError::Offline)
 }
 
 async fn handle_incoming_message(
@@ -515,4 +396,115 @@ fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -
             },
         },
     }
+}
+
+/*
+ *  handshake utils
+ */
+
+/// read one message from websocket stream and parse it as a handshake.
+async fn get_handshake(websocket: &mut WebSocket) -> Result<Handshake, String> {
+    let handshake_text = websocket
+        .next()
+        .await
+        .ok_or("handshake failed")?
+        .map_err(|e| format!("{}", e))?
+        .into_text()
+        .map_err(|e| format!("{}", e))?;
+    let handshake: Handshake =
+        serde_json::from_str(&handshake_text).map_err(|_| "got bad handshake")?;
+    Ok(handshake)
+}
+
+/// take in handshake and PKI identity, and confirm that the handshake is valid.
+/// takes in optional nonce, which must be the one that connection initiator created.
+fn validate_handshake(
+    handshake: &Handshake,
+    their_id: &Identity,
+    nonce: Option<Vec<u8>>,
+) -> Result<(Arc<PublicKey<Secp256k1>>, Arc<Nonce>), String> {
+    let their_networking_key = signature::UnparsedPublicKey::new(
+        &signature::ED25519,
+        hex::decode(&their_id.networking_key).map_err(|_| "failed to decode networking key")?,
+    );
+
+    if !(their_networking_key
+        .verify(
+            &serde_json::to_vec(&their_id).map_err(|_| "failed to serialize their identity")?,
+            &handshake.id_signature,
+        )
+        .is_ok()
+        && their_networking_key
+            .verify(
+                &handshake.ephemeral_public_key,
+                &handshake.ephemeral_public_key_signature,
+            )
+            .is_ok())
+    {
+        // improper signatures on identity info, close connection
+        return Err("got improperly signed networking info".into());
+    }
+
+    let their_ephemeral_pk =
+        match PublicKey::<Secp256k1>::from_sec1_bytes(&handshake.ephemeral_public_key) {
+            Ok(v) => Arc::new(v),
+            Err(_) => return Err("error".into()),
+        };
+
+    // assign nonce based on our role in the connection
+    let nonce: Arc<Nonce> = match nonce {
+        Some(n) => Arc::new(*Nonce::from_slice(&n)),
+        None => Arc::new(*Nonce::from_slice(
+            &handshake.nonce.as_ref().ok_or("got bad nonce")?,
+        )),
+    };
+
+    return Ok((their_ephemeral_pk, nonce));
+}
+
+/// given an identity and networking key-pair, produces a handshake message along
+/// with an ephemeral secret to be used in a specific connection.
+fn make_secret_and_handshake(
+    our: &Identity,
+    keypair: Arc<Ed25519KeyPair>,
+    target: String,
+    nonce: Option<Arc<Nonce>>,
+    is_routing_request: bool,
+) -> (Arc<EphemeralSecret<Secp256k1>>, Handshake) {
+    // produce ephemeral keys for DH exchange and subsequent symmetric encryption
+    let ephemeral_secret = Arc::new(EphemeralSecret::<k256::Secp256k1>::random(
+        &mut rand::rngs::OsRng,
+    ));
+    let ephemeral_public_key = ephemeral_secret.public_key();
+    // sign the ephemeral public key with our networking management key
+    let signed_pk = keypair
+        .sign(&ephemeral_public_key.to_sec1_bytes())
+        .as_ref()
+        .to_vec();
+    let signed_id = keypair
+        .sign(&serde_json::to_vec(our).unwrap())
+        .as_ref()
+        .to_vec();
+
+    let nonce = match nonce {
+        Some(_) => None,
+        None => {
+            let mut iv = [0u8; 12];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut iv);
+            Some(iv.to_vec())
+        }
+    };
+
+    let handshake = Handshake {
+        from: our.name.clone(),
+        target: target.clone(),
+        routing_request: is_routing_request,
+        id_signature: signed_id,
+        ephemeral_public_key: ephemeral_public_key.to_sec1_bytes().to_vec(),
+        ephemeral_public_key_signature: signed_pk,
+        // if we are connection initiator, send nonce inside message
+        nonce: nonce.clone(),
+    };
+
+    (ephemeral_secret, handshake)
 }

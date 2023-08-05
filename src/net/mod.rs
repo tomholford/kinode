@@ -14,7 +14,7 @@ use futures::{SinkExt, StreamExt};
 use ring::signature::{self, Ed25519KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{self};
@@ -30,23 +30,24 @@ type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub struct Peer {
     pub networking_address: String,
     pub is_ward: bool,
-    pub sender: mpsc::UnboundedSender<WrappedMessage>,
+    pub sender: mpsc::UnboundedSender<(WrappedMessage, oneshot::Sender<Result<(), NetworkError>>)>,
     pub handler: mpsc::UnboundedSender<Vec<u8>>,
+    pub error: Option<NetworkError>,
 }
 
 /// parsed from Binary websocket message on an Indirect route
 #[derive(Debug, Serialize, Deserialize)]
 enum NetworkMessage {
-    From { from: String, contents: Vec<u8> },
-    To { to: String, contents: Vec<u8> },
+    Msg {
+        from: String,
+        to: String,
+        contents: Vec<u8>,
+    },
     Ack(u64),
-    Handshake(Handshake),
-    LostPeer(String),
-    PeerOffline(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum NetworkError {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NetworkError {
     Timeout,
     Offline,
 }
@@ -108,17 +109,33 @@ pub async fn networking(
                     handle_incoming_message(&our, wm.message, peers.clone(), print_tx.clone()).await;
                     continue;
                 }
-                tokio::spawn(message_to_peer(
+                let start = std::time::Instant::now();
+                // TODO can parallelize this
+                let result = message_to_peer(
                     our.clone(),
                     our_ip.clone(),
                     keypair.clone(),
                     pki.clone(),
                     peers.clone(),
-                    wm,
-                    print_tx.clone(),
+                    wm.clone(),
                     kernel_message_tx.clone(),
-                    self_message_tx.clone(),
-                ));
+                ).await;
+
+                let end = std::time::Instant::now();
+                let elapsed = end.duration_since(start);
+                let _ = print_tx.send(Printout {
+                    verbosity: 1,
+                    content: format!("message_to_peer took {:?}", elapsed),
+                }).await;
+
+                match result {
+                    Ok(()) => continue,
+                    Err(e) => {
+                        let _ = kernel_message_tx
+                            .send(make_kernel_response(&our, wm, e))
+                            .await;
+                    }
+                }
             }
         } => (),
     }
@@ -223,27 +240,20 @@ async fn message_to_peer(
     pki: OnchainPKI,
     peers: Peers,
     wm: WrappedMessage,
-    print_tx: PrintSender,
     kernel_message_tx: MessageSender,
-    self_message_tx: MessageSender,
-) {
+) -> Result<(), NetworkError> {
     println!("message_to_peer");
     let target = &wm.message.wire.target_ship;
     let mut peers_write = peers.write().await;
     match peers_write.get_mut(target) {
         Some(peer) => {
             // if we have the peer, simply send the message to their sender
-            let _ = peer.sender.send(wm.clone());
+            let (result_tx, result_rx) = oneshot::channel::<Result<(), NetworkError>>();
+            let _ = peer.sender.send((wm.clone(), result_tx));
             drop(peers_write);
             // if, after this, they are still in our peermap, message was sent OR timeout.
             // otherwise, they're offline
-            if peers.read().await.contains_key(target) {
-                // woohoo
-            } else {
-                let _ = kernel_message_tx
-                    .send(make_kernel_response(&our, wm, NetworkError::Offline))
-                    .await;
-            }
+            result_rx.await.unwrap_or(Err(NetworkError::Timeout))
         }
         None => {
             drop(peers_write);
@@ -251,9 +261,7 @@ async fn message_to_peer(
             match pki.read().await.get(target) {
                 None => {
                     // peer does not exist in PKI!
-                    let _ = kernel_message_tx
-                        .send(make_kernel_response(&our, wm, NetworkError::Offline))
-                        .await;
+                    return Err(NetworkError::Offline);
                 }
                 Some(peer_id) => {
                     match &peer_id.ws_routing {
@@ -263,11 +271,13 @@ async fn message_to_peer(
                             //
                             if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                                 if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                                    let (result_tx, result_rx) =
+                                        oneshot::channel::<Result<(), NetworkError>>();
                                     connections::build_connection(
                                         our.clone(),
                                         keypair,
                                         Some(peer_id.clone()),
-                                        Some(wm.clone()),
+                                        Some((wm.clone(), result_tx)),
                                         pki.clone(),
                                         peers.clone(),
                                         websocket,
@@ -275,18 +285,12 @@ async fn message_to_peer(
                                     )
                                     .await;
                                     println!("bottomed out");
-                                    // if, after this, they are in our peermap, message was sent OR timeout.
+                                    // if, after this, they are still in our peermap, message was sent OR timeout.
                                     // otherwise, they're offline
-                                    if peers.read().await.contains_key(target) {
-                                        // woohoo
-                                        println!("woohoo?");
-                                        return;
-                                    }
+                                    return result_rx.await.unwrap_or(Err(NetworkError::Timeout));
                                 }
                             }
-                            let _ = kernel_message_tx
-                                .send(make_kernel_response(&our, wm, NetworkError::Offline))
-                                .await;
+                            return Err(NetworkError::Offline);
                         }
                         None => {
                             //
@@ -300,10 +304,7 @@ async fn message_to_peer(
                                 }
                             }
                             // we tried all available routers and none of them worked!
-                            let _ = kernel_message_tx
-                                .send(make_kernel_response(&our, wm, NetworkError::Offline))
-                                .await;
-                            return;
+                            return Err(NetworkError::Offline);
                         }
                     }
                 }

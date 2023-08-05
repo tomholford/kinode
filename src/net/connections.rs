@@ -13,7 +13,7 @@ use futures::{SinkExt, StreamExt};
 use ring::signature::{self, Ed25519KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{self};
@@ -23,7 +23,7 @@ pub async fn build_connection(
     our: Identity,
     keypair: Arc<Ed25519KeyPair>,
     target: Option<Identity>,
-    initial_message: Option<WrappedMessage>,
+    initial_message: Option<(WrappedMessage, oneshot::Sender<Result<(), NetworkError>>)>,
     pki: OnchainPKI,
     peers: Peers,
     mut websocket: WebSocket,
@@ -74,8 +74,14 @@ pub async fn build_connection(
             (cipher, nonce, their_id)
         }
     };
-    let (sender_tx, sender_rx) = mpsc::unbounded_channel::<WrappedMessage>();
-    let (socket_tx, socket_rx) = mpsc::unbounded_channel::<NetworkMessage>();
+
+    // sender -> socket, socket -> handler
+    let (sender_tx, sender_rx) =
+        mpsc::unbounded_channel::<(WrappedMessage, oneshot::Sender<Result<(), NetworkError>>)>();
+    let (socket_tx, socket_rx) = mpsc::unbounded_channel::<(
+        NetworkMessage,
+        Option<oneshot::Sender<Result<(), NetworkError>>>,
+    )>();
     let (handler_tx, handler_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
     let peer = Peer {
@@ -83,6 +89,7 @@ pub async fn build_connection(
         is_ward: false,
         sender: sender_tx.clone(),
         handler: handler_tx.clone(),
+        error: None,
     };
 
     let peer_handler = tokio::spawn(peer_handler(
@@ -136,37 +143,47 @@ async fn active_peer(
 /// if this breaks it's a timeout
 async fn maintain_connection(
     peers: Peers,
-    self_tx: mpsc::UnboundedSender<NetworkMessage>,
-    mut message_rx: mpsc::UnboundedReceiver<NetworkMessage>,
+    self_tx: mpsc::UnboundedSender<(
+        NetworkMessage,
+        Option<oneshot::Sender<Result<(), NetworkError>>>,
+    )>,
+    mut message_rx: mpsc::UnboundedReceiver<(
+        NetworkMessage,
+        Option<oneshot::Sender<Result<(), NetworkError>>>,
+    )>,
     websocket: WebSocket,
 ) {
     println!("maintain_connection");
     let (mut write_stream, mut read_stream) = websocket.split();
     let (ack_tx, mut ack_rx) = mpsc::unbounded_channel::<u64>();
 
+    let sender_peers = peers.clone();
     let message_sender = tokio::spawn(async move {
-        while let Some(message) = message_rx.recv().await {
+        while let Some((message, result_tx)) = message_rx.recv().await {
             write_stream
                 .send(tungstenite::Message::Binary(
                     serde_json::to_vec(&message).unwrap(),
                 ))
                 .await
                 .expect("Failed to send a message");
-            if let NetworkMessage::Ack(_) = message {
-                // acks won't be acked
-                continue;
-            }
-            println!("message sent");
-            // await for the ack with timeout
-            match timeout(TIMEOUT, ack_rx.recv()).await {
-                Ok(Some(ack)) => {
-                    // message delivered
-                    println!("message delivered");
-                    continue;
-                }
-                _ => {
-                    println!("Timeout!!");
-                    break;
+            match message {
+                NetworkMessage::Ack(_) => continue,
+                NetworkMessage::Msg { from, .. } => {
+                    println!("message sent");
+                    // await for the ack with timeout
+                    match timeout(TIMEOUT, ack_rx.recv()).await {
+                        Ok(Some(_ack)) => {
+                            // message delivered
+                            println!("message delivered");
+                            result_tx.unwrap().send(Ok(())).unwrap();
+                            continue;
+                        }
+                        _ => {
+                            println!("Timeout!!");
+                            result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -181,16 +198,16 @@ async fn maintain_connection(
                             let _ = ack_tx.send(id);
                             continue;
                         }
-                        NetworkMessage::From { from, contents } => {
+                        NetworkMessage::Msg { from, to, contents } => {
                             if let Some(peer) = peers.write().await.get(&from) {
                                 if let Ok(()) = peer.handler.send(contents) {
                                     // TODO id
-                                    let _ = self_tx.send(NetworkMessage::Ack(0));
+                                    let _ = self_tx.send((NetworkMessage::Ack(0), None));
                                     continue;
                                 }
                             }
                         }
-                        _ => {},
+                        _ => {}
                     }
                 }
             }
@@ -214,9 +231,12 @@ async fn peer_handler(
     who: String,
     cipher: Aes256GcmSiv,
     nonce: Arc<Nonce>,
-    forwarder: mpsc::UnboundedReceiver<WrappedMessage>,
+    forwarder: mpsc::UnboundedReceiver<(WrappedMessage, oneshot::Sender<Result<(), NetworkError>>)>,
     mut receiver: mpsc::UnboundedReceiver<Vec<u8>>,
-    socket_tx: mpsc::UnboundedSender<NetworkMessage>,
+    socket_tx: mpsc::UnboundedSender<(
+        NetworkMessage,
+        Option<oneshot::Sender<Result<(), NetworkError>>>,
+    )>,
     kernel_message_tx: MessageSender,
 ) {
     println!("peer_handler");
@@ -226,13 +246,17 @@ async fn peer_handler(
     let forwarder = tokio::spawn(async move {
         let socket_tx = socket_tx;
         let mut forwarder = forwarder;
-        while let Some(message) = forwarder.recv().await {
+        while let Some((message, result_tx)) = forwarder.recv().await {
             if let Ok(bytes) = serde_json::to_vec(&message) {
                 if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
-                    let _ = socket_tx.send(NetworkMessage::From {
-                        from: our.name.clone(),
-                        contents: encrypted,
-                    });
+                    let _ = socket_tx.send((
+                        NetworkMessage::Msg {
+                            from: our.name.clone(),
+                            to: who.clone(),
+                            contents: encrypted,
+                        },
+                        Some(result_tx),
+                    ));
                 }
             }
         }

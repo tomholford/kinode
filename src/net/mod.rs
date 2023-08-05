@@ -1,22 +1,17 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::types::*;
 
-use aes_gcm::aead::Aead;
-use aes_gcm::KeyInit;
-use aes_gcm_siv::{Aes256GcmSiv, Nonce};
+use aes_gcm_siv::Nonce;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
 use ethers::prelude::k256::{self, Secp256k1};
-use futures::future::Join;
-use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use ring::signature::{self, Ed25519KeyPair};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::task::{AbortHandle, JoinHandle, JoinSet};
-use tokio::time::timeout;
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::{self};
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -73,7 +68,6 @@ pub async fn networking(
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
     mut message_rx: MessageReceiver,
-    self_message_tx: MessageSender,
 ) {
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = Arc::new(keypair);
@@ -298,7 +292,7 @@ async fn message_to_peer(
                             //
                             for router in &peer_id.allowed_routers {
                                 if let Some(router_id) = pki.read().await.get(router) {
-                                    if let Some((ip, port)) = &router_id.ws_routing {
+                                    if let Some((_ip, _port)) = &router_id.ws_routing {
                                         unimplemented!("gotta route")
                                     }
                                 }

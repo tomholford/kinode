@@ -1,23 +1,14 @@
 use crate::net::*;
-use crate::types::*;
 
 use aes_gcm::aead::Aead;
 use aes_gcm::KeyInit;
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
-use elliptic_curve::ecdh::EphemeralSecret;
-use elliptic_curve::PublicKey;
-use ethers::prelude::k256::Secp256k1;
-use futures::future::Join;
-use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use ring::signature::{self, Ed25519KeyPair};
-use serde::{Deserialize, Serialize};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::task::{AbortHandle, JoinHandle, JoinSet};
+use ring::signature::Ed25519KeyPair;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{self};
-use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
 pub async fn build_connection(
     our: Identity,
@@ -157,7 +148,6 @@ async fn maintain_connection(
     let (mut write_stream, mut read_stream) = websocket.split();
     let (ack_tx, mut ack_rx) = mpsc::unbounded_channel::<u64>();
 
-    let sender_peers = peers.clone();
     let message_sender = tokio::spawn(async move {
         while let Some((message, result_tx)) = message_rx.recv().await {
             write_stream
@@ -168,7 +158,7 @@ async fn maintain_connection(
                 .expect("Failed to send a message");
             match message {
                 NetworkMessage::Ack(_) => continue,
-                NetworkMessage::Msg { from, .. } => {
+                NetworkMessage::Msg { .. } => {
                     println!("message sent");
                     // await for the ack with timeout
                     match timeout(TIMEOUT, ack_rx.recv()).await {
@@ -198,7 +188,7 @@ async fn maintain_connection(
                             let _ = ack_tx.send(id);
                             continue;
                         }
-                        NetworkMessage::Msg { from, to, contents } => {
+                        NetworkMessage::Msg { from, contents, .. } => {
                             if let Some(peer) = peers.write().await.get(&from) {
                                 if let Ok(()) = peer.handler.send(contents) {
                                     // TODO id
@@ -207,7 +197,6 @@ async fn maintain_connection(
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
             }

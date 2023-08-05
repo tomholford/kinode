@@ -27,7 +27,6 @@ mod microkernel;
 mod register;
 mod terminal;
 mod types;
-mod ws;
 mod net;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
@@ -93,7 +92,7 @@ async fn main() {
     let (kernel_debug_message_sender, kernel_debug_message_receiver): (DebugSender, DebugReceiver) =
         mpsc::channel(EVENT_LOOP_DEBUG_CHANNEL_CAPACITY);
     // websocket sender receives send messages via this channel, kernel send messages
-    let (wss_message_sender, wss_message_receiver): (MessageSender, MessageReceiver) =
+    let (net_message_sender, net_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
@@ -367,20 +366,11 @@ async fn main() {
             print_sender.clone(),
             kernel_message_receiver,
             kernel_debug_message_receiver,
-            wss_message_sender.clone(),
+            net_message_sender.clone(),
             fs_message_sender.clone(),
             http_server_sender.clone(),
             http_client_message_sender.clone(),
         ) => { "microkernel died".to_string() },
-        // _ = ws::websockets(
-        //     our.clone(),
-        //     networking_keypair,
-        //     pki.clone(),
-        //     kernel_message_sender.clone(),
-        //     print_sender.clone(),
-        //     wss_message_receiver,
-        //     wss_message_sender.clone(),
-        // ) => { "websockets died".to_string() },
         _ = net::networking(
             our.clone(),
             our_ip,
@@ -388,8 +378,7 @@ async fn main() {
             pki.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
-            wss_message_receiver,
-            wss_message_sender.clone(),
+            net_message_receiver,
         ) => { "networking module died".to_string() },
         // temporary process to keep up-to-date on chain,
         // will replace with full-fledged indexing

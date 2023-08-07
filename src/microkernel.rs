@@ -200,9 +200,9 @@ impl MicrokernelProcessImports for Process {
         process_input
     }
 
-    async fn print_to_terminal(&mut self, message: String) -> Result<()> {
+    async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         self.send_to_terminal
-            .send(Printout { verbosity: 1, content: message })
+            .send(Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())

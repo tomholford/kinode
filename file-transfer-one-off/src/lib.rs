@@ -239,7 +239,7 @@ fn handle_fs_error(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal("file_transfer_one_off: begin");
+        print_to_terminal(1, "file_transfer_one_off: begin");
 
         let filesystem_request_type = WitProtomessageType::Request(
             WitRequestTypeWithTarget {
@@ -254,11 +254,11 @@ impl bindings::MicrokernelProcess for Component {
         loop {
             let (message, context) = bindings::await_next_message();
             let Some(ref payload_json_string) = message.payload.json else {
-                print_to_terminal("file_transfer: require non-empty json payload");
+                print_to_terminal(1, "file_transfer: require non-empty json payload");
                 continue;
             };
 
-            print_to_terminal(
+            print_to_terminal(1,
                 format!("{}: got json {}", process_name, payload_json_string).as_str()
             );
 
@@ -268,12 +268,12 @@ impl bindings::MicrokernelProcess for Component {
                     //   only GetFile and Cancel allowed from non file_transfer
                     //   and Cancel should probably only be allowed from same
                     //   process as GetFile came from
-                    print_to_terminal("Request");
+                    print_to_terminal(1, "Request");
                     let request: FileTransferRequest =
                         match serde_json::from_str(payload_json_string) {
                             Ok(result) => result,
                             Err(e) => {
-                                print_to_terminal(format!("couldnt parse json string: {}", e).as_str());
+                                print_to_terminal(1, format!("couldnt parse json string: {}", e).as_str());
                                 continue;
                             },
                         };
@@ -283,7 +283,7 @@ impl bindings::MicrokernelProcess for Component {
                             //  2. open AppendOverwrite file handle
                             //  3. download from scratch
 
-                            print_to_terminal("GetFile");
+                            print_to_terminal(1, "GetFile");
 
                             let key = FileTransferKey {
                                 requester: our_name.clone(),
@@ -357,7 +357,7 @@ impl bindings::MicrokernelProcess for Component {
                             ));
 
                             let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(
+                                print_to_terminal(1,
                                     "file_transfer: require non-empty json payload"
                                 );
                                 continue;
@@ -395,7 +395,7 @@ impl bindings::MicrokernelProcess for Component {
                                 ));
 
                                 let Some(ref payload_json_string) = message.payload.json else {
-                                    print_to_terminal(
+                                    print_to_terminal(1,
                                         "file_transfer: require non-empty json payload"
                                     );
                                     continue;
@@ -440,7 +440,7 @@ impl bindings::MicrokernelProcess for Component {
                                     "",
                                 ));
 
-                                print_to_terminal(format!(
+                                print_to_terminal(1, format!(
                                     "file_transfer: appended",
                                 ).as_str());
 
@@ -465,7 +465,7 @@ impl bindings::MicrokernelProcess for Component {
                                     ));
 
                                     let Some(ref payload_json_string) = message.payload.json else {
-                                        print_to_terminal(
+                                        print_to_terminal(1,
                                             "file_transfer: require non-empty json payload"
                                         );
                                         continue;
@@ -498,7 +498,7 @@ impl bindings::MicrokernelProcess for Component {
                                         ));
 
 
-                                        print_to_terminal(format!(
+                                        print_to_terminal(1, format!(
                                             "file_transfer: successfully downloaded {} from {}",
                                             get_file.uri_string,
                                             get_file.target_ship,
@@ -538,7 +538,7 @@ impl bindings::MicrokernelProcess for Component {
 
                         },
                         FileTransferRequest::Start(start) => {
-                            print_to_terminal("Start");
+                            print_to_terminal(1, "Start");
 
                             let chunk_size = start.chunk_size;
 
@@ -565,7 +565,7 @@ impl bindings::MicrokernelProcess for Component {
                             ));
 
                             let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(
+                                print_to_terminal(1,
                                     "file_transfer: require non-empty json payload"
                                 );
                                 continue;
@@ -648,7 +648,7 @@ impl bindings::MicrokernelProcess for Component {
                             ].as_slice());
                         },
                         FileTransferRequest::GetPiece(get_piece) => {
-                            print_to_terminal("GetPiece");
+                            print_to_terminal(1, "GetPiece");
 
                             let key = FileTransferKey {
                                 requester: message.wire.source_ship.clone(),
@@ -679,7 +679,7 @@ impl bindings::MicrokernelProcess for Component {
                             ));
 
                             let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(
+                                print_to_terminal(1,
                                     "file_transfer: require non-empty json payload"
                                 );
                                 continue;
@@ -755,7 +755,7 @@ impl bindings::MicrokernelProcess for Component {
                             ));
 
 
-                            print_to_terminal(format!(
+                            print_to_terminal(1, format!(
                                 "file_transfer: done transferring {} to {}",
                                 uri_string,
                                 message.wire.source_ship,
@@ -766,7 +766,7 @@ impl bindings::MicrokernelProcess for Component {
                     }
                 },
                 WitMessageType::Response => {
-                    print_to_terminal("Response");
+                    print_to_terminal(1, "Response");
 
                     if "filesystem" == message.wire.source_app {
                         let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
@@ -776,7 +776,7 @@ impl bindings::MicrokernelProcess for Component {
                                         match serde_json::from_str(&context) {
                                     Ok(c) => c,
                                     Err(_) => {
-                                        print_to_terminal(format!(
+                                        print_to_terminal(1, format!(
                                             "file_transfer: FileSystemError: {:?}",
                                             error,
                                         ).as_str());

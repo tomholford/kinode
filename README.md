@@ -66,7 +66,8 @@ Now that the node has started, look to the example usage section below to see wh
 - UpArrow/DownArrow or CTRL+P/CTRL+N to move up and down through command history
 - CTRL+R to search history, CTRL+R again to toggle through search results, CTRL+G to cancel search
 
-- `!message <name> <app> <json>`: send a card with a JSON value to another node or yourself
+- `!message <name> <app> <json>`: send a card with a JSON value to another node or yourself. <name> can be `our`, which will be interpreted as our node's username.
+- `!hi <name> <string>`: send a text message to another node's command line.
 - more to come
 
 ## Example usage

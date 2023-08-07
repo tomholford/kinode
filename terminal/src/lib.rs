@@ -12,7 +12,7 @@ fn parse_command(our_name: &str, line: String) {
             let (target, message) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
                 None => {
-                    bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
+                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
@@ -38,14 +38,14 @@ fn parse_command(our_name: &str, line: String) {
             let (target_server, tail) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
                 None => {
-                    bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
+                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
             let (target_app, payload) = match tail.split_once(" ") {
                 Some((a, p)) => (a, p),
                 None => {
-                    bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
+                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
@@ -55,10 +55,10 @@ fn parse_command(our_name: &str, line: String) {
                         protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                             is_expecting_response: false,
                             target_ship: if target_server == "our" {
-                                            our_name
-                                        } else {
-                                            target_server
-                                        },
+                                our_name
+                            } else {
+                                target_server
+                            },
                             target_app: target_app,
                         }),
                         payload: &WitPayload {
@@ -72,7 +72,7 @@ fn parse_command(our_name: &str, line: String) {
             );
         }
         _ => {
-            bindings::print_to_terminal(&format!("invalid command: \"{line}\""));
+            bindings::print_to_terminal(1, &format!("invalid command: \"{line}\""));
         }
     }
 }
@@ -80,7 +80,7 @@ fn parse_command(our_name: &str, line: String) {
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         assert_eq!(process_name, "terminal");
-        bindings::print_to_terminal(format!("{our_name} terminal: running").as_str());
+        bindings::print_to_terminal(1, format!("{our_name} terminal: running").as_str());
 
         loop {
             let (message, _) = bindings::await_next_message();
@@ -89,11 +89,9 @@ impl bindings::MicrokernelProcess for Component {
                     .unwrap_or_default();
                 parse_command(&our_name, stringy);
             } else {
-                bindings::print_to_terminal(
-                    format!("response: ({:?}, {:?})",
-                        message.payload.json, message.payload.bytes
-                    ).as_str()
-                );
+                if let Some(s) = message.payload.json {
+                    bindings::print_to_terminal(0, &format!("net error: {}!", &s));
+                }
             }
         }
     }

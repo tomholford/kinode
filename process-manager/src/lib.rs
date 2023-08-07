@@ -113,7 +113,7 @@ fn send_stop_to_loop(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal("process_manager: begin");
+        print_to_terminal(1, "process_manager: begin");
 
         let reserved_process_names = vec![
             "filesystem".to_string(),
@@ -128,7 +128,7 @@ impl bindings::MicrokernelProcess for Component {
             let (message, context) = bindings::await_next_message();
             //  TODO: validate source/target?
             let Some(s) = message.payload.json else {
-                print_to_terminal(
+                print_to_terminal(1,
                     format!(
                         "process manager: got payload with no json source, target: {:?}, {:?} {:?} {:?}",
                         message.wire.source_ship,
@@ -146,9 +146,9 @@ impl bindings::MicrokernelProcess for Component {
                         .expect("process manager: could not parse to command");
                     match process_manager_command {
                         ProcessManagerCommand::Start(start) => {
-                            print_to_terminal("process manager: start");
+                            print_to_terminal(1, "process manager: start");
                             if reserved_process_names.contains(&start.process_name) {
-                                print_to_terminal(
+                                print_to_terminal(1,
                                     format!(
                                         "process manager: cannot add process {} with name amongst {:?}",
                                         &start.process_name,
@@ -185,7 +185,7 @@ impl bindings::MicrokernelProcess for Component {
                             bindings::yield_results(vec![(get_bytes_request, context.as_str())].as_slice());
                         },
                         ProcessManagerCommand::Stop(stop) => {
-                            print_to_terminal("process manager: stop");
+                            print_to_terminal(1, "process manager: stop");
                             let _ = metadatas
                                 .remove(&stop.process_name)
                                 .unwrap();
@@ -199,7 +199,7 @@ impl bindings::MicrokernelProcess for Component {
                             println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
                         },
                         ProcessManagerCommand::Restart(restart) => {
-                            print_to_terminal("process manager: restart");
+                            print_to_terminal(1, "process manager: restart");
 
                             send_stop_to_loop(
                                 our_name.clone(),
@@ -292,7 +292,7 @@ impl bindings::MicrokernelProcess for Component {
                                     continue;
                                 },
                                 Err(e) => {
-                                    print_to_terminal(
+                                    print_to_terminal(1,
                                         format!(
                                             "{}: kernel response unexpected case; error: {} stack",
                                             process_name,
@@ -305,7 +305,7 @@ impl bindings::MicrokernelProcess for Component {
                         },
                         _ => {
                             //  TODO: handle error or bail?
-                            print_to_terminal(
+                            print_to_terminal(1,
                                 "process_manager: response unexpected case; stack",
                             );
                             continue;

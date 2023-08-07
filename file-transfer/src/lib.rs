@@ -270,7 +270,7 @@ fn handle_fs_error(
         FileSystemError::AlreadyOpen { path, mode, } => {
             match mode {
                 FileSystemMode::Append => {
-                    print_to_terminal("AlreadyOpen: Append");
+                    print_to_terminal(1, "AlreadyOpen: Append");
 
                     let downloading = downloads.get(&key).unwrap();
 
@@ -284,7 +284,7 @@ fn handle_fs_error(
                         downloading.received_pieces.len() as u32,
                     );
                 },
-                FileSystemMode::Read => print_to_terminal("AlreadyOpen: Read"),
+                FileSystemMode::Read => print_to_terminal(1, "AlreadyOpen: Read"),
                 _ => {},
             }
         },
@@ -507,7 +507,7 @@ fn yield_cancel(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal("file_transfer: begin");
+        print_to_terminal(0, "file_transfer: begin");
         // HTTP bindings
         bindings::yield_results(
             vec![(
@@ -596,11 +596,11 @@ impl bindings::MicrokernelProcess for Component {
         'main_loop: loop {
             let (message, context) = bindings::await_next_message();
             let Some(ref payload_json_string) = message.payload.json else {
-                print_to_terminal("file_transfer: require non-empty json payload");
+                print_to_terminal(1, "file_transfer: require non-empty json payload");
                 continue;
             };
 
-            print_to_terminal(
+            print_to_terminal(1,
                 format!("{}: got json {}", process_name, payload_json_string).as_str()
             );
 
@@ -627,7 +627,7 @@ impl bindings::MicrokernelProcess for Component {
                 let uri_string = String::from("fs://.");
 
                 if target_node.is_empty() {
-                    print_to_terminal("file_transfer: target_node is empty");
+                    print_to_terminal(1, "file_transfer: target_node is empty");
                     bindings::yield_results(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
@@ -703,7 +703,7 @@ impl bindings::MicrokernelProcess for Component {
                 };
 
                 let Some(ref payload_json_string) = message.payload.json else {
-                    print_to_terminal("file_transfer: require non-empty json payload");
+                    print_to_terminal(1, "file_transfer: require non-empty json payload");
                     bindings::yield_results(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
@@ -747,7 +747,7 @@ impl bindings::MicrokernelProcess for Component {
                     Ok(s) => s,
                     Err(_) => String::new()
                 };
-                print_to_terminal(format!("BODY: {}", body_json_string).as_str());
+                print_to_terminal(1, format!("BODY: {}", body_json_string).as_str());
                 let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
 
                 yield_get_file(
@@ -781,12 +781,12 @@ impl bindings::MicrokernelProcess for Component {
                         //   only GetFile and Cancel allowed from non file_transfer
                         //   and Cancel should probably only be allowed from same
                         //   process as GetFile came from
-                        print_to_terminal("Request");
+                        print_to_terminal(1, "Request");
                         let request: FileTransferRequest =
                             match serde_json::from_str(payload_json_string) {
                                 Ok(result) => result,
                                 Err(e) => {
-                                    print_to_terminal(format!("couldnt parse json string: {}", e).as_str());
+                                    print_to_terminal(1, format!("couldnt parse json string: {}", e).as_str());
                                     continue;
                                 },
                             };
@@ -802,7 +802,7 @@ impl bindings::MicrokernelProcess for Component {
                                 //    3. open AppendOverwrite file handle
                                 //    4. download from scratch
 
-                                print_to_terminal("GetFile");
+                                print_to_terminal(1, "GetFile");
 
                                 let key = FileTransferKey {
                                     requester: our_name.clone(),
@@ -832,7 +832,7 @@ impl bindings::MicrokernelProcess for Component {
                                 }
                             },
                             FileTransferRequest::Start(start) => {
-                                print_to_terminal("Start");
+                                print_to_terminal(1, "Start");
 
                                 let key =  FileTransferKey {
                                     requester: message.wire.source_ship,
@@ -870,11 +870,11 @@ impl bindings::MicrokernelProcess for Component {
                                 )
                             },
                             FileTransferRequest::Cancel { key, is_cancel_both, reason } => {
-                                print_to_terminal("Cancel");
+                                print_to_terminal(1, "Cancel");
                                 //  TODO: reason can leak information about server's machine
                                 //        (e.g., full path of file that DNE);
                                 //        figure out how to avoid that
-                                print_to_terminal(format!(
+                                print_to_terminal(1, format!(
                                     "file_transfer: Cancel received for {:?} with reason: {}",
                                     key,
                                     reason,
@@ -888,7 +888,7 @@ impl bindings::MicrokernelProcess for Component {
                                         downloads.remove(&key);
                                         FileSystemMode::Append
                                     } else {
-                                        print_to_terminal("file_transfer: Cancel: must be either requester or server");
+                                        print_to_terminal(1, "file_transfer: Cancel: must be either requester or server");
                                         continue;
                                     };
 
@@ -912,7 +912,7 @@ impl bindings::MicrokernelProcess for Component {
                                         } else if key.requester == our_name {
                                             key.server.clone()
                                         } else {
-                                            print_to_terminal("file_transfer: Cancel: must be either requester or server");
+                                            print_to_terminal(1, "file_transfer: Cancel: must be either requester or server");
                                             continue;
                                         };
                                     yield_cancel(
@@ -926,7 +926,7 @@ impl bindings::MicrokernelProcess for Component {
                                 }
                             },
                             FileTransferRequest::GetPiece(get_piece) => {
-                                print_to_terminal("GetPiece");
+                                print_to_terminal(1, "GetPiece");
 
                                 let key = FileTransferKey {
                                     requester: message.wire.source_ship.clone(),
@@ -1000,40 +1000,40 @@ impl bindings::MicrokernelProcess for Component {
                                     FileSystemMode::Read,
                                     ""
                                 );
-                                print_to_terminal(format!(
+                                print_to_terminal(0, format!(
                                     "file_transfer: done transferring {} to {}",
                                     uri_string,
                                     message.wire.source_ship,
                                 ).as_str());
                             },
                             FileTransferRequest::DisplayOngoing => {
-                                print_to_terminal("file_transfer: ongoing downloads:");
-                                print_to_terminal("****");
+                                print_to_terminal(1, "file_transfer: ongoing downloads:");
+                                print_to_terminal(1, "****");
                                 for (key, val) in downloads.iter() {
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "remote://{}/{}",
                                         key.server,
                                         key.uri_string,
                                     ).as_str());
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "  hash: {:?}",
                                         val.metadata.hash,
                                     ).as_str());
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "  number_bytes: {}",
                                         val.metadata.number_bytes,
                                     ).as_str());
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "  chunk size: {}",
                                         val.metadata.chunk_size,
                                     ).as_str());
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "  chunks received / total: {} / {}",
                                         val.received_pieces.len(),
                                         val.metadata.number_pieces,
                                     ).as_str());
                                 }
-                                print_to_terminal("****");
+                                print_to_terminal(1, "****");
                             },
                             FileTransferRequest::ReadDir { target_node, uri_string } => {
                                 if our_name == target_node {
@@ -1110,13 +1110,13 @@ impl bindings::MicrokernelProcess for Component {
                         }
                     },
                     WitMessageType::Response => {
-                        print_to_terminal("Response");
+                        print_to_terminal(1, "Response");
 
                         if "filesystem" == message.wire.source_app {
                             let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                             match response {
                                 FileSystemResponse::GetMetadata(file_metadata) => {
-                                    print_to_terminal("GetMetadata");
+                                    print_to_terminal(1, "GetMetadata");
 
                                     let context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
@@ -1262,7 +1262,7 @@ impl bindings::MicrokernelProcess for Component {
                                                 ].as_slice());
                                             } else {
                                                 downloads.remove(&context.key);
-                                                print_to_terminal("file_transfer: file corrupted during transfer, please try again");
+                                                print_to_terminal(1, "file_transfer: file corrupted during transfer, please try again");
                                             }
                                             continue;
                                         }
@@ -1313,10 +1313,10 @@ impl bindings::MicrokernelProcess for Component {
                                 FileSystemResponse::Open { uri_string, mode } => {
                                     match mode {
                                         FileSystemMode::Read => {
-                                            print_to_terminal("Successfully opened Read")
+                                            print_to_terminal(1, "Successfully opened Read")
                                         },
                                         FileSystemMode::Append => {
-                                            print_to_terminal("OpenAppend");
+                                            print_to_terminal(1, "OpenAppend");
 
                                             let context: FileTransferContext =
                                                 serde_json::from_str(&context).unwrap();
@@ -1333,7 +1333,7 @@ impl bindings::MicrokernelProcess for Component {
                                         },
                                         FileSystemMode::AppendOverwrite => {
                                             //  AppendOverwrite case: fresh Start
-                                            print_to_terminal("OpenAppendOverwrite");
+                                            print_to_terminal(1, "OpenAppendOverwrite");
 
                                             let context: FileTransferContext =
                                                 serde_json::from_str(&context).unwrap();
@@ -1362,15 +1362,15 @@ impl bindings::MicrokernelProcess for Component {
                                 FileSystemResponse::Close { uri_string, mode } => {
                                     match mode {
                                         FileSystemMode::Read => {
-                                            print_to_terminal("Successfully closed Read")
+                                            print_to_terminal(1, "Successfully closed Read")
                                         },
                                         FileSystemMode::Append => {
-                                            print_to_terminal("CloseAppend");
+                                            print_to_terminal(1, "CloseAppend");
 
                                             let parsed_context: FileTransferContext = match serde_json::from_str(&context) {
                                                 Ok(pc) => pc,
                                                 Err(e) => {
-                                                    print_to_terminal("file_transfer: CloseAppend missing context to clean up");
+                                                    print_to_terminal(1, "file_transfer: CloseAppend missing context to clean up");
                                                     continue;
                                                 },
                                             };
@@ -1378,7 +1378,7 @@ impl bindings::MicrokernelProcess for Component {
                                             match downloads.remove(&parsed_context.key) {
                                                 Some(_) => {
                                                     //  done downloading a file successfully
-                                                    print_to_terminal(format!(
+                                                    print_to_terminal(1, format!(
                                                         "file_transfer: successfully downloaded {} from {}",
                                                         parsed_context.key.uri_string,
                                                         parsed_context.key.server,
@@ -1418,7 +1418,7 @@ impl bindings::MicrokernelProcess for Component {
                                     }
                                 },
                                 FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
-                                    print_to_terminal("ReadChunkFromOpen");
+                                    print_to_terminal(1, "ReadChunkFromOpen");
 
                                     let context: FileTransferContext = serde_json::from_str(&context).unwrap();
                                     let FileTransferAdditionalContext::Piece { piece_number } = context.additional else {
@@ -1452,7 +1452,7 @@ impl bindings::MicrokernelProcess for Component {
                                     let uploading = uploads.get_mut(&context.key).unwrap();
 
                                     if uploading.number_sent_pieces != piece_number {
-                                        print_to_terminal(format!(
+                                        print_to_terminal(1, format!(
                                             "file_transfer: piece_number {} differs from state {}: assuming this is a resumed session",
                                             piece_number,
                                             uploading.number_sent_pieces,
@@ -1483,7 +1483,7 @@ impl bindings::MicrokernelProcess for Component {
                                     ].as_slice());
                                 },
                                 FileSystemResponse::Append(uri_string) => {
-                                    print_to_terminal("Append");
+                                    print_to_terminal(1, "Append");
 
                                     let context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
@@ -1575,7 +1575,7 @@ impl bindings::MicrokernelProcess for Component {
                                             match serde_json::from_str(&context) {
                                         Ok(c) => c,
                                         Err(_) => {
-                                            print_to_terminal(format!(
+                                            print_to_terminal(1, format!(
                                                 "file_transfer: FileSystemError: {:?}",
                                                 error,
                                             ).as_str());
@@ -1593,7 +1593,7 @@ impl bindings::MicrokernelProcess for Component {
                                     );
                                 },
                                 _ => {
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "file_transfer: panic: unexpected filesystem Response: {:?}",
                                         response,
                                     ).as_str());
@@ -1604,7 +1604,7 @@ impl bindings::MicrokernelProcess for Component {
                                 serde_json::from_str(payload_json_string).unwrap();
                             match response {
                                 FileTransferResponse::Started(metadata) => {
-                                    print_to_terminal("Started");
+                                    print_to_terminal(1, "Started");
 
                                     let uri_string = metadata.key.uri_string.clone();
                                     let key = FileTransferKey {
@@ -1613,7 +1613,7 @@ impl bindings::MicrokernelProcess for Component {
                                         uri_string: uri_string.clone(),
                                     };
                                     if metadata.key != key {
-                                        print_to_terminal("file_transfer: Started got incorrect key");
+                                        print_to_terminal(1, "file_transfer: Started got incorrect key");
                                         continue;
                                     }
                                     if !downloads.contains_key(&key) {
@@ -1625,8 +1625,8 @@ impl bindings::MicrokernelProcess for Component {
                                             }
                                         );
                                     }
-                                    print_to_terminal("Started 6");
-                                    print_to_terminal(
+                                    print_to_terminal(1, "Started 6");
+                                    print_to_terminal(1,
                                         format!(
                                             "Started downloads keys: {:?}",
                                             downloads.keys().collect::<Vec<_>>(),
@@ -1662,10 +1662,10 @@ impl bindings::MicrokernelProcess for Component {
                                             context.as_str(),
                                         ),
                                     ].as_slice());
-                                    print_to_terminal("Started 7");
+                                    print_to_terminal(1, "Started 7");
                                 },
                                 FileTransferResponse::FilePiece(file_piece) => {
-                                    print_to_terminal("FilePiece");
+                                    print_to_terminal(1, "FilePiece");
 
                                     //  TODO: confirm bytes match alleged piece hash
                                     let key = FileTransferKey {
@@ -1730,26 +1730,26 @@ impl bindings::MicrokernelProcess for Component {
                                     // TODO: read the context to see if this is HTTP
                                     let context: serde_json::Value =
                                         serde_json::from_str(&context).unwrap();
-                                    print_to_terminal(format!(
+                                    print_to_terminal(1, format!(
                                         "file_transfer: directory contents of remote://{}/{}/",
                                         message.wire.source_ship,
                                         context["uri_string"].to_string(),
                                     ).as_str());
-                                    print_to_terminal("****");
+                                    print_to_terminal(1, "****");
                                     for metadata in &metadatas {
                                         let suffix = match metadata.entry_type {
                                             FileSystemEntryType::Symlink => "@",
                                             FileSystemEntryType::File => "",
                                             FileSystemEntryType::Dir => "/",
                                         };
-                                        print_to_terminal(format!(
+                                        print_to_terminal(1, format!(
                                             "{}{}\t{}",
                                             metadata.uri_string,
                                             suffix,
                                             metadata.len,
                                         ).as_str());
                                     }
-                                    print_to_terminal("****");
+                                    print_to_terminal(1, "****");
                                 },
                             }
                         } else if "net" == message.wire.source_app {

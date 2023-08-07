@@ -19,7 +19,6 @@ use crate::http_server::find_open_port;
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
-mod engine;
 mod filesystem;
 mod http_client;
 mod http_server;
@@ -408,6 +407,7 @@ async fn main() {
             print_sender.clone(),
         ) => { "http-client died".to_string() },
     };
+    let _ = crossterm::terminal::disable_raw_mode();
     println!("");
     println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

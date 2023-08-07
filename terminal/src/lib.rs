@@ -4,9 +4,10 @@ use bindings::component::microkernel_process::types::{
 
 struct Component;
 
-fn parse_command(line: String) {
+fn parse_command(our_name: &str, line: String) {
     let (head, tail) = line.split_once(" ").unwrap_or((&line, ""));
     match head {
+        "" | " " => {}
         "!hi" => {
             let (target, message) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
@@ -53,7 +54,11 @@ fn parse_command(line: String) {
                     WitProtomessage {
                         protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: target_server,
+                            target_ship: if target_server == "our" {
+                                            our_name
+                                        } else {
+                                            target_server
+                                        },
                             target_app: target_app,
                         }),
                         payload: &WitPayload {
@@ -67,7 +72,7 @@ fn parse_command(line: String) {
             );
         }
         _ => {
-            bindings::print_to_terminal(&format!("invalid command: \"{}\"", line));
+            bindings::print_to_terminal(&format!("invalid command: \"{line}\""));
         }
     }
 }
@@ -75,14 +80,20 @@ fn parse_command(line: String) {
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         assert_eq!(process_name, "terminal");
-        bindings::print_to_terminal(format!("{} terminal: running", our_name.clone()).as_str());
+        bindings::print_to_terminal(format!("{our_name} terminal: running").as_str());
 
         loop {
             let (message, _) = bindings::await_next_message();
             if let WitMessageType::Request(_) = message.message_type {
                 let stringy = bincode::deserialize(&message.payload.bytes.unwrap_or_default())
                     .unwrap_or_default();
-                parse_command(stringy);
+                parse_command(&our_name, stringy);
+            } else {
+                bindings::print_to_terminal(
+                    format!("response: ({:?}, {:?})",
+                        message.payload.json, message.payload.bytes
+                    ).as_str()
+                );
             }
         }
     }

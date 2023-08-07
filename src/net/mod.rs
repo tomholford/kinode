@@ -22,7 +22,8 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type ErrorShuttle = oneshot::Sender<Result<(), NetworkError>>;
+type MessageResult = Result<Option<NetworkMessage>, NetworkError>;
+type ErrorShuttle = Option<oneshot::Sender<MessageResult>>;
 
 pub struct Peer {
     pub networking_address: String,
@@ -44,6 +45,7 @@ pub enum NetworkMessage {
     },
     Raw(WrappedMessage),
     Handshake(Handshake),
+    Error(NetworkError),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -263,14 +265,15 @@ async fn message_to_peer(
     match peers_write.get_mut(target) {
         Some(peer) => {
             // if we have the peer, simply send the message to their sender
-            let (result_tx, result_rx) = oneshot::channel::<Result<(), NetworkError>>();
+            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
             let _ = peer
                 .sender
-                .send((NetworkMessage::Raw(wm.clone()), result_tx));
+                .send((NetworkMessage::Raw(wm.clone()), Some(result_tx)));
             drop(peers_write);
-            // if, after this, they are still in our peermap, message was sent OR timeout.
-            // otherwise, they're offline
-            result_rx.await.unwrap_or(Err(NetworkError::Timeout))
+            match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            }
         }
         None => {
             drop(peers_write);
@@ -290,19 +293,25 @@ async fn message_to_peer(
                             if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                                 if let Ok((websocket, _response)) = connect_async(ws_url).await {
                                     let (result_tx, result_rx) =
-                                        oneshot::channel::<Result<(), NetworkError>>();
-                                    let _ = connections::build_connection(
+                                        oneshot::channel::<MessageResult>();
+                                    let conn = connections::build_connection(
                                         our.clone(),
                                         keypair,
                                         Some(peer_id.clone()),
-                                        Some((NetworkMessage::Raw(wm.clone()), result_tx)),
+                                        Some((NetworkMessage::Raw(wm.clone()), Some(result_tx))),
                                         pki.clone(),
                                         peers.clone(),
                                         websocket,
                                         kernel_message_tx.clone(),
                                     )
                                     .await;
-                                    return result_rx.await.unwrap_or(Err(NetworkError::Timeout));
+                                    if conn.is_err() {
+                                        return Err(NetworkError::Offline);
+                                    }
+                                    match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
+                                        Ok(_) => return Ok(()),
+                                        Err(e) => return Err(e),
+                                    }
                                 }
                             }
                             return Err(NetworkError::Offline);
@@ -314,14 +323,13 @@ async fn message_to_peer(
                             let mut routers_to_try =
                                 VecDeque::from(peer_id.allowed_routers.clone());
                             while let Some(router) = routers_to_try.pop_front() {
-                                let (result_tx, result_rx) =
-                                    oneshot::channel::<Result<(), NetworkError>>();
+                                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                                 let res = connections::build_routed_connection(
                                     our.clone(),
                                     our_ip.clone(),
                                     keypair.clone(),
                                     router.clone(),
-                                    (NetworkMessage::Raw(wm.clone()), result_tx),
+                                    (wm.clone(), Some(result_tx)),
                                     pki.clone(),
                                     peers.clone(),
                                     kernel_message_tx.clone(),
@@ -499,7 +507,7 @@ fn validate_handshake(
 fn make_secret_and_handshake(
     our: &Identity,
     keypair: Arc<Ed25519KeyPair>,
-    target: String,
+    target: &str,
 ) -> (Arc<EphemeralSecret<Secp256k1>>, Handshake) {
     // produce ephemeral keys for DH exchange and subsequent symmetric encryption
     let ephemeral_secret = Arc::new(EphemeralSecret::<k256::Secp256k1>::random(
@@ -522,7 +530,7 @@ fn make_secret_and_handshake(
 
     let handshake = Handshake {
         from: our.name.clone(),
-        target: target.clone(),
+        target: target.to_string(),
         id_signature: signed_id,
         ephemeral_public_key: ephemeral_public_key.to_sec1_bytes().to_vec(),
         ephemeral_public_key_signature: signed_pk,

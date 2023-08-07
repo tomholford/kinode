@@ -178,7 +178,6 @@ async fn connect_to_routers(
     // first accumulate as many connections as possible
     let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
     for router_name in &our.allowed_routers {
-        println!("trying for router {router_name}\r\n");
         if let Some(router_id) = pki.read().await.get(router_name) {
             if let Some((ip, port)) = &router_id.ws_routing {
                 if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
@@ -196,7 +195,6 @@ async fn connect_to_routers(
                         )
                         .await
                         {
-                            println!("connected to router {router_name}!\r\n");
                             routers.spawn(active_peer);
                         }
                     }
@@ -209,7 +207,6 @@ async fn connect_to_routers(
     // TODO learn more about joinerrors and if we can't just unwrap
     while let Some(err) = routers.join_next().await {
         let router_name = err.unwrap().unwrap();
-        println!("lost router {}!\r\n", router_name);
         // try to reconnect
         if let Some(router_id) = pki.read().await.get(&router_name) {
             if let Some((ip, port)) = &router_id.ws_routing {
@@ -228,7 +225,6 @@ async fn connect_to_routers(
                         )
                         .await
                         {
-                            println!("connected to router {router_name}!\r\n");
                             routers.spawn(active_peer);
                         }
                     }
@@ -248,7 +244,6 @@ async fn receive_incoming_connections(
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) {
-    println!("receive_incoming_connections\r\n");
     let tcp = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
         .expect(format!("fatal error: can't listen on port {port}").as_str());
@@ -282,7 +277,6 @@ async fn message_to_peer(
     wm: WrappedMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkError> {
-    println!("message_to_peer\r\n");
     let target = &wm.message.wire.target_ship;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
@@ -344,7 +338,6 @@ async fn message_to_peer(
                 None => {
                     let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
                     while let Some(router) = routers_to_try.pop_front() {
-                        println!("trying router {router}\r\n");
                         let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                         let res = connections::build_routed_connection(
                             our.clone(),
@@ -358,7 +351,6 @@ async fn message_to_peer(
                         )
                         .await;
                         if let Ok(Some(new_router)) = res {
-                            println!("router {new_router} acquired as direct conn\r\n");
                             routers_to_try.push_back(new_router);
                             continue;
                         }
@@ -367,7 +359,6 @@ async fn message_to_peer(
                             .unwrap_or(Err(NetworkError::Timeout))
                             .is_ok()
                         {
-                            println!("that router worked!\r\n");
                             return Ok(());
                         }
                     }

@@ -20,7 +20,6 @@ pub async fn build_routed_connection(
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) -> Result<Option<String>, NetworkError> {
-    println!("build_routed_connection\r");
     let peers_write = peers.write().await;
     if let Some(router_peer) = peers_write.get(&router) {
         //
@@ -44,7 +43,6 @@ pub async fn build_routed_connection(
             Err(e) => return Err(e),
             _ => return Err(NetworkError::Offline),
         };
-        println!("got handshake from {}\r", their_handshake.from);
         let their_id = pki.read().await.get(&target).unwrap().clone();
         let (their_ephemeral_pk, nonce) =
             match validate_handshake(&their_handshake, &their_id, nonce) {
@@ -85,7 +83,6 @@ pub async fn build_routed_connection(
             peers.clone(),
         ));
         peers.write().await.insert(their_id.name.clone(), peer);
-        println!("sending initial\r");
         let _ = sender_tx.send((NetworkMessage::Raw(initial_message.0), initial_message.1));
         return Ok(None);
     } else if let Some(router_id) = pki.read().await.get(&router) {
@@ -130,7 +127,6 @@ pub async fn build_connection(
     mut websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) -> Result<JoinHandle<String>, NetworkError> {
-    println!("build_connection\r");
     let (cipher, nonce, their_id) = match target {
         Some(target) => {
             // we have target, we are initiating
@@ -233,21 +229,17 @@ async fn active_peer(
     connection_handler: JoinHandle<()>,
     peers: Peers,
 ) -> String {
-    println!("active_peer\r");
     let _err = tokio::select! {
         _ = peer_handler => {},
         _ = connection_handler => {},
     };
-    println!("lost active_peer, deleting peer!\r");
     peers.write().await.remove(&who);
     return who;
 }
 
 /// returns name of peer when it dies
 async fn active_routed_peer(who: String, peer_handler: JoinHandle<()>, peers: Peers) -> String {
-    println!("active_routed_peer\r");
     let _err = peer_handler.await;
-    println!("lost active_routed_peer, deleting peer!\r");
     peers.write().await.remove(&who);
     return who;
 }
@@ -265,7 +257,6 @@ async fn maintain_connection(
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) {
-    println!("maintain_connection\r");
     let (mut write_stream, mut read_stream) = websocket.split();
     let (ack_tx, mut ack_rx) = unbounded_channel::<NetworkMessage>();
 
@@ -293,7 +284,6 @@ async fn maintain_connection(
                             result_tx.unwrap().send(Ok(resp)).unwrap();
                         }
                         _ => {
-                            println!("timed out on initializing handshake\r");
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
                         }
                     }
@@ -433,7 +423,6 @@ async fn maintain_connection(
                                 // TODO move this to a dedicated task so it doesn't blocket our socket
                                 // send a NACK if this doesn't work out.
                                 // forward the ACK if we get it from target.
-                                println!("forwarding message to {to}\r");
                                 if let Some(peer) = peers.write().await.get(to) {
                                     let (result_tx, result_rx) =
                                         oneshot::channel::<MessageResult>();
@@ -463,7 +452,6 @@ async fn maintain_connection(
         _ = message_sender => {},
         _ = message_receiver => {},
     };
-    println!("lost maintain_connection!\r");
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel
@@ -481,7 +469,6 @@ async fn peer_handler(
     socket_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     kernel_message_tx: MessageSender,
 ) {
-    println!("peer_handler for {who}\r");
     let f_nonce = nonce.clone();
     let f_cipher = cipher.clone();
 
@@ -533,5 +520,4 @@ async fn peer_handler(
             }
         } => {}
     };
-    println!("lost peer_handler!\r");
 }

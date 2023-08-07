@@ -1,7 +1,7 @@
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm,
-    Key, // Or `Aes128Gcm`
+    Key,
 };
 use lazy_static::__Deref;
 use reqwest;

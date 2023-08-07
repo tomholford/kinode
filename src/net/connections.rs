@@ -43,7 +43,10 @@ pub async fn build_routed_connection(
             Err(e) => return Err(e),
             _ => return Err(NetworkError::Offline),
         };
-        let their_id = pki.read().await.get(&target).unwrap().clone();
+        let their_id = match pki.read().await.get(&target) {
+            Some(id) => id.clone(),
+            None => return Err(NetworkError::Offline),
+        };
         let (their_ephemeral_pk, nonce) =
             match validate_handshake(&their_handshake, &their_id, nonce) {
                 Ok(v) => v,
@@ -134,10 +137,13 @@ pub async fn build_connection(
                 make_secret_and_handshake(&our, keypair.clone(), &target.name, true);
             let _ = websocket
                 .send(tungstenite::Message::Text(
-                    serde_json::to_string(&our_handshake).unwrap(),
+                    serde_json::to_string(&our_handshake).unwrap_or("".into()),
                 ))
                 .await;
-            let their_handshake = get_handshake(&mut websocket).await.unwrap();
+            let their_handshake = match get_handshake(&mut websocket).await {
+                Ok(h) => h,
+                Err(_) => return Err(NetworkError::Offline),
+            };
             let (their_ephemeral_pk, nonce) =
                 match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
                     Ok(v) => v,
@@ -149,8 +155,14 @@ pub async fn build_connection(
         }
         None => {
             // no target yet, wait for handshake to come in, then reply
-            let their_handshake = get_handshake(&mut websocket).await.unwrap();
-            let their_id = pki.read().await.get(&their_handshake.from).unwrap().clone();
+            let their_handshake = match get_handshake(&mut websocket).await {
+                Ok(h) => h,
+                Err(_) => return Err(NetworkError::Offline),
+            };
+            let their_id = match pki.read().await.get(&their_handshake.from) {
+                Some(id) => id.clone(),
+                None => return Err(NetworkError::Offline),
+            };
             let (their_ephemeral_pk, nonce) = match validate_handshake(
                 &their_handshake,
                 &their_id,
@@ -163,7 +175,7 @@ pub async fn build_connection(
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name, false);
             let _ = websocket
                 .send(tungstenite::Message::Text(
-                    serde_json::to_string(&our_handshake).unwrap(),
+                    serde_json::to_string(&our_handshake).unwrap_or("".into()),
                 ))
                 .await;
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
@@ -260,7 +272,6 @@ async fn maintain_connection(
     let (mut write_stream, mut read_stream) = websocket.split();
     let (ack_tx, mut ack_rx) = unbounded_channel::<NetworkMessage>();
 
-    let s_peers = peers.clone();
     let s_our = our.clone();
     let message_sender = tokio::spawn(async move {
         while let Some((message, result_tx)) = message_rx.recv().await {
@@ -273,9 +284,9 @@ async fn maintain_connection(
             match message {
                 NetworkMessage::Raw(_) => break,
                 NetworkMessage::Ack(_) => continue,
-                NetworkMessage::Nack(_) => continue,
-                NetworkMessage::Error(_) => continue, // TODO what here?
-                NetworkMessage::HandshakeAck(_) => continue,
+                NetworkMessage::Nack(_)
+                | NetworkMessage::Error(_)
+                | NetworkMessage::HandshakeAck(_) => continue,
                 NetworkMessage::Handshake(_) => {
                     // if handshake was an initiator, await for response handshake
                     match timeout(TIMEOUT, ack_rx.recv()).await {
@@ -288,14 +299,18 @@ async fn maintain_connection(
                         }
                     }
                 }
-                NetworkMessage::Msg { from, to, .. } => {
+                NetworkMessage::Msg { from, to, id, .. } => {
                     // await for the ack with timeout
-                    // TODO give acks unique IDs and move this to a dedicated task,
-                    // for big performance gainz
+                    // TODO move this to a dedicated task for performance gainz?
                     match timeout(TIMEOUT, ack_rx.recv()).await {
-                        Ok(Some(NetworkMessage::Ack(_))) => {
+                        Ok(Some(NetworkMessage::Ack(ack_id))) => {
                             // message delivered
-                            result_tx.unwrap().send(Ok(None)).unwrap();
+                            if id == ack_id {
+                                result_tx.unwrap().send(Ok(None)).unwrap();
+                            } else {
+                                println!("networking: ack mismatch!!\r");
+                                result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                            }
                         }
                         Err(_) => {
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
@@ -315,129 +330,160 @@ async fn maintain_connection(
         }
     });
 
+    // TODO clean up this mess
     let message_receiver = tokio::spawn(async move {
         while let Some(msg) = read_stream.next().await {
             if let Ok(tungstenite::Message::Binary(bin)) = msg {
                 if let Ok(msg) = serde_json::from_slice::<NetworkMessage>(&bin) {
-                    match &msg {
+                    match msg {
                         NetworkMessage::Raw(_) => break,
                         NetworkMessage::Ack(_)
                         | NetworkMessage::Nack(_)
                         | NetworkMessage::HandshakeAck(_) => {
-                            let _ = ack_tx.send(msg);
+                            let _ = ack_tx.send(msg.clone());
                             continue;
                         }
                         NetworkMessage::Error(_) => break,
                         NetworkMessage::Handshake(their_handshake) => {
                             // if we get an initiatory handshake directed to us,
                             // respond with our own, and spawn an active_routed_peer!
-                            // TODO move to dedicated task
-                            if their_handshake.target == our.name && their_handshake.init {
-                                let their_id =
-                                    pki.read().await.get(&their_handshake.from).unwrap().clone();
-                                let (their_ephemeral_pk, nonce) = match validate_handshake(
-                                    &their_handshake,
-                                    &their_id,
-                                    their_handshake.nonce.clone(),
-                                ) {
-                                    Ok(v) => v,
-                                    Err(_) => continue,
-                                };
-                                let (ephemeral_secret, our_handshake) = make_secret_and_handshake(
-                                    &our,
-                                    keypair.clone(),
-                                    &their_id.name,
-                                    false,
-                                );
-                                let _ = self_tx
-                                    .send((NetworkMessage::HandshakeAck(our_handshake), None));
-                                let encryption_key =
-                                    ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
-                                let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-                                let (sender_tx, sender_rx) =
-                                    unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
-                                let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
-                                let (kill_tx, kill_rx) = unbounded_channel::<()>();
+                            let our = our.clone();
+                            let pki = pki.clone();
+                            let keypair = keypair.clone();
+                            let self_tx = self_tx.clone();
+                            let kernel_message_tx = kernel_message_tx.clone();
+                            let peers = peers.clone();
+                            let their_handshake = their_handshake.clone();
+                            tokio::spawn(async move {
+                                if their_handshake.target == our.name && their_handshake.init {
+                                    let their_id = match pki.read().await.get(&their_handshake.from)
+                                    {
+                                        Some(id) => id.clone(),
+                                        None => return,
+                                    };
+                                    let (their_ephemeral_pk, nonce) = match validate_handshake(
+                                        &their_handshake,
+                                        &their_id,
+                                        their_handshake.nonce.clone(),
+                                    ) {
+                                        Ok(v) => v,
+                                        Err(_) => return,
+                                    };
+                                    let (ephemeral_secret, our_handshake) =
+                                        make_secret_and_handshake(
+                                            &our,
+                                            keypair.clone(),
+                                            &their_id.name,
+                                            false,
+                                        );
+                                    let _ = self_tx
+                                        .send((NetworkMessage::HandshakeAck(our_handshake), None));
+                                    let encryption_key =
+                                        ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
+                                    let cipher =
+                                        Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
+                                    let (sender_tx, sender_rx) =
+                                        unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
+                                    let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
+                                    let (kill_tx, kill_rx) = unbounded_channel::<()>();
 
-                                let peer = Peer {
-                                    networking_address: their_id.networking_key,
-                                    is_ward: false,
-                                    sender: sender_tx.clone(),
-                                    handler: handler_tx.clone(),
-                                    destructor: kill_tx,
-                                };
-                                // spawn peer handler
-                                let peer_handler = tokio::spawn(peer_handler(
-                                    our.clone(),
-                                    their_id.name.clone(),
-                                    cipher,
-                                    nonce,
-                                    sender_rx,
-                                    handler_rx,
-                                    kill_rx,
-                                    self_tx.clone(),
-                                    kernel_message_tx.clone(),
-                                ));
-                                // connection is now ready to write to
-                                tokio::spawn(active_routed_peer(
-                                    their_id.name.clone(),
-                                    peer_handler,
-                                    peers.clone(),
-                                ));
-                                peers.write().await.insert(their_id.name.clone(), peer);
-                                continue;
-                            } else {
-                                // a handshake should be forwarded to the target if possible.
-                                // TODO discriminate and only do this for people we route for
-                                // TODO move this to a dedicated task so it doesn't blocket our socket
-                                if let Some(peer) = peers.write().await.get(&their_handshake.target)
-                                {
-                                    let (result_tx, result_rx) =
-                                        oneshot::channel::<MessageResult>();
-                                    if let Ok(()) = peer.sender.send((msg, Some(result_tx))) {
-                                        if let Ok(Ok(Some(resp))) = result_rx.await {
-                                            let _ = self_tx.send((resp, None));
-                                            continue;
+                                    let peer = Peer {
+                                        networking_address: their_id.networking_key,
+                                        is_ward: false,
+                                        sender: sender_tx.clone(),
+                                        handler: handler_tx.clone(),
+                                        destructor: kill_tx,
+                                    };
+                                    // spawn peer handler
+                                    let peer_handler = tokio::spawn(peer_handler(
+                                        our.clone(),
+                                        their_id.name.clone(),
+                                        cipher,
+                                        nonce,
+                                        sender_rx,
+                                        handler_rx,
+                                        kill_rx,
+                                        self_tx.clone(),
+                                        kernel_message_tx.clone(),
+                                    ));
+                                    // connection is now ready to write to
+                                    tokio::spawn(active_routed_peer(
+                                        their_id.name.clone(),
+                                        peer_handler,
+                                        peers.clone(),
+                                    ));
+                                    peers.write().await.insert(their_id.name.clone(), peer);
+                                } else {
+                                    // a handshake should be forwarded to the target if possible.
+                                    // TODO discriminate and only do this for people we route for
+                                    if let Some(peer) =
+                                        peers.write().await.get(&their_handshake.target)
+                                    {
+                                        let (result_tx, result_rx) =
+                                            oneshot::channel::<MessageResult>();
+                                        if let Ok(()) = peer.sender.send((
+                                            NetworkMessage::Handshake(their_handshake),
+                                            Some(result_tx),
+                                        )) {
+                                            if let Ok(Ok(Some(resp))) = result_rx.await {
+                                                let _ = self_tx.send((resp, None));
+                                            }
                                         }
                                     }
+                                    // NACK here has id 0 because it's a response to a handshake
+                                    let _ = self_tx.send((NetworkMessage::Nack(0), None));
                                 }
-                                // NACK here?
-                                let _ = self_tx.send((NetworkMessage::Nack(0), None));
-                                continue;
-                            }
+                            });
+                            continue;
                         }
-                        NetworkMessage::Msg { from, to, contents } => {
-                            if to == &our.name {
-                                if let Some(peer) = peers.write().await.get(from) {
-                                    if let Ok(()) = peer.handler.send(contents.to_vec()) {
-                                        // TODO id
-                                        let _ = self_tx.send((NetworkMessage::Ack(0), None));
-                                        continue;
-                                    }
+                        NetworkMessage::Msg {
+                            from,
+                            to,
+                            id,
+                            contents,
+                        } if to == our.name => {
+                            if let Some(peer) = peers.write().await.get(&from) {
+                                if let Ok(()) = peer.handler.send(contents.to_vec()) {
+                                    let _ = self_tx.send((NetworkMessage::Ack(id), None));
+                                    continue;
                                 }
-                                let _ = self_tx.send((NetworkMessage::Nack(0), None));
-                                continue;
-                            } else {
-                                // this message needs to be routed to someone else!
-                                // TODO: be selective here!
-                                // TODO move this to a dedicated task so it doesn't blocket our socket
-                                // send a NACK if this doesn't work out.
-                                // forward the ACK if we get it from target.
-                                if let Some(peer) = peers.write().await.get(to) {
+                            }
+                            let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                            continue;
+                        }
+                        NetworkMessage::Msg {
+                            from,
+                            to,
+                            id,
+                            contents,
+                        } => {
+                            // this message needs to be routed to someone else!
+                            // TODO: be selective here!
+                            // send a NACK if this doesn't work out.
+                            // forward the ACK if we get it from target.
+                            let self_tx = self_tx.clone();
+                            let peers = peers.clone();
+                            tokio::spawn(async move {
+                                if let Some(peer) = peers.write().await.get(&to) {
                                     let (result_tx, result_rx) =
                                         oneshot::channel::<MessageResult>();
-                                    if let Ok(()) = peer.sender.send((msg, Some(result_tx))) {
+                                    if let Ok(()) = peer.sender.send((
+                                        NetworkMessage::Msg {
+                                            from,
+                                            to,
+                                            id,
+                                            contents,
+                                        },
+                                        Some(result_tx),
+                                    )) {
                                         if let Ok(Ok(None)) = result_rx.await {
-                                            // TODO id
-                                            let _ = self_tx.send((NetworkMessage::Ack(0), None));
-                                            continue;
+                                            let _ = self_tx.send((NetworkMessage::Ack(id), None));
                                         }
                                     }
                                 }
-                                // NACK here
-                                let _ = self_tx.send((NetworkMessage::Nack(0), None));
-                                continue;
-                            }
+                                let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                            });
+                            continue;
                         }
                     }
                 }
@@ -474,7 +520,7 @@ async fn peer_handler(
 
     let kill = tokio::spawn(async move {
         let _ = destructor.recv().await;
-        return
+        return;
     });
 
     let forwarder = tokio::spawn(async move {
@@ -491,6 +537,7 @@ async fn peer_handler(
                                 NetworkMessage::Msg {
                                     from: our.name.clone(),
                                     to: who.clone(),
+                                    id: message.id,
                                     contents: encrypted,
                                 },
                                 result_tx,
@@ -511,12 +558,13 @@ async fn peer_handler(
         _ = kill => {},
         _ = async {
             while let Some(encrypted_bytes) = receiver.recv().await {
-                // TODO manage failed decryptions?
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
                     if let Ok(message) = serde_json::from_slice::<WrappedMessage>(&decrypted) {
                         let _ = kernel_message_tx.send(message).await;
+                        continue;
                     }
                 }
+                break;
             }
         } => {}
     };

@@ -41,6 +41,7 @@ pub enum NetworkMessage {
     Msg {
         from: String,
         to: String,
+        id: u64,
         contents: Vec<u8>,
     },
     Raw(WrappedMessage),
@@ -95,7 +96,7 @@ pub async fn networking(
                 continue;
             }
             let start = std::time::Instant::now();
-            // TODO can parallelize this
+            // TODO can we move this into its own task?
             let result = message_to_peer(
                 s_our.clone(),
                 s_our_ip.clone(),
@@ -204,28 +205,28 @@ async fn connect_to_routers(
     }
     // then, poll those connections in parallel
     // if any of them fail, we will try to reconnect
-    // TODO learn more about joinerrors and if we can't just unwrap
     while let Some(err) = routers.join_next().await {
-        let router_name = err.unwrap().unwrap();
-        // try to reconnect
-        if let Some(router_id) = pki.read().await.get(&router_name) {
-            if let Some((ip, port)) = &router_id.ws_routing {
-                if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                    if let Ok((websocket, _response)) = connect_async(ws_url).await {
-                        // this is a real and functional router! woohoo
-                        if let Ok(active_peer) = build_connection(
-                            our.clone(),
-                            keypair.clone(),
-                            Some(router_id.clone()),
-                            None,
-                            pki.clone(),
-                            peers.clone(),
-                            websocket,
-                            kernel_message_tx.clone(),
-                        )
-                        .await
-                        {
-                            routers.spawn(active_peer);
+        if let Ok(Ok(router_name)) = err {
+            // try to reconnect
+            if let Some(router_id) = pki.read().await.get(&router_name) {
+                if let Some((ip, port)) = &router_id.ws_routing {
+                    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
+                        if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                            // this is a real and functional router! woohoo
+                            if let Ok(active_peer) = build_connection(
+                                our.clone(),
+                                keypair.clone(),
+                                Some(router_id.clone()),
+                                None,
+                                pki.clone(),
+                                peers.clone(),
+                                websocket,
+                                kernel_message_tx.clone(),
+                            )
+                            .await
+                            {
+                                routers.spawn(active_peer);
+                            }
                         }
                     }
                 }
@@ -285,15 +286,19 @@ async fn message_to_peer(
         let _ = peer
             .sender
             .send((NetworkMessage::Raw(wm.clone()), Some(result_tx)));
+        drop(peers_write);
+
         match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
             Ok(_) => return Ok(()),
             Err(_e) => {
                 // if a message to a "known peer" fails, before throwing error,
                 // try to reconnect to them, possibly with different routing.
+                peers.write().await.remove(target);
             }
         }
+    } else {
+        drop(peers_write);
     }
-    drop(peers_write);
     // search PKI for peer and attempt to create a connection, then resend
     match pki.read().await.get(target) {
         // peer does not exist in PKI!
@@ -451,7 +456,7 @@ fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -
                 target_app: wm.message.wire.source_app,
             },
             payload: Payload {
-                json: Some(serde_json::to_value(err).unwrap()),
+                json: Some(serde_json::to_value(err).unwrap_or("".into())),
                 bytes: None,
             },
         },
@@ -535,7 +540,7 @@ fn make_secret_and_handshake(
         .as_ref()
         .to_vec();
     let signed_id = keypair
-        .sign(&serde_json::to_vec(our).unwrap())
+        .sign(&serde_json::to_vec(our).unwrap_or(vec![]))
         .as_ref()
         .to_vec();
 

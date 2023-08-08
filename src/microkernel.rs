@@ -250,9 +250,9 @@ impl MicrokernelProcessImports for ProcessWasi {
         process_input
     }
 
-    async fn print_to_terminal(&mut self, message: String) -> Result<()> {
+    async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         self.process.send_to_terminal
-            .send(Printout { verbosity: 1, content: message })
+            .send(Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
@@ -342,7 +342,7 @@ async fn get_and_send_specific_loop_message_to_process(
         if awaited_message_id == wrapped_message.id {
             match wrapped_message.message {
                 Ok(ref message) => {
-                    if !(("ws" == message.source.process)
+                    if !(("net" == message.source.process)
                          & (Some(serde_json::Value::String("Success".into())) == message.content.payload.json)
                         )
                     {
@@ -558,7 +558,7 @@ fn handle_response_case(
                         println!("couldn't find context to route response");
                         return None;
                     };
-                    println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+                    // println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
                     let Some(ref ultimate) = context.ultimate else {
                         println!("couldn't find ultimate cause to route response");
                         return None;
@@ -1290,7 +1290,7 @@ async fn make_event_loop(
     mut recv_in_loop: MessageReceiver,
     mut recv_debug_in_loop: DebugReceiver,
     send_to_loop: MessageSender,
-    send_to_wss: MessageSender,
+    send_to_net: MessageSender,
     send_to_fs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
@@ -1343,12 +1343,12 @@ async fn make_event_loop(
                         //     send_to_terminal.clone(),
                         // ).await;
                         if our_name != wrapped_message.target.node {
-                            match send_to_wss.send(wrapped_message).await {
+                            match send_to_net.send(wrapped_message).await {
                                 Ok(()) => {
                                     send_to_terminal
                                         .send(Printout {
                                             verbosity: 1,
-                                            content: "event loop: sent to wss".to_string(),
+                                            content: "event loop: message sent to network".to_string(),
                                         })
                                         .await
                                         .unwrap();
@@ -1356,8 +1356,8 @@ async fn make_event_loop(
                                 Err(e) => {
                                     send_to_terminal
                                         .send(Printout {
-                                            verbosity: 1,
-                                            content: format!("event loop: failed to send to wss: {}", e),
+                                            verbosity: 0,
+                                            content: format!("event loop: message to network failed: {}", e),
                                         })
                                         .await
                                         .unwrap();
@@ -1377,8 +1377,8 @@ async fn make_event_loop(
                                 ).await;
                             //  XX temporary branch to assist in pure networking debugging
                             //  can be removed when ws WASM module is ready
-                            } else if to == "ws" {
-                                let _ = send_to_wss.send(wrapped_message).await;
+                            } else if to == "net" {
+                                let _ = send_to_net.send(wrapped_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
                                 match senders.get(&to) {
@@ -1458,6 +1458,7 @@ pub async fn kernel(
         "terminal",
         "http_bindings",
         "apps_home",
+        "http_proxy",
     ];
     for process in &processes {
         let mut process_wasm_path = process.to_string();
@@ -1488,111 +1489,32 @@ pub async fn kernel(
         send_to_loop.send(start_process_manager_message).await.unwrap();
     }
 
-    // // always start terminal on boot
-    // let terminal_wasm_bytes = fs::read("terminal.wasm").await.unwrap();
-    // let start_terminal_message = WrappedMessage {
-    //     id: rand::random(),
-    //     target: our_kernel.clone(),
-    //     rsvp: None,
-    //     message: Ok(Message {
-    //         source: our_kernel.clone(),
-    //         content: MessageContent {
-    //             message_type: MessageType::Request(false),
-    //             payload: Payload {
-    //                 json: Some(serde_json::to_value(
-    //                     KernelRequest::StartProcess(
-    //                         ProcessStart{
-    //                             process_name: "terminal".into(),
-    //                             wasm_bytes_uri: "terminal.wasm".into(),
-    //                         }
-    //                     )
-    //                 ).unwrap()),
-    //                 bytes: Some(terminal_wasm_bytes),
-    //             },
-    //         },
-    //     })
-    // };
-    // let start_terminal_message = WrappedMessage {
-    //     id: rand::random(),
-    //     rsvp: None,
-    //     message: Message {
-    //         message_type: MessageType::Request(false),
-    //         wire: Wire {
-    //             source_ship: our.name.clone(),
-    //             source_app: "kernel".to_string(),
-    //             target_ship: our.name.clone(),
-    //             target_app: "kernel".to_string(),
-    //         },
-    //         payload: Payload {
-    //             json: Some(serde_json::to_value(
-    //                 KernelRequest::StartProcess(
-    //                     ProcessStart{
-    //                         process_name: "terminal".into(),
-    //                         wasm_bytes_uri: "terminal.wasm".into(),
-    //                     }
-    //                 )
-    //             ).unwrap()),
-    //             bytes: Some(terminal_wasm_bytes),
-    //         },
-    //     },
-    // };
-    // send_to_loop.send(start_terminal_message).await.unwrap();
-
-    // // always start http-bindings on boot
-    // let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
-    // let start_http_bindings_message = WrappedMessage {
-    //     id: rand::random(),
-    //     rsvp: None,
-    //     message: Message {
-    //         message_type: MessageType::Request(false),
-    //         wire: Wire {
-    //             source_ship: our.name.clone(),
-    //             source_app: "kernel".to_string(),
-    //             target_ship: our.name.clone(),
-    //             target_app: "kernel".to_string(),
-    //         },
-    //         payload: Payload {
-    //             json: Some(serde_json::to_value(
-    //                 KernelRequest::StartProcess(
-    //                     ProcessStart{
-    //                         process_name: "http_bindings".into(),
-    //                         wasm_bytes_uri: "http_bindings.wasm".into(),
-    //                     }
-    //                 )
-    //             ).unwrap()),
-    //             bytes: Some(http_bindings_bytes),
-    //         },
-    //     },
-    // };
-    // send_to_loop.send(start_http_bindings_message).await.unwrap();
-
-    // // always start apps-home on boot
-    // let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
-    // let start_apps_home_message = WrappedMessage {
-    //     id: rand::random(),
-    //     rsvp: None,
-    //     message: Message {
-    //         message_type: MessageType::Request(false),
-    //         wire: Wire {
-    //             source_ship: our.name.clone(),
-    //             source_app: "kernel".to_string(),
-    //             target_ship: our.name.clone(),
-    //             target_app: "kernel".to_string(),
-    //         },
-    //         payload: Payload {
-    //             json: Some(serde_json::to_value(
-    //                 KernelRequest::StartProcess(
-    //                     ProcessStart{
-    //                         process_name: "apps_home".into(),
-    //                         wasm_bytes_uri: "apps_home.wasm".into(),
-    //                     }
-    //                 )
-    //             ).unwrap()),
-    //             bytes: Some(apps_home_bytes),
-    //         },
-    //     },
-    // };
-    // send_to_loop.send(start_apps_home_message).await.unwrap();
+    // DEMO ONLY: start file_transfer app at boot
+    if let Ok(ft_bytes) = fs::read("file_transfer.wasm").await {
+        let start_apps_ft = WrappedMessage {
+            id: rand::random(),
+            target: our_kernel.clone(),
+            rsvp: None,
+            message: Ok(Message {
+                source: our_kernel.clone(),
+                content: MessageContent {
+                    message_type: MessageType::Request(false),
+                    payload: Payload {
+                        json: Some(serde_json::to_value(
+                            KernelRequest::StartProcess(
+                                ProcessStart{
+                                    process_name: "file_transfer".into(),
+                                    wasm_bytes_uri: "file_transfer.wasm".into(),
+                                }
+                            )
+                        ).unwrap()),
+                        bytes: Some(ft_bytes),
+                    },
+                },
+            })
+        };
+        send_to_loop.send(start_apps_ft).await.unwrap();
+    }
 
     let _ = event_loop_handle.await;
 }

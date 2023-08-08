@@ -7,7 +7,7 @@ struct Component;
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
-        bindings::print_to_terminal("poast: start");
+        bindings::print_to_terminal(1, "poast: start");
         bindings::yield_results(
             vec![(
                 bindings::WitProtomessage {
@@ -56,8 +56,8 @@ impl bindings::MicrokernelProcess for Component {
                 panic!("foo")
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
-            bindings::print_to_terminal(format!("poast: got request: {}", message_from_loop).as_str());
-            bindings::print_to_terminal(format!("METHOD: {}", message_from_loop["method"]).as_str());
+            bindings::print_to_terminal(1, format!("poast: got request: {}", message_from_loop).as_str());
+            bindings::print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
             if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/poast" {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {

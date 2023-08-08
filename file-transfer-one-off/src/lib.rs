@@ -265,14 +265,14 @@ fn handle_message(
             //   only GetFile and Cancel allowed from non file_transfer
             //   and Cancel should probably only be allowed from same
             //   process as GetFile came from
-            print_to_terminal("Request");
+            print_to_terminal(1, "Request");
             match process_lib::parse_message_json(message.payload.json)? {
                 FileTransferRequest::GetFile(get_file) => {
                     //  1. close Append file handle, if it exists
                     //  2. open AppendOverwrite file handle
                     //  3. download from scratch
 
-                    print_to_terminal("GetFile");
+                    print_to_terminal(1, "GetFile");
 
                     let key = FileTransferKey {
                         requester: our_name.into(),
@@ -377,7 +377,7 @@ fn handle_message(
                             Some(bytes),
                         )?;
 
-                        print_to_terminal(format!(
+                        print_to_terminal(1, format!(
                             "file_transfer: appended",
                         ).as_str());
 
@@ -415,7 +415,7 @@ fn handle_message(
                                 )?;
 
 
-                                print_to_terminal(format!(
+                                print_to_terminal(0, format!(
                                     "file_transfer: successfully downloaded {} from {}",
                                     get_file.uri_string,
                                     get_file.target_ship,
@@ -440,7 +440,7 @@ fn handle_message(
 
                 },
                 FileTransferRequest::Start(start) => {
-                    print_to_terminal("Start");
+                    print_to_terminal(1, "Start");
 
                     let chunk_size = start.chunk_size;
 
@@ -515,7 +515,7 @@ fn handle_message(
                     )?;
                 },
                 FileTransferRequest::GetPiece(get_piece) => {
-                    print_to_terminal("GetPiece");
+                    print_to_terminal(1, "GetPiece");
 
                     let key = FileTransferKey {
                         requester: message.wire.source_ship.clone(),
@@ -587,7 +587,7 @@ fn handle_message(
                     )?;
 
 
-                    print_to_terminal(format!(
+                    print_to_terminal(0, format!(
                         "file_transfer: done transferring {} to {}",
                         uri_string,
                         message.wire.source_ship,
@@ -599,7 +599,7 @@ fn handle_message(
             return Ok(MessageHandledStatus::ReadyForNext);
         },
         WitMessageType::Response => {
-            print_to_terminal("Response");
+            print_to_terminal(1, "Response");
 
             if "filesystem" == message.wire.source_app {
                 match process_lib::parse_message_json(message.payload.json)? {
@@ -641,7 +641,7 @@ fn handle_message(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal("file_transfer_one_off: begin");
+        print_to_terminal(1, "file_transfer_one_off: begin");
 
         let mut uploading: Option<Uploading> = None;
 
@@ -665,6 +665,7 @@ impl bindings::MicrokernelProcess for Component {
                 Err(e) => {
                     //  TODO: should bail / Cancel
                     print_to_terminal(format!(
+                        0,
                         "{}: error: {:?}",
                         process_name,
                         e,

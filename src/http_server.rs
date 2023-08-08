@@ -1,5 +1,4 @@
 use crate::types::*;
-use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use serde_urlencoded;
 use std::collections::HashMap;
@@ -23,6 +22,7 @@ type HttpResponseSenders = Arc<Mutex<HashMap<u64, HttpSender>>>;
 /// http driver
 pub async fn http_server(
     our: String,
+    our_port: u16,
     message_rx: MessageReceiver,
     message_tx: MessageSender,
     print_tx: PrintSender,
@@ -33,6 +33,7 @@ pub async fn http_server(
     tokio::join!(
         http_serve(
             our.clone(),
+            our_port,
             http_response_senders.clone(),
             message_tx.clone(),
             print_tx.clone()
@@ -76,6 +77,7 @@ async fn http_handle_messages(
 
 async fn http_serve(
     our: String,
+    our_port: u16,
     http_response_senders: HttpResponseSenders,
     message_tx: MessageSender,
     print_tx: PrintSender,
@@ -85,19 +87,19 @@ async fn http_serve(
         .and(warp::path::full())
         .and(warp::filters::header::headers_cloned())
         .and(
-          warp::filters::query::raw()
-            .or(warp::any().map(|| String::default()))
-            .unify()
-            .map(|query_string: String| {
-              if query_string.is_empty() {
-                HashMap::new()
-              } else {
-                match serde_urlencoded::from_str(&query_string) {
-                  Ok(map) => map,
-                  Err(_) => HashMap::new(),
-                }
-              }
-            }),
+            warp::filters::query::raw()
+                .or(warp::any().map(|| String::default()))
+                .unify()
+                .map(|query_string: String| {
+                    if query_string.is_empty() {
+                        HashMap::new()
+                    } else {
+                        match serde_urlencoded::from_str(&query_string) {
+                            Ok(map) => map,
+                            Err(_) => HashMap::new(),
+                        }
+                    }
+                }),
         )
         .and(warp::filters::body::bytes())
         .and(warp::any().map(move || our.clone()))
@@ -106,17 +108,13 @@ async fn http_serve(
         .and(warp::any().map(move || print_tx_move.clone()))
         .and_then(handler);
 
-    if let Some(port) = find_open_port(8080).await {
-        let _ = print_tx
-            .send(Printout {
-                verbosity: 1,
-                content: format!("http_server: running on: {}", port),
-            })
-            .await;
-        warp::serve(filter).run(([0, 0, 0, 0], port)).await;
-    } else {
-        panic!("http_server: no open ports found, cannot start");
-    }
+    let _ = print_tx
+        .send(Printout {
+            verbosity: 1,
+            content: format!("http_server: running on: {}", our_port),
+        })
+        .await;
+    warp::serve(filter).run(([0, 0, 0, 0], our_port)).await;
 }
 
 async fn handler(

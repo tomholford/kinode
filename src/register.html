@@ -164,6 +164,27 @@
         max-width: 420px;
       }
 
+      #current-address {
+        margin-left: 1em;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 1.25em;
+        font-weight: 600;
+      }
+
+      .current-username {
+        cursor: pointer;
+        padding: 0.5em;
+        border: 1px solid white;
+        border-radius: 4px;
+        margin: 1em 0;
+      }
+
+      .current-username:hover {
+        border: 1px solid white;
+        color: #027;
+        background-color: white;
+      }
+
       #connect-wallet {
         max-width: 420px;
       }
@@ -245,9 +266,13 @@
           <label for="nft-contract">NFT ID</label>
         </div>
         <input type="text" required name="nft-id" placeholder="ID #" /> -->
+        <div class="row" style="margin: 0 0 1em;">
+          <div style="font-size: 0.75em;">Address:</div>
+          <div id="current-address"></div>
+        </div>
         <div class="row label-row" id="current-username-display" style="display: none;">
-          <label for="nft-contract">Current Username:</label>
-          <div id="current-username"></div>
+          <label for="nft-contract">Current Username(s):</label>
+
         </div>
         <div class="row label-row">
           <label for="nft-contract">Uq Name</label>
@@ -284,6 +309,11 @@
       const UQBAR_NETWORK_HEX = '0x7261627175'
       const UQBAR_NETWORK_INT = 491260113269
       const CONNECTION_ERROR = 'There was an error connecting to your wallet. Please try again.'
+
+      function formatAddress(address) {
+        return `${address.slice(0, 6)}...${address.slice(-4)}`
+      }
+
       async function loadWallet() {
         try {
           const accounts = await ethereum.request({ method: 'eth_requestAccounts' })
@@ -310,31 +340,42 @@
         }
       }
 
+      async function checkAddress(address) {
+        try {
+          const usernameResponse = await fetch(`/check-address/${address}`)
+
+          if (usernameResponse.status < 400) {
+            const usernamesString = await usernameResponse.text()
+            const usernames = usernamesString.split(',')
+            const usernameDisplay = document.getElementById('current-username-display')
+            usernameDisplay.innerHTML = ''
+
+            if (usernameDisplay && usernames.length > 0) {
+              usernames.forEach((username) => {
+                if (!username) return
+                const usernameDiv = document.createElement('div')
+                usernameDiv.classList.add('current-username')
+                usernameDiv.innerText = username
+                usernameDisplay.appendChild(usernameDiv)
+                usernameDisplay.style.display = 'block'
+
+                usernameDiv.addEventListener('click', () => {
+                  document.querySelector('input[name="uq-name"]').value = username
+                  document.getElementById('password')?.focus()
+                })
+              })
+            }
+          }
+        } catch (err) {}
+      }
+
       function connectWallet() {
         loadWallet()
-          .then(async (address) => {
+          .then((address) => {
             document.getElementById('connect-wallet').style.display = 'none'
             document.getElementById('signup-form').style.display = 'block'
-            // TODO: check if the address already has an uqname
-            try {
-              const usernameResponse = await fetch('/current-username', {
-                method: 'POST',
-                'Content-Type': 'application/json',
-                body: JSON.stringify({ address })
-              })
-
-              if (usernameResponse.status < 400) {
-                const username = await usernameResponse.text()
-
-                if (username) {
-                  document.getElementById('current-username-display').style.display = 'block'
-                  document.getElementById('current-username').innerText = username
-                }
-              }
-
-            } catch (err) {
-
-            }
+            document.getElementById('current-address').innerText = formatAddress(address)
+            checkAddress(address)
           })
           .catch((err) => {
             console.error(err)
@@ -375,22 +416,31 @@
             input.reportValidity();
             return false
           } else {
-            // TODO: replace regex with endpoint call that checks if name exists
-            const alreadyTaken = uqName === 'myname';
+            const currentUsernames = document.querySelectorAll('.current-username')
 
-
-
-            if (alreadyTaken) {
-              input.setCustomValidity('Uq name already taken');
-              input.reportValidity();
-              return false
-            } else {
+            if (currentUsernames && currentUsernames.length && Array.from(currentUsernames).some(ele => uqName === ele.innerText)) {
               input.setCustomValidity('');
               input.reportValidity();
               return true
+            } else {
+              const alreadyTaken = await fetch(`/check-username/${uqName}`)
+
+              if (alreadyTaken.status === 409) {
+                input.setCustomValidity('Uq name already taken');
+                input.reportValidity();
+                return false
+              } else {
+                input.setCustomValidity('');
+                input.reportValidity();
+                return true
+              }
             }
+
           }
         } catch (err) {
+          console.log(err)
+          document.querySelector('input[name="uq-name"]')?.setCustomValidity('Uq name already taken');
+          document.querySelector('input[name="uq-name"]')?.reportValidity();
           return false
         }
       }
@@ -443,15 +493,21 @@
             return false
           }
 
-          await fetch('/register', {
+          const registerResult = await fetch('/register', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(signature)
           })
 
-          setTimeout(() => {
-            window.location.replace('http://localhost:8080/')
-          }, 8000)
+          const httpServerPort = await registerResult.text()
+
+          const interval = setInterval(async () => {
+            const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+            if (homepageResult.status < 400) {
+              clearInterval(interval)
+              window.location.href = `http://localhost:${httpServerPort}/`
+            }
+          }, 2000);
         } catch (err) {
           console.error(err)
           window.alert(CONNECTION_ERROR)
@@ -466,6 +522,11 @@
       form.addEventListener('submit', signAndSubmit)
 
       document.addEventListener('DOMContentLoaded', () => {
+        window.ethereum?.on('accountsChanged', function (accounts) {
+          document.getElementById('current-address').innerText = formatAddress(accounts[0])
+          checkAddress(accounts[0])
+        })
+
         document.getElementById('loading').style.display = 'none'
         if (window.ethereum) {
           document.getElementById('connect-wallet').style.display = 'block'

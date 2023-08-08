@@ -80,7 +80,7 @@ world microkernel-process {
         wit-error-content,
     }
 
-    import print-to-terminal: func(message: string)
+    import print-to-terminal: func(verbosity: u8, message: string)
     // import yield-results: func(results: list<tuple<wit-protomessage, string>>)
     import yield-results: func(results: result<list<tuple<wit-protomessage, string>>, wit-error-content>)
     // import await-next-message: func() -> tuple<wit-message, string>

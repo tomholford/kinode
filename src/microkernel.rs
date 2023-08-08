@@ -1125,6 +1125,35 @@ pub async fn kernel(
     };
     send_to_loop.send(start_http_bindings_message).await.unwrap();
 
+    // always start http-proxy on boot
+    let http_proxy_bytes = fs::read("http_proxy.wasm").await.unwrap();
+    let start_http_proxy_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "http_proxy".into(),
+                            wasm_bytes_uri: "http_proxy.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(http_proxy_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_http_proxy_message).await.unwrap();
+    
+
     // always start apps-home on boot
     let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
     let start_apps_home_message = WrappedMessage {

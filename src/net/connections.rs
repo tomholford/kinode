@@ -20,7 +20,6 @@ pub async fn build_routed_connection(
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) -> Result<Option<String>, NetworkError> {
-    println!("build_routed_connection\r");
     let peers_write = peers.write().await;
     if let Some(router_peer) = peers_write.get(&router) {
         //
@@ -133,7 +132,6 @@ pub async fn build_connection(
     mut websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) -> Result<JoinHandle<String>, NetworkError> {
-    println!("build_connection\r");
     let (cipher, nonce, their_id) = match target {
         Some(target) => {
             // we have target, we are initiating
@@ -245,7 +243,6 @@ async fn active_peer(
     connection_handler: JoinHandle<()>,
     peers: Peers,
 ) -> String {
-    println!("active_peer\r");
     let _err = tokio::select! {
         _ = peer_handler => {},
         _ = connection_handler => {},
@@ -256,7 +253,6 @@ async fn active_peer(
 
 /// returns name of peer when it dies
 async fn active_routed_peer(who: String, peer_handler: JoinHandle<()>, peers: Peers) -> String {
-    println!("active_routed_peer\r");
     let _err = peer_handler.await;
     peers.write().await.remove(&who);
     return who;
@@ -275,7 +271,6 @@ async fn maintain_connection(
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) {
-    println!("maintain_connection\r");
     let (mut write_stream, mut read_stream) = websocket.split();
     let (ack_tx, mut ack_rx) = unbounded_channel::<NetworkMessage>();
 
@@ -317,7 +312,6 @@ async fn maintain_connection(
                             // if id == ack_id {
                             result_tx.unwrap().send(Ok(None)).unwrap();
                             // } else {
-                            //     println!("networking: ack mismatch!!\r");
                             //     result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             // }
                         }
@@ -327,18 +321,16 @@ async fn maintain_connection(
                                 break;
                             } else {
                                 // send a kill message to our handler for that peer
-                                println!("killing peer {to}\r");
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
-                        jej => {
-                            println!("net: {:?}\r", jej);
+                        e => {
+                            println!("net: {:?}\r", e);
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == with {
                                 break;
                             } else if from == s_our.name {
                                 // send a kill message to our handler for that peer
-                                println!("killing peer {to}\r");
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
@@ -450,7 +442,6 @@ async fn maintain_connection(
                                         }
                                     }
                                     // NACK here has id 0 because it's a response to a handshake
-                                    println!("nack1\r");
                                     let _ = self_tx.send((NetworkMessage::Nack(0), None));
                                 }
                             });
@@ -468,7 +459,6 @@ async fn maintain_connection(
                                     continue;
                                 }
                             }
-                            println!("nack2\r");
                             let _ = self_tx.send((NetworkMessage::Nack(id), None));
                             continue;
                         }
@@ -503,7 +493,6 @@ async fn maintain_connection(
                                         }
                                     }
                                 }
-                                println!("nack3\r");
                                 let _ = self_tx.send((NetworkMessage::Nack(id), None));
                             });
                             continue;
@@ -521,7 +510,6 @@ async fn maintain_connection(
         _ = message_sender => {},
         _ = message_receiver => {},
     };
-    println!("maintain_connection broke!\r");
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel
@@ -539,11 +527,9 @@ async fn peer_handler(
     socket_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     kernel_message_tx: MessageSender,
 ) {
-    println!("peer_handler\r");
 
     let kill = tokio::spawn(async move {
         let _ = destructor.recv().await;
-        println!("got kill command\r");
         return;
     });
 
@@ -589,10 +575,9 @@ async fn peer_handler(
                         continue;
                     }
                 }
-                println!("decryption error with message from {who}\r");
+                println!("net: decryption error with message from {who}\r");
                 break;
             }
         } => {}
     };
-    println!("peer_handler broke!\r");
 }

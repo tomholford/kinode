@@ -186,7 +186,6 @@ async fn connect_to_routers(
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) {
-    println!("connect_to_routers\r");
     // first accumulate as many connections as possible
     let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
     for router_name in &our.allowed_routers {
@@ -293,7 +292,6 @@ async fn message_to_peer(
     wm: WrappedMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkError> {
-    println!("message_to_peer\r");
     let target = &wm.message.wire.target_ship;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
@@ -309,7 +307,6 @@ async fn message_to_peer(
             Err(_e) => {
                 // if a message to a "known peer" fails, before throwing error,
                 // try to reconnect to them, possibly with different routing.
-                println!("net: deliver failed: {:?}", _e);
                 peers.write().await.remove(target);
             }
         }
@@ -403,7 +400,6 @@ async fn handle_incoming_message(
     peers: Peers,
     print_tx: PrintSender,
 ) {
-    println!("handle_incoming_message\r");
     if message.wire.source_ship != our.name {
         let _ = print_tx
             .send(Printout {

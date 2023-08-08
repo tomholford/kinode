@@ -93,7 +93,9 @@ pub async fn build_routed_connection(
         drop(peers_write);
         if let Some((ip, port)) = &router_id.ws_routing {
             if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                if let Ok(Ok((websocket, _response))) =
+                    timeout(TIMEOUT, connect_async(ws_url)).await
+                {
                     //
                     // we were able to connect to one of their routers:
                     // try to connect to it normally as a peer, then

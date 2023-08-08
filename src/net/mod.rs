@@ -309,6 +309,7 @@ async fn message_to_peer(
             Err(_e) => {
                 // if a message to a "known peer" fails, before throwing error,
                 // try to reconnect to them, possibly with different routing.
+                println!("net: deliver failed: {:?}", _e);
                 peers.write().await.remove(target);
             }
         }

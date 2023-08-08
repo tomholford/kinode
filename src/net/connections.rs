@@ -315,7 +315,7 @@ async fn maintain_connection(
                             // message delivered
                             // TODO match acks, figure out how
                             // if id == ack_id {
-                                result_tx.unwrap().send(Ok(None)).unwrap();
+                            result_tx.unwrap().send(Ok(None)).unwrap();
                             // } else {
                             //     println!("networking: ack mismatch!!\r");
                             //     result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
@@ -327,6 +327,7 @@ async fn maintain_connection(
                                 break;
                             } else {
                                 // send a kill message to our handler for that peer
+                                println!("killing peer {to}\r");
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
@@ -336,6 +337,7 @@ async fn maintain_connection(
                                 break;
                             } else {
                                 // send a kill message to our handler for that peer
+                                println!("killing peer {to}\r");
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
@@ -525,14 +527,13 @@ async fn peer_handler(
     who: String,
     cipher: Aes256GcmSiv,
     nonce: Arc<Nonce>,
-    forwarder: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
+    mut forwarder: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
     mut receiver: UnboundedReceiver<Vec<u8>>,
     mut destructor: UnboundedReceiver<()>,
     socket_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     kernel_message_tx: MessageSender,
 ) {
     println!("peer_handler\r");
-
 
     let kill = tokio::spawn(async move {
         let _ = destructor.recv().await;
@@ -544,8 +545,6 @@ async fn peer_handler(
     let f_cipher = cipher.clone();
     let f_who = who.clone();
     let forwarder = tokio::spawn(async move {
-        let socket_tx = socket_tx;
-        let mut forwarder = forwarder;
         while let Some((message, result_tx)) = forwarder.recv().await {
             // if message is raw, we should encrypt.
             // otherwise, simply send

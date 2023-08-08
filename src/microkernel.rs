@@ -14,10 +14,11 @@ use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
+// use crate::microkernel::component::microkernel_process::types::WitErrorContent;
+use crate::microkernel::component::microkernel_process::types::WitMessageContent;
 use crate::microkernel::component::microkernel_process::types::WitMessageType;
 use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
 use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
-use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
     path: "wit",
@@ -66,8 +67,9 @@ enum KernelResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessMetadata {
-    our_name: String,
-    process_name: String,
+    our: ProcessNode,
+    // our_name: String,
+    // process_name: String,
     wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
 }
@@ -75,8 +77,9 @@ struct ProcessMetadata {
 impl Clone for ProcessMetadata {
     fn clone(&self) -> ProcessMetadata {
         ProcessMetadata {
-            our_name: self.our_name.clone(),
-            process_name: self.process_name.clone(),
+            our: self.our.clone(),
+            // our_name: self.our_name.clone(),
+            // process_name: self.process_name.clone(),
             wasm_bytes_uri: self.wasm_bytes_uri.clone(),
         }
     }
@@ -115,14 +118,12 @@ struct ProcessContext {
 
 impl CauseMetadata {
     fn new(wrapped_message: &WrappedMessage) -> Self {
+        let Ok(ref message) = wrapped_message.message else { panic!("") };  //  TODO: need error?
         CauseMetadata {
             id: wrapped_message.id.clone(),
-            process_node: ProcessNode {
-                node: wrapped_message.message.wire.source_ship.clone(),
-                process: wrapped_message.message.wire.source_app.clone(),
-            },
+            process_node: message.source.clone(),
             rsvp: wrapped_message.rsvp.clone(),
-            message_type: wrapped_message.message.message_type.clone(),
+            message_type: message.content.message_type.clone(),
         }
     }
 }
@@ -147,13 +148,22 @@ impl ProcessContext {
     }
 }
 
+// impl std::error::Error for WitError {
+// }
+// impl std::fmt::Display for WitError {
+//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+//         write!(
+//             f,
+//             "WitError {{ foo: {}, bar: {} }}",
+//             self.foo,
+//             self.bar,
+//         )
+//     }
+// }
+
 //  live in event loop
 type Senders = HashMap<String, MessageSender>;
 type ProcessHandles = HashMap<String, JoinHandle<Result<()>>>;
-
-fn json_to_string(json: &serde_json::Value) -> String {
-    json.to_string().trim().trim_matches('"').to_string()
-}
 
 impl Host for ProcessWasi {
 }
@@ -175,11 +185,15 @@ impl WasiView for ProcessWasi {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for ProcessWasi {
-    async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
+    async fn yield_results(
+        &mut self,
+        results: Result<Vec<(WitProtomessage, String)>, WitErrorContent>,
+    ) -> Result<()> {
         let _ = send_process_results_to_loop(
             results,
-            self.process.metadata.our_name.clone(),
-            self.process.metadata.process_name.clone(),
+            self.process.metadata.our.clone(),
+            // self.process.metadata.our_name.clone(),
+            // self.process.metadata.process_name.clone(),
             self.process.send_to_loop.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
@@ -187,7 +201,7 @@ impl MicrokernelProcessImports for ProcessWasi {
         Ok(())
     }
 
-    async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
+    async fn await_next_message(&mut self) -> Result<Result<(WitMessage, String), WitError>> {
         let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
@@ -198,25 +212,24 @@ impl MicrokernelProcessImports for ProcessWasi {
         process_input
     }
 
-    // async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
     async fn yield_and_await_response(
         &mut self,
         target: WitProcessNode,
         payload: WitPayload,
-    ) -> Result<WitMessage> {
+    ) -> Result<Result<WitMessage, WitError>> {
         let protomessage = WitProtomessage {
             protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                 is_expecting_response: true,
-                target_ship: target.node,
-                target_app: target.process,
+                target,
             }),
             payload,
         };
 
         let ids = send_process_results_to_loop(
-            vec![(protomessage, "".into())],
-            self.process.metadata.our_name.clone(),
-            self.process.metadata.process_name.clone(),
+            Ok(vec![(protomessage, "".into())]),
+            self.process.metadata.our.clone(),
+            // self.process.metadata.our_name.clone(),
+            // self.process.metadata.process_name.clone(),
             self.process.send_to_loop.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
@@ -246,16 +259,72 @@ impl MicrokernelProcessImports for ProcessWasi {
     }
 
     async fn get_current_unix_time(&mut self) -> Result<u64> {
-        Ok(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-        )
+        get_current_unix_time()
     }
 
     async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
         Ok(rand::random())
+    }
+}
+
+fn get_current_unix_time() -> Result<u64> {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(t) => Ok(t.as_secs()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn json_to_string(json: &serde_json::Value) -> String {
+    json.to_string().trim().trim_matches('"').to_string()
+}
+
+fn de_wit_process_node(wit: &WitProcessNode) -> ProcessNode {
+    ProcessNode {
+        node: wit.node,
+        process: wit.process,
+    }
+}
+
+fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
+    WitProcessNode {
+        node: dewit.node,
+        process: dewit.process,
+    }
+}
+
+fn de_wit_error_content(wit: &WitErrorContent) -> DeWitErrorContent {
+    DeWitErrorContent {
+        kind: wit.kind.into(),
+        message: wit.message.into(),
+    }
+}
+
+fn en_wit_error_content(dewit: &DeWitErrorContent) -> WitErrorContent {
+    WitErrorContent {
+        kind: dewit.kind.into(),
+        message: dewit.message.into(),
+    }
+}
+
+fn de_wit_error(wit: &WitError) -> DeWitError {
+    DeWitError {
+        source: ProcessNode {
+            node: wit.source.node.into(),
+            process: wit.source.process.into(),
+        },
+        timestamp: wit.timestamp.clone(),
+        content: de_wit_error_content(&wit.content),
+    }
+}
+
+fn en_wit_error(dewit: &DeWitError) -> WitError {
+    WitError {
+        source: WitProcessNode {
+            node: dewit.source.node.into(),
+            process: dewit.source.process.into(),
+        },
+        timestamp: dewit.timestamp.clone(),
+        content: en_wit_error_content(&dewit.content),
     }
 }
 
@@ -265,28 +334,77 @@ async fn get_and_send_specific_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<WitMessage>) {
+) -> (WrappedMessage, Result<Result<WitMessage, WitError>>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
         //   AND the message is not a websocket ack
-        if (awaited_message_id == wrapped_message.id)
-           & !(("ws" == wrapped_message.message.wire.source_app)
-               & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
-              ) {
-            let message = send_loop_message_to_process(
-                wrapped_message,
-                send_to_terminal,
-                contexts,
-            ).await;
-            return (
-                message.0,
-                match message.1 {
-                    Ok(r) => Ok(r.0),
-                    Err(e) => Err(e),
+        if awaited_message_id == wrapped_message.id {
+            match wrapped_message.message {
+                Ok(ref message) => {
+                    if !(("ws" == message.source.process)
+                         & (Some(serde_json::Value::String("Success".into())) == message.content.payload.json)
+                        )
+                    {
+                        let message = send_loop_message_to_process(
+                            wrapped_message,
+                            send_to_terminal,
+                            contexts,
+                        ).await;
+                        return (
+                            message.0,
+                            match message.1 {
+                                Ok(r) => {
+                                    Ok(Ok(r.0))
+                                },
+                                Err(e) => Ok(Err(e)),
+                            },
+                        );
+                    }
                 },
-            );
+                Err(_) => {
+                    let message = send_loop_message_to_process(
+                        wrapped_message,
+                        send_to_terminal,
+                        contexts,
+                    ).await;
+                    return (
+                        message.0,
+                        match message.1 {
+                            Ok(r) => {
+                                Ok(Ok(r.0))
+                            },
+                            Err(e) => Ok(Err(e)),
+                        },
+                    );
+                }
+            }
         }
+
+           // & ((Err(_) == wrapped_message.message)
+           //    | ((Ok(_) == wrapped_message.message)
+           //       & !(("ws" == wrapped_message.message.source.process)
+           //           & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
+           //          )
+           //      )
+           //   ) {
+           //  let message = send_loop_message_to_process(
+           //      wrapped_message,
+           //      send_to_terminal,
+           //      contexts,
+           //  ).await;
+           //  return (
+           //      message.0,
+           //      match message.1 {
+           //          Ok(r) => {
+           //              match r {
+           //                  Ok(r) => Ok(r.0),
+           //                  Err(e) => Err(e),
+           //              }
+           //          },
+           //          Err(e) => Err(e),
+           //      },
+           //  );
 
         message_queue.push_back(wrapped_message);
     }
@@ -297,7 +415,7 @@ async fn get_and_send_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String)>) {
+) -> (WrappedMessage, Result<Result<(WitMessage, String), WitError>>) {
     //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
@@ -309,18 +427,20 @@ async fn get_and_send_loop_message_to_process(
             None => wrapped_message,
         };
 
-    send_loop_message_to_process(
+    let to_loop = send_loop_message_to_process(
         wrapped_message,
         send_to_terminal,
         contexts,
-    ).await
+    ).await;
+
+    (to_loop.0, Ok(to_loop.1))
 }
 
 async fn send_loop_message_to_process(
     wrapped_message: WrappedMessage,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String)>) {
+) -> (WrappedMessage, Result<(WitMessage, String), WitError>) {
     // print_stack_to_terminal(
     //     format!(
     //         "{}: got message_stack",
@@ -330,92 +450,309 @@ async fn send_loop_message_to_process(
     //     self.send_to_terminal.clone(),
     // ).await;
 
-    let wit_message = convert_message_to_wit_message(&wrapped_message.message).await;
+    match wrapped_message.message {
+        Ok(ref message) => {
+            let wit_message = convert_message_to_wit_message(message).await;
 
-    let message_id = wrapped_message.id.clone();
-    let message_type = wrapped_message.message.message_type.clone();
-    (
-        wrapped_message,
-        match message_type {
-            MessageType::Request(_) => Ok((wit_message, "".to_string())),
-            MessageType::Response => {
-                match contexts.get(&message_id) {
-                    Some(ref context) => {
-                        Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+            let message_id = wrapped_message.id.clone();
+            let message_type = message.content.message_type.clone();
+            (
+                wrapped_message,
+                match message_type {
+                    MessageType::Request(_) => Ok((wit_message, "".to_string())),
+                    MessageType::Response => {
+                        match contexts.get(&message_id) {
+                            Some(ref context) => {
+                                Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                            },
+                            None => {
+                                send_to_terminal
+                                    .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
+                                    .await
+                                    .unwrap();
+                                Ok((wit_message, "".to_string()))
+                            },
+                        }
                     },
-                    None => {
-                        send_to_terminal
-                            .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
-                            .await
-                            .unwrap();
-                        Ok((wit_message, "".to_string()))
+                },
+            )
+        },
+        Err(ref e) => {
+            let e = e.clone();
+            (
+                wrapped_message,
+                Err(en_wit_error(&e)),
+            )
+        },
+    }
+}
+
+fn handle_request_case(
+    is_expecting_response: bool,
+    prompting_message: &Option<WrappedMessage>,
+) -> (u64, Rsvp) {
+    if is_expecting_response {
+        (rand::random(), None)
+    } else {
+        //  rsvp is set if there was a Request expecting Response
+        //   followed by Request(s) not expecting Response;
+        //   could also be None if entire chain of Requests are
+        //   not expecting Response
+        match prompting_message {
+            Some(ref prompting_message) => {
+                let Ok(ref pm_message) = prompting_message.message else {
+                    return (rand::random(), None);
+                };
+                match pm_message.content.message_type {
+                    MessageType::Request(prompting_message_is_expecting_response) => {
+                        if prompting_message_is_expecting_response {
+                            (
+                                prompting_message.id.clone(), //  TODO: need to reference count? ; is this right? I think we may want new message id here
+                                Some(pm_message.source.clone()),
+                            )
+                        } else {
+                            (
+                                prompting_message.id.clone(),  //  TODO: need to reference count? ; is this right? I think we may want new message id here
+                                prompting_message.rsvp.clone(),
+                            )
+                        }
+                    },
+                    MessageType::Response => {
+                        (rand::random(), None)
+                        // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
                     },
                 }
             },
+            None => (rand::random(), None),
+        }
+    }
+}
+
+fn handle_response_case(
+    prompting_message: &WrappedMessage,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> Option<(u64, ProcessNode)> {
+    match prompting_message.message {
+        Ok(pm_message) => {
+            match pm_message.content.message_type {
+                MessageType::Request(is_expecting_response) => {
+                    if is_expecting_response {
+                        Some((
+                            prompting_message.id.clone(),
+                            pm_message.source.clone(),
+                        ))
+                    } else {
+                        let Some(rsvp) = prompting_message.rsvp.clone() else {
+                            println!("no rsvp set for response (prompting)");
+                            return None;
+                        };
+
+                        Some((
+                            prompting_message.id.clone(),
+                            rsvp.clone(),
+                        ))
+                    }
+                },
+                MessageType::Response => {
+                    let Some(context) = contexts.get(&prompting_message.id) else {
+                        println!("couldn't find context to route response");
+                        return None;
+                    };
+                    println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+                    let Some(ref ultimate) = context.ultimate else {
+                        println!("couldn't find ultimate cause to route response");
+                        return None;
+                    };
+
+                    match ultimate.message_type {
+                        MessageType::Request(is_expecting_response) => {
+                            if is_expecting_response {
+                                Some((
+                                    ultimate.id.clone(),
+                                    ultimate.process_node.clone(),
+                                ))
+                            } else {
+                                let Some(rsvp) = ultimate.rsvp.clone() else {
+                                    println!("no rsvp set for response (ultimate)");
+                                    return None;
+                                };
+                                Some((
+                                    ultimate.id.clone(),
+                                    rsvp.clone(),
+                                ))
+                            }
+                        },
+                        MessageType::Response => {
+                            println!("ultimate as response unexpected case");
+                            return None;
+                        },
+                    }
+                },
+            }
         },
-    )
+        Err(e) => {
+            let Some(context) = contexts.get(&prompting_message.id) else {
+                println!("couldn't find context to route response");
+                return None;
+            };
+            println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+            let Some(ref ultimate) = context.ultimate else {
+                println!("couldn't find ultimate cause to route response");
+                return None;
+            };
+
+            match ultimate.message_type {
+                MessageType::Request(is_expecting_response) => {
+                    if is_expecting_response {
+                        Some((
+                            ultimate.id.clone(),
+                            ultimate.process_node.clone(),
+                        ))
+                    } else {
+                        let Some(rsvp) = ultimate.rsvp.clone() else {
+                            println!("no rsvp set for response (ultimate)");
+                            return None;
+                        };
+                        Some((
+                            ultimate.id.clone(),
+                            rsvp.clone(),
+                        ))
+                    }
+                },
+                MessageType::Response => {
+                    println!("ultimate as response unexpected case");
+                    return None;
+                },
+            }
+        },
+    }
+}
+
+fn make_wrapped_message(
+    id: u64,
+    source: ProcessNode,
+    target: ProcessNode,
+    rsvp: Rsvp,
+    message_type: MessageType,
+    payload: &WitPayload,
+) -> WrappedMessage {
+    let payload = Payload {
+        json: match payload.json {
+            Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
+            None => None,
+        },
+        bytes: payload.bytes.clone(),
+    };
+    WrappedMessage {
+        id,
+        target,
+        rsvp,
+        message: Ok(Message {
+            source,
+            content: MessageContent {
+                message_type,
+                payload,
+            },
+        })
+    }
 }
 
 async fn send_process_results_to_loop(
-    results: Vec<(WitProtomessage, String)>,
-    source_ship: String,
-    source_app: String,
+    results: Result<Vec<(WitProtomessage, String)>, WitErrorContent>,
+    source: ProcessNode,
     send_to_loop: MessageSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) -> Vec<u64> {
+    let Ok(results) = results else {
+        //  error case
+        //  TODO: factor out the Response routing, since we want
+        //        to route Error in the same way
+        let Err(e) = results else { panic!("") };
+
+        let Some(ref prompting_message) = prompting_message else {
+            println!("need non-None prompting_message to handle Error");
+            return vec![];  //  TODO: how to handle error on error routing case?
+        };
+
+        let (id, target) = match handle_response_case(
+            &prompting_message,
+            contexts,
+        ) {
+            Some(r) => r,
+            None => return vec![],  //  TODO: how to handle error on error routing case?
+        };
+
+        let wrapped_message = WrappedMessage {
+            id,
+            target,
+            rsvp: None,
+            message: Err(DeWitError{
+                source,
+                timestamp: get_current_unix_time().unwrap(),
+                content: de_wit_error_content(&e),
+            }),
+        };
+
+        send_to_loop
+            .send(wrapped_message)
+            .await
+            .unwrap();
+
+        return vec![id];
+    };
+
     let mut ids: Vec<u64> = Vec::new();
     for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
-        let new_context = match serde_json::from_str(new_context_string) {
-            Ok(r) => Some(r),
-            Err(_) => None,
-        };
-        let (id, rsvp, target_ship, target_app, message_type) =
+        let new_context = serde_json::from_str(new_context_string).ok();
+        let (id, rsvp, target, message_type) =
             match protomessage_type {
                 WitProtomessageType::Request(type_with_target) => {
-                    let (id, rsvp) =
-                        if type_with_target.is_expecting_response {
-                            (rand::random(), None)
-                        } else {
-                            //  rsvp is set if there was a Request expecting Response
-                            //   followed by Request(s) not expecting Response;
-                            //   could also be None if entire chain of Requests are
-                            //   not expecting Response
-                            match prompting_message {
-                                Some(ref prompting_message) => {
-                                    match prompting_message.message.message_type {
-                                        MessageType::Request(prompting_message_is_expecting_response) => {
-                                            if prompting_message_is_expecting_response {
-                                                (
-                                                    prompting_message.id.clone(), //  TODO: need to reference count?
-                                                    Some(ProcessNode {
-                                                        node: prompting_message.message.wire.source_ship.clone(),
-                                                        process: prompting_message.message.wire.source_app.clone(),
-                                                    }),
-                                                )
-                                            } else {
-                                                (
-                                                    prompting_message.id.clone(),  //  TODO: need to reference count?
-                                                    prompting_message.rsvp.clone(),
-                                                )
-                                            }
-                                        },
-                                        MessageType::Response => {
-                                            (rand::random(), None)
-                                            // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
-                                        },
-                                    }
-                                },
-                                None => {
-                                    (rand::random(), None)
-                                },
-                            }
-                        };
+                    let (id, rsvp) = handle_request_case(
+                        type_with_target.is_expecting_response,
+                        &prompting_message,
+                    );
+                    //     if type_with_target.is_expecting_response {
+                    //         (rand::random(), None)
+                    //     } else {
+                    //         //  rsvp is set if there was a Request expecting Response
+                    //         //   followed by Request(s) not expecting Response;
+                    //         //   could also be None if entire chain of Requests are
+                    //         //   not expecting Response
+                    //         match prompting_message {
+                    //             Some(ref prompting_message) => {
+                    //                 match prompting_message.message.message_type {
+                    //                     MessageType::Request(prompting_message_is_expecting_response) => {
+                    //                         if prompting_message_is_expecting_response {
+                    //                             (
+                    //                                 prompting_message.id.clone(), //  TODO: need to reference count?
+                    //                                 Some(ProcessNode {
+                    //                                     node: prompting_message.message.wire.source_ship.clone(),
+                    //                                     process: prompting_message.message.wire.source_app.clone(),
+                    //                                 }),
+                    //                             )
+                    //                         } else {
+                    //                             (
+                    //                                 prompting_message.id.clone(),  //  TODO: need to reference count?
+                    //                                 prompting_message.rsvp.clone(),
+                    //                             )
+                    //                         }
+                    //                     },
+                    //                     MessageType::Response => {
+                    //                         (rand::random(), None)
+                    //                         // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
+                    //                     },
+                    //                 }
+                    //             },
+                    //             None => (rand::random(), None),
+                    //         }
+                    //     };
                     (
                         id,
                         rsvp,
-                        type_with_target.target_ship.clone(),
-                        type_with_target.target_app.clone(),
+                        de_wit_process_node(&type_with_target.target),
+                        // type_with_target.target_ship.clone(),
+                        // type_with_target.target_app.clone(),
                         MessageType::Request(type_with_target.is_expecting_response),
                     )
                 },
@@ -424,97 +761,110 @@ async fn send_process_results_to_loop(
                         println!("need non-None prompting_message to handle Response");
                         continue;
                     };
-                    let (id, target_ship, target_app) =
-                        match prompting_message.message.message_type {
-                            MessageType::Request(is_expecting_response) => {
-                                if is_expecting_response {
-                                    (
-                                        prompting_message.id.clone(),
-                                        prompting_message.message.wire.source_ship.clone(),
-                                        prompting_message.message.wire.source_app.clone(),
-                                    )
-                                } else {
-                                    let Some(rsvp) = prompting_message.rsvp.clone() else {
-                                        println!("no rsvp set for response (prompting)");
-                                        continue;
-                                    };
+                    let (id, target) = match handle_response_case(
+                        &prompting_message,
+                        contexts,
+                    ) {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                        // match prompting_message.message.message_type {
+                        //     MessageType::Request(is_expecting_response) => {
+                        //         if is_expecting_response {
+                        //             (
+                        //                 prompting_message.id.clone(),
+                        //                 prompting_message.message.wire.source_ship.clone(),
+                        //                 prompting_message.message.wire.source_app.clone(),
+                        //             )
+                        //         } else {
+                        //             let Some(rsvp) = prompting_message.rsvp.clone() else {
+                        //                 println!("no rsvp set for response (prompting)");
+                        //                 continue;
+                        //             };
 
-                                    (
-                                        prompting_message.id.clone(),
-                                        rsvp.node.clone(),
-                                        rsvp.process.clone(),
-                                    )
-                                }
-                            },
-                            MessageType::Response => {
-                                let Some(context) = contexts.get(&prompting_message.id) else {
-                                    println!("couldn't find context to route response");
-                                    continue;
-                                };
-                                println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
-                                let Some(ref ultimate) = context.ultimate else {
-                                    println!("couldn't find ultimate cause to route response");
-                                    continue;
-                                };
+                        //             (
+                        //                 prompting_message.id.clone(),
+                        //                 rsvp.node.clone(),
+                        //                 rsvp.process.clone(),
+                        //             )
+                        //         }
+                        //     },
+                        //     MessageType::Response => {
+                        //         let Some(context) = contexts.get(&prompting_message.id) else {
+                        //             println!("couldn't find context to route response");
+                        //             continue;
+                        //         };
+                        //         println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+                        //         let Some(ref ultimate) = context.ultimate else {
+                        //             println!("couldn't find ultimate cause to route response");
+                        //             continue;
+                        //         };
 
-                                match ultimate.message_type {
-                                    MessageType::Request(is_expecting_response) => {
-                                        if is_expecting_response {
-                                            (
-                                                ultimate.id.clone(),
-                                                ultimate.process_node.node.clone(),
-                                                ultimate.process_node.process.clone(),
-                                            )
-                                        } else {
-                                            let Some(rsvp) = ultimate.rsvp.clone() else {
-                                                println!("no rsvp set for response (ultimate)");
-                                                continue;
-                                            };
-                                            (
-                                                ultimate.id.clone(),
-                                                rsvp.node.clone(),
-                                                rsvp.process.clone(),
-                                            )
-                                        }
-                                    },
-                                    MessageType::Response => {
-                                        println!("ultimate as response unexpected case");
-                                        continue;
-                                    },
-                                }
-                            },
-                        };
+                        //         match ultimate.message_type {
+                        //             MessageType::Request(is_expecting_response) => {
+                        //                 if is_expecting_response {
+                        //                     (
+                        //                         ultimate.id.clone(),
+                        //                         ultimate.process_node.node.clone(),
+                        //                         ultimate.process_node.process.clone(),
+                        //                     )
+                        //                 } else {
+                        //                     let Some(rsvp) = ultimate.rsvp.clone() else {
+                        //                         println!("no rsvp set for response (ultimate)");
+                        //                         continue;
+                        //                     };
+                        //                     (
+                        //                         ultimate.id.clone(),
+                        //                         rsvp.node.clone(),
+                        //                         rsvp.process.clone(),
+                        //                     )
+                        //                 }
+                        //             },
+                        //             MessageType::Response => {
+                        //                 println!("ultimate as response unexpected case");
+                        //                 continue;
+                        //             },
+                        //         }
+                        //     },
+                        // };
                     (
                         id,
                         None,
-                        target_ship,
-                        target_app,
+                        target,
                         MessageType::Response,
                     )
                 },
             };
 
-        let payload = Payload {
-            json: match payload.json {
-                Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
-                None => None,
-            },
-            bytes: payload.bytes.clone(),
-        };
-        let wrapped_message = WrappedMessage {
-            id: id.clone(),
+        let wrapped_message = make_wrapped_message(
+            id.clone(),
+            source.clone(),
+            target,
             rsvp,
-            message: Message {
-                message_type,
-                wire: Wire {
-                    source_ship: source_ship.clone(),
-                    source_app: source_app.clone(),
-                    target_ship,
-                    target_app,
-                },
-                payload,
-            }
-        };
+            message_type,
+            payload,
+        );
+        // let payload = Payload {
+        //     json: match payload.json {
+        //         Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
+        //         None => None,
+        //     },
+        //     bytes: payload.bytes.clone(),
+        // };
+        // let wrapped_message = WrappedMessage {
+        //     id: id.clone(),
+        //     rsvp,
+        //     message: Message {
+        //         message_type,
+        //         wire: Wire {
+        //             source_ship: source_ship.clone(),
+        //             source_app: source_app.clone(),
+        //             target_ship,
+        //             target_app,
+        //         },
+        //         payload,
+        //     }
+        // };
 
         // println!("contexts before modification");
         // for (key, val) in contexts.iter() {
@@ -524,12 +874,18 @@ async fn send_process_results_to_loop(
         //  modify contexts if necessary
         //   note that this could be rolled into the `match` making Message above;
         //   if performance is bad here, roll into above
-        match wrapped_message.message.message_type {
+        let Ok(ref message) = wrapped_message.message else {
+            panic!("foo");
+        };
+        match message.content.message_type {
             MessageType::Request(_) => {
                 //  add context, as appropriate
                 match prompting_message {
                     Some(ref prompting_message) => {
-                        match prompting_message.message.message_type {
+                        let Ok(ref prompting_message_message) = prompting_message.message else {
+                            panic!("foobar");
+                        };
+                        match prompting_message_message.content.message_type {
                             MessageType::Request(_prompting_message_is_expecting_response) => {
                                 //  case: prompting_message_is_expecting_response
                                 //   ultimate stored for source
@@ -610,27 +966,25 @@ async fn send_process_results_to_loop(
 
 async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
     let wit_payload = WitPayload {
-        json: match m.payload.json.clone() {
+        json: match m.content.payload.json.clone() {
             Some(value) => Some(json_to_string(&value)),
             None => None,
         },
-        bytes: m.payload.bytes.clone(),
+        bytes: m.content.payload.bytes.clone(),
     };
-    let wit_message_type = match m.message_type {
+    let wit_message_type = match m.content.message_type {
         MessageType::Request(is_expecting_response) => {
             WitMessageType::Request(is_expecting_response)
         },
         MessageType::Response => WitMessageType::Response,
     };
     WitMessage {
-        message_type: wit_message_type,
-        wire: WitWire {
-            source_ship: m.wire.source_ship.clone(),
-            source_app: m.wire.source_app.clone(),
-            target_ship: m.wire.target_ship.clone(),
-            target_app: m.wire.target_app.clone(),
+        source: en_wit_process_node(&m.source),
+        content: WitMessageContent {
+            message_type: wit_message_type,
+            payload: wit_payload,
+
         },
-        payload: wit_payload,
     }
 }
 
@@ -642,8 +996,8 @@ async fn make_process_loop(
     wasm_bytes: Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
-    let our_name = metadata.our_name.clone();
-    let process_name = metadata.process_name.clone();
+    let our_name = metadata.our.node.clone();
+    let process_name = metadata.our.process.clone();
 
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
@@ -705,25 +1059,44 @@ async fn make_process_loop(
             send_to_loop
                 .send(WrappedMessage {
                     id: rand::random(),
-                    rsvp: None,
-                    message: Message {
-                        message_type: MessageType::Request(false),
-                        wire: Wire {
-                            source_ship: our_name.clone(),
-                            source_app: "kernel".into(),
-                            target_ship: our_name.clone(),
-                            target_app: "process_manager".into(),
-                        },
-                        payload: Payload {
-                            json: Some(serde_json::json!({
-                                "type": "Stop",
-                                "process_name": process_name,
-                            })),
-                            bytes: None,
-                        },
+                    target: ProcessNode {
+                        node: our_name.clone(),
+                        process: "process_manager".into(),
                     },
-                }
-                )
+                    rsvp: None,
+                    message: Ok(Message {
+                        source: ProcessNode {
+                            node: our_name.clone(),
+                            process: "kernel".into(),
+                        },
+                        content: MessageContent {
+                            message_type: MessageType::Request(false),
+                            payload: Payload {
+                                json: Some(serde_json::json!({
+                                    "type": "Stop",
+                                    "process_name": process_name,
+                                })),
+                                bytes: None,
+                            },
+                        },
+                    }),
+                    // message: Message {
+                    //     message_type: MessageType::Request(false),
+                    //     wire: Wire {
+                    //         source_ship: our_name.clone(),
+                    //         source_app: "kernel".into(),
+                    //         target_ship: our_name.clone(),
+                    //         target_app: "process_manager".into(),
+                    //     },
+                    //     payload: Payload {
+                    //         json: Some(serde_json::json!({
+                    //             "type": "Stop",
+                    //             "process_name": process_name,
+                    //         })),
+                    //         bytes: None,
+                    //     },
+                    // },
+                })
                 .await
                 .unwrap();
             Ok(())
@@ -740,8 +1113,10 @@ async fn handle_kernel_request(
     process_handles: &mut ProcessHandles,
     engine: &Engine,
 ) {
-    let message = wrapped_message.message;
-    let Some(value) = message.payload.json else {
+    let Ok(message) = wrapped_message.message else {
+        panic!("fubar");  //  TODO
+    };
+    let Some(value) = message.content.payload.json else {
         // print_stack_to_terminal(
         //     "kernel: got kernel command with no json source, stack",
         //     &message_stack,
@@ -754,7 +1129,7 @@ async fn handle_kernel_request(
         .expect("kernel: could not parse to command");
     match kernel_request {
         KernelRequest::StartProcess(cmd) => {
-            let Some(wasm_bytes) = message.payload.bytes else {
+            let Some(wasm_bytes) = message.content.payload.bytes else {
                 // print_stack_to_terminal(
                 //     "kernel: StartProcess requires bytes; stack",
                 //     &message_stack,
@@ -766,8 +1141,10 @@ async fn handle_kernel_request(
                 mpsc::channel::<WrappedMessage>(PROCESS_CHANNEL_CAPACITY);
             senders.insert(cmd.process_name.clone(), send_to_process);
             let metadata = ProcessMetadata {
-                our_name: our_name.to_string(),
-                process_name: cmd.process_name.clone(),
+                our: ProcessNode {
+                    node: our_name.to_string(),
+                    process: cmd.process_name.clone(),
+                },
                 wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
             };
             process_handles.insert(
@@ -786,25 +1163,50 @@ async fn handle_kernel_request(
 
             let start_completed_message = WrappedMessage {
                 id: wrapped_message.id,
+                target: ProcessNode {
+                    node: our_name.clone(),
+                    process: "process_manager".into(),
+                },
                 rsvp: None,
-                message: Message {
-                    message_type: MessageType::Response,
-                    wire: Wire {
-                        source_ship: our_name.clone(),
-                        source_app: "kernel".to_string(),
-                        target_ship: our_name.clone(),
-                        target_app: "process_manager".to_string(),
+                message: Ok(Message {
+                    source: ProcessNode {
+                        node: our_name.clone(),
+                        process: "kernel".into(),
                     },
-                    payload: Payload {
-                        json: Some(
-                            serde_json::to_value(
-                                KernelResponse::StartProcess(metadata)
-                            ).unwrap()
-                        ),
-                        bytes: None,
+                    content: MessageContent {
+                        message_type: MessageType::Response,
+                        payload: Payload {
+                            json: Some(
+                                serde_json::to_value(
+                                    KernelResponse::StartProcess(metadata)
+                                ).unwrap()
+                            ),
+                            bytes: None,
+                        },
                     },
-                }
+                })
             };
+            // let start_completed_message = WrappedMessage {
+            //     id: wrapped_message.id,
+            //     rsvp: None,
+            //     message: Message {
+            //         message_type: MessageType::Response,
+            //         wire: Wire {
+            //             source_ship: our_name.clone(),
+            //             source_app: "kernel".to_string(),
+            //             target_ship: our_name.clone(),
+            //             target_app: "process_manager".to_string(),
+            //         },
+            //         payload: Payload {
+            //             json: Some(
+            //                 serde_json::to_value(
+            //                     KernelResponse::StartProcess(metadata)
+            //                 ).unwrap()
+            //             ),
+            //             bytes: None,
+            //         },
+            //     }
+            // };
             if let Some(send_to_process_manager) = senders.get("process_manager") {
                 send_to_process_manager
                     .send(start_completed_message)
@@ -814,7 +1216,7 @@ async fn handle_kernel_request(
             return;
         },
         KernelRequest::StopProcess(cmd) => {
-            let MessageType::Request(is_expecting_response) = message.message_type else {
+            let MessageType::Request(is_expecting_response) = message.content.message_type else {
                 send_to_terminal
                     .send(Printout {
                         verbosity: 0,
@@ -853,20 +1255,24 @@ async fn handle_kernel_request(
 
             let stop_completed_message = WrappedMessage {
                 id: wrapped_message.id,
+                target: ProcessNode {
+                    node: our_name.clone(),
+                    process: "process_manager".into(),
+                },
                 rsvp: None,
-                message: Message {
-                    message_type: MessageType::Response,
-                    wire: Wire {
-                        source_ship: our_name.clone(),
-                        source_app: "kernel".to_string(),
-                        target_ship: our_name.clone(),
-                        target_app: "process_manager".to_string(),
+                message: Ok(Message {
+                    source: ProcessNode {
+                        node: our_name.clone(),
+                        process: "kernel".into(),
                     },
-                    payload: Payload {
-                        json: Some(json_payload),
-                        bytes: None,
+                    content: MessageContent {
+                        message_type: MessageType::Response,
+                        payload: Payload {
+                            json: Some(json_payload),
+                            bytes: None,
+                        },
                     },
-                }
+                })
             };
             if let Some(send_to_process_manager) = senders.get("process_manager") {
                 send_to_process_manager
@@ -936,7 +1342,7 @@ async fn make_event_loop(
                         //     &message_stack,
                         //     send_to_terminal.clone(),
                         // ).await;
-                        if our_name != wrapped_message.message.wire.target_ship {
+                        if our_name != wrapped_message.target.node {
                             match send_to_wss.send(wrapped_message).await {
                                 Ok(()) => {
                                     send_to_terminal
@@ -958,7 +1364,7 @@ async fn make_event_loop(
                                 }
                             }
                         } else {
-                            let to = wrapped_message.message.wire.target_app.clone();
+                            let to = wrapped_message.target.process.clone();
                             if to == "kernel" {
                                 handle_kernel_request(
                                     our_name.clone(),
@@ -1009,7 +1415,7 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: Identity,
-    process_manager_wasm_path: String,
+    // process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -1041,117 +1447,152 @@ pub async fn kernel(
         ).await
     );
 
-    // always start process manager on boot
-    let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
-    let start_process_manager_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "process_manager".to_string(),
-                            wasm_bytes_uri: process_manager_wasm_path,
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(process_manager_wasm_bytes),
-            },
-        },
+    let our_kernel = ProcessNode {
+        node: our.name.clone(),
+        process: "kernel".into(),
     };
-    send_to_loop.send(start_process_manager_message).await.unwrap();
 
-    // always start terminal on boot
-    let terminal_wasm_bytes = fs::read("terminal.wasm").await.unwrap();
-    let start_terminal_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "terminal".into(),
-                            wasm_bytes_uri: "terminal.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(terminal_wasm_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_terminal_message).await.unwrap();
+    // always start process_manager, terminal, http_bindings, apps_home on boot
+    let processes = vec![
+        "process_manager",
+        "terminal",
+        "http_bindings",
+        "apps_home",
+    ];
+    for process in &processes {
+        let mut process_wasm_path = process.to_string();
+        process_wasm_path.push_str(".wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path).await.unwrap();
+        let start_process_manager_message = WrappedMessage {
+            id: rand::random(),
+            target: our_kernel.clone(),
+            rsvp: None,
+            message: Ok(Message {
+                source: our_kernel.clone(),
+                content: MessageContent {
+                    message_type: MessageType::Request(false),
+                    payload: Payload {
+                        json: Some(serde_json::to_value(
+                            KernelRequest::StartProcess(
+                                ProcessStart{
+                                    process_name: (*process).into(),
+                                    wasm_bytes_uri: process_wasm_path,
+                                }
+                            )
+                        ).unwrap()),
+                        bytes: Some(process_wasm_bytes),
+                    },
+                },
+            })
+        };
+        send_to_loop.send(start_process_manager_message).await.unwrap();
+    }
 
-    // always start http-bindings on boot
-    let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
-    let start_http_bindings_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "http_bindings".into(),
-                            wasm_bytes_uri: "http_bindings.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(http_bindings_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_http_bindings_message).await.unwrap();
+    // // always start terminal on boot
+    // let terminal_wasm_bytes = fs::read("terminal.wasm").await.unwrap();
+    // let start_terminal_message = WrappedMessage {
+    //     id: rand::random(),
+    //     target: our_kernel.clone(),
+    //     rsvp: None,
+    //     message: Ok(Message {
+    //         source: our_kernel.clone(),
+    //         content: MessageContent {
+    //             message_type: MessageType::Request(false),
+    //             payload: Payload {
+    //                 json: Some(serde_json::to_value(
+    //                     KernelRequest::StartProcess(
+    //                         ProcessStart{
+    //                             process_name: "terminal".into(),
+    //                             wasm_bytes_uri: "terminal.wasm".into(),
+    //                         }
+    //                     )
+    //                 ).unwrap()),
+    //                 bytes: Some(terminal_wasm_bytes),
+    //             },
+    //         },
+    //     })
+    // };
+    // let start_terminal_message = WrappedMessage {
+    //     id: rand::random(),
+    //     rsvp: None,
+    //     message: Message {
+    //         message_type: MessageType::Request(false),
+    //         wire: Wire {
+    //             source_ship: our.name.clone(),
+    //             source_app: "kernel".to_string(),
+    //             target_ship: our.name.clone(),
+    //             target_app: "kernel".to_string(),
+    //         },
+    //         payload: Payload {
+    //             json: Some(serde_json::to_value(
+    //                 KernelRequest::StartProcess(
+    //                     ProcessStart{
+    //                         process_name: "terminal".into(),
+    //                         wasm_bytes_uri: "terminal.wasm".into(),
+    //                     }
+    //                 )
+    //             ).unwrap()),
+    //             bytes: Some(terminal_wasm_bytes),
+    //         },
+    //     },
+    // };
+    // send_to_loop.send(start_terminal_message).await.unwrap();
 
-    // always start apps-home on boot
-    let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
-    let start_apps_home_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "apps_home".into(),
-                            wasm_bytes_uri: "apps_home.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(apps_home_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_apps_home_message).await.unwrap();
+    // // always start http-bindings on boot
+    // let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
+    // let start_http_bindings_message = WrappedMessage {
+    //     id: rand::random(),
+    //     rsvp: None,
+    //     message: Message {
+    //         message_type: MessageType::Request(false),
+    //         wire: Wire {
+    //             source_ship: our.name.clone(),
+    //             source_app: "kernel".to_string(),
+    //             target_ship: our.name.clone(),
+    //             target_app: "kernel".to_string(),
+    //         },
+    //         payload: Payload {
+    //             json: Some(serde_json::to_value(
+    //                 KernelRequest::StartProcess(
+    //                     ProcessStart{
+    //                         process_name: "http_bindings".into(),
+    //                         wasm_bytes_uri: "http_bindings.wasm".into(),
+    //                     }
+    //                 )
+    //             ).unwrap()),
+    //             bytes: Some(http_bindings_bytes),
+    //         },
+    //     },
+    // };
+    // send_to_loop.send(start_http_bindings_message).await.unwrap();
+
+    // // always start apps-home on boot
+    // let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
+    // let start_apps_home_message = WrappedMessage {
+    //     id: rand::random(),
+    //     rsvp: None,
+    //     message: Message {
+    //         message_type: MessageType::Request(false),
+    //         wire: Wire {
+    //             source_ship: our.name.clone(),
+    //             source_app: "kernel".to_string(),
+    //             target_ship: our.name.clone(),
+    //             target_app: "kernel".to_string(),
+    //         },
+    //         payload: Payload {
+    //             json: Some(serde_json::to_value(
+    //                 KernelRequest::StartProcess(
+    //                     ProcessStart{
+    //                         process_name: "apps_home".into(),
+    //                         wasm_bytes_uri: "apps_home.wasm".into(),
+    //                     }
+    //                 )
+    //             ).unwrap()),
+    //             bytes: Some(apps_home_bytes),
+    //         },
+    //     },
+    // };
+    // send_to_loop.send(start_apps_home_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

@@ -340,7 +340,7 @@ async fn main() {
     let kernel_handle = tokio::spawn(
         microkernel::kernel(
             our.clone(),
-            process_manager_wasm_path.into(),
+            // process_manager_wasm_path.into(),
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,

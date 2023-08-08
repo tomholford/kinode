@@ -43,24 +43,18 @@ pub struct IdentityTransaction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AppNode {
-    pub server: String,
-    pub app: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessNode {
     pub node: String,
     pub process: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Wire {
-    pub source_ship: String,
-    pub source_app:  String,
-    pub target_ship: String,
-    pub target_app:  String,
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct Wire {
+//     pub source_ship: String,
+//     pub source_app:  String,
+//     pub target_ship: String,
+//     pub target_app:  String,
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
@@ -71,8 +65,22 @@ pub struct Payload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WrappedMessage {
     pub id: u64,
+    pub target: ProcessNode,
     pub rsvp: Rsvp,
-    pub message: Message,
+    pub message: Result<Message, DeWitError>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeWitError {
+    pub source: ProcessNode,
+    pub timestamp: u64,
+    pub content: DeWitErrorContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeWitErrorContent {
+    pub kind: String,
+    pub message: String,
 }
 
 //  kernel sets in case, e.g.,
@@ -82,8 +90,14 @@ pub type Rsvp = Option<ProcessNode>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    // pub wire: Wire,
+    pub source: ProcessNode,
+    pub content: MessageContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageContent {
     pub message_type: MessageType,
-    pub wire: Wire,
     pub payload: Payload,
 }
 
@@ -132,10 +146,9 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Message {{ message_type: {:?}, wire: {:?}, payload: {} }}",
-            self.message_type,
-            self.wire,
-            self.payload,
+            "Message {{ source: {:?}, content: {:?} }}",
+            self.source,
+            self.content,
         )
     }
 }
@@ -148,7 +161,7 @@ impl std::fmt::Display for WrappedMessage {
         };
         write!(
             f,
-            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
+            "WrappedMessage {{ id: {}, rsvp: {}, message: {:?} }}",
             self.id,
             rsvp,
             self.message,

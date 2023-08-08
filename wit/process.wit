@@ -1,12 +1,12 @@
 package component:microkernel-process
 
 interface types {
-    record wit-wire {
-        source-ship: string,
-        source-app:  string,
-        target-ship: string,
-        target-app:  string,
-    }
+    // record wit-wire {
+    //     source-ship: string,
+    //     source-app:  string,
+    //     target-ship: string,
+    //     target-app:  string,
+    // }
 
     record wit-payload {
         json: option<string>,
@@ -20,8 +20,9 @@ interface types {
 
     record wit-request-type-with-target {
         is-expecting-response: bool,
-        target-ship: string,
-        target-app: string,
+        target: wit-process-node,
+        // target-ship: string,
+        // target-app: string,
     }
 
     variant wit-protomessage-type {
@@ -30,8 +31,15 @@ interface types {
     }
 
     record wit-message {
+        // message-type: wit-message-type,
+        // wire: wit-wire,
+        // payload: wit-payload,
+        source: wit-process-node,
+        content: wit-message-content,
+    }
+
+    record wit-message-content {
         message-type: wit-message-type,
-        wire: wit-wire,
         payload: wit-payload,
     }
 
@@ -44,24 +52,42 @@ interface types {
         node: string,
         process: string,
     }
+
+    record wit-error {
+        source: wit-process-node,
+        timestamp: u64,  //  unix time
+        content: wit-error-content,
+    }
+
+    record wit-error-content {
+        kind: string,
+        message: string,
+    }
 }
 
 world microkernel-process {
     use types.{
-        wit-wire,
-        wit-message-type,
+        // wit-wire,
         wit-payload,
-        wit-message,
+        wit-message-type,
         wit-request-type-with-target,
         wit-protomessage-type,
+        wit-message,
+        wit-message-content,
         wit-protomessage,
         wit-process-node,
+        wit-error,
+        wit-error-content,
     }
 
     import print-to-terminal: func(message: string)
-    import yield-results: func(results: list<tuple<wit-protomessage, string>>)
-    import await-next-message: func() -> tuple<wit-message, string>
-    import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> wit-message
+    // import yield-results: func(results: list<tuple<wit-protomessage, string>>)
+    import yield-results: func(results: result<list<tuple<wit-protomessage, string>>, wit-error-content>)
+    // import await-next-message: func() -> tuple<wit-message, string>
+    // import await-next-message: func() -> tuple<result<wit-message, string>, string>
+    import await-next-message: func() -> result<tuple<wit-message, string>, wit-error>
+    // import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> wit-message
+    import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> result<wit-message, wit-error>
     import get-current-unix-time: func() -> u64
     import get-insecure-uniform-u64: func() -> u64
     export run-process: func(our-name: string, process-name: string)

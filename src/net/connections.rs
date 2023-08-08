@@ -280,6 +280,7 @@ async fn maintain_connection(
     let (ack_tx, mut ack_rx) = unbounded_channel::<NetworkMessage>();
 
     let s_our = our.clone();
+    let s_peers = peers.clone();
     let message_sender = tokio::spawn(async move {
         while let Some((message, result_tx)) = message_rx.recv().await {
             write_stream
@@ -323,12 +324,18 @@ async fn maintain_connection(
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
                             if to == with {
                                 break;
+                            } else {
+                                // send a kill message to our handler for that peer
+                                let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
                         _ => {
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == with {
                                 break;
+                            } else {
+                                // send a kill message to our handler for that peer
+                                let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
                     }

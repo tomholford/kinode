@@ -884,9 +884,9 @@ impl bindings::MicrokernelProcess for Component {
                                 //    2. close Append file handle, if it exists
                                 //    3. open AppendOverwrite file handle
                                 //    4. download from scratch
-    
+
                                 print_to_terminal("GetFile");
-    
+
                                 let key = FileTransferKey {
                                     requester: our_name.clone(),
                                     server: get_file.target_ship.clone(),
@@ -898,7 +898,7 @@ impl bindings::MicrokernelProcess for Component {
                                         chunk_size: get_file.chunk_size,
                                     },
                                 }).unwrap();
-    
+
                                 if downloads.contains_key(&key) {
                                     yield_get_metadata(
                                         &our_name,
@@ -916,13 +916,13 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileTransferRequest::Start(start) => {
                                 print_to_terminal("Start");
-    
+
                                 let key =  FileTransferKey {
                                     requester: message.wire.source_ship,
                                     server: our_name.clone(),
                                     uri_string: start.uri_string.clone(),
                                 };
-    
+
                                 //  if already transferring requested file to someone else, bail
                                 for (other_key, _) in &uploads {
                                     if start.uri_string == other_key.uri_string {
@@ -938,14 +938,14 @@ impl bindings::MicrokernelProcess for Component {
                                         continue 'main_loop;
                                     }
                                 }
-    
+
                                 let context = serde_json::to_string(&FileTransferContext {
                                     key,
                                     additional: FileTransferAdditionalContext::Metadata {
                                         chunk_size: start.chunk_size,
                                     },
                                 }).unwrap();
-    
+
                                 yield_get_metadata(
                                     &our_name,
                                     start.uri_string,
@@ -962,8 +962,8 @@ impl bindings::MicrokernelProcess for Component {
                                     key,
                                     reason,
                                 ).as_str());
-    
-                                let mode = 
+
+                                let mode =
                                     if key.server == our_name {
                                         uploads.remove(&key);
                                         FileSystemMode::Read
@@ -974,7 +974,7 @@ impl bindings::MicrokernelProcess for Component {
                                         print_to_terminal("file_transfer: Cancel: must be either requester or server");
                                         continue;
                                     };
-    
+
                                 let context = serde_json::to_string(&FileTransferContext {
                                     key: key.clone(),
                                     additional: FileTransferAdditionalContext::Empty,
@@ -986,7 +986,7 @@ impl bindings::MicrokernelProcess for Component {
                                     // context.as_str(),
                                     "",
                                 );
-    
+
                                 if is_cancel_both {
                                     //  propagate cancel to other node
                                     let other_node =
@@ -1010,13 +1010,13 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             FileTransferRequest::GetPiece(get_piece) => {
                                 print_to_terminal("GetPiece");
-    
+
                                 let key = FileTransferKey {
                                     requester: message.wire.source_ship.clone(),
                                     server: our_name.clone(),
                                     uri_string: get_piece.uri_string.clone(),
                                 };
-    
+
                                 let uploading = uploads.get(&key).unwrap();
                                 let context = serde_json::to_string(&FileTransferContext {
                                     key,
@@ -1194,13 +1194,13 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     WitMessageType::Response => {
                         print_to_terminal("Response");
-    
+
                         if "filesystem" == message.wire.source_app {
                             let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                             match response {
                                 FileSystemResponse::GetMetadata(file_metadata) => {
                                     print_to_terminal("GetMetadata");
-    
+
                                     let context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
                                     let FileTransferAdditionalContext::Metadata { chunk_size }
@@ -1222,7 +1222,7 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                         continue;
                                     }
-    
+
                                     if our_name == context.key.server {
                                         //  server getting metadata of file-to-be-served
                                         let number_pieces = div_round_up(
@@ -1252,12 +1252,12 @@ impl bindings::MicrokernelProcess for Component {
                                                 number_sent_pieces: 0,
                                             }
                                         );
-    
+
                                         let context = serde_json::to_string(&FileTransferContext {
                                             key: context.key,
                                             additional: FileTransferAdditionalContext::Empty,
                                         }).unwrap();
-    
+
                                         bindings::yield_results(vec![
                                             (
                                                 bindings::WitProtomessage {
@@ -1349,7 +1349,7 @@ impl bindings::MicrokernelProcess for Component {
                                             }
                                             continue;
                                         }
-    
+
                                         //  requester getting metadata of possibly-resumable file
                                         if (chunk_size == downloading.metadata.chunk_size) & (file_metadata.len == chunk_size * (downloading.received_pieces.len() as u64)) {
                                             //  resume file transfer
@@ -1400,7 +1400,7 @@ impl bindings::MicrokernelProcess for Component {
                                         },
                                         FileSystemMode::Append => {
                                             print_to_terminal("OpenAppend");
-    
+
                                             let context: FileTransferContext =
                                                 serde_json::from_str(&context).unwrap();
                                             let downloading = downloads.get(&context.key).unwrap();
@@ -1417,7 +1417,7 @@ impl bindings::MicrokernelProcess for Component {
                                         FileSystemMode::AppendOverwrite => {
                                             //  AppendOverwrite case: fresh Start
                                             print_to_terminal("OpenAppendOverwrite");
-    
+
                                             let context: FileTransferContext =
                                                 serde_json::from_str(&context).unwrap();
                                             let FileTransferAdditionalContext::Metadata {
@@ -1449,7 +1449,7 @@ impl bindings::MicrokernelProcess for Component {
                                         },
                                         FileSystemMode::Append => {
                                             print_to_terminal("CloseAppend");
-    
+
                                             let parsed_context: FileTransferContext = match serde_json::from_str(&context) {
                                                 Ok(pc) => pc,
                                                 Err(e) => {
@@ -1457,7 +1457,7 @@ impl bindings::MicrokernelProcess for Component {
                                                     continue;
                                                 },
                                             };
-    
+
                                             match downloads.remove(&parsed_context.key) {
                                                 Some(_) => {
                                                     //  done downloading a file successfully
@@ -1502,7 +1502,7 @@ impl bindings::MicrokernelProcess for Component {
                                 },
                                 FileSystemResponse::ReadChunkFromOpen(uri_hash) => {
                                     print_to_terminal("ReadChunkFromOpen");
-    
+
                                     let context: FileTransferContext = serde_json::from_str(&context).unwrap();
                                     let FileTransferAdditionalContext::Piece { piece_number } = context.additional else {
                                         bail(
@@ -1531,9 +1531,9 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                         continue;
                                     }
-    
+
                                     let uploading = uploads.get_mut(&context.key).unwrap();
-    
+
                                     if uploading.number_sent_pieces != piece_number {
                                         print_to_terminal(format!(
                                             "file_transfer: piece_number {} differs from state {}: assuming this is a resumed session",
@@ -1541,9 +1541,9 @@ impl bindings::MicrokernelProcess for Component {
                                             uploading.number_sent_pieces,
                                         ).as_str());
                                     }
-    
+
                                     uploading.number_sent_pieces = piece_number.clone() + 1;
-    
+
                                     bindings::yield_results(vec![
                                         (
                                             bindings::WitProtomessage {
@@ -1567,10 +1567,10 @@ impl bindings::MicrokernelProcess for Component {
                                 },
                                 FileSystemResponse::Append(uri_string) => {
                                     print_to_terminal("Append");
-                                    
+
                                     let context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
-                                    let FileTransferAdditionalContext::Piece{ piece_number } = 
+                                    let FileTransferAdditionalContext::Piece{ piece_number } =
                                             context.additional else {
                                         bail(
                                             "Append Response requires piece_number".into(),
@@ -1580,8 +1580,8 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                         continue;
                                     };
-    
-    
+
+
                                     let downloading = downloads.get(&context.key).unwrap();
                                     if downloading.received_pieces.len() == downloading.metadata.number_pieces as usize {
                                         //  received all file pieces: check hash is correct
@@ -1600,7 +1600,7 @@ impl bindings::MicrokernelProcess for Component {
                                         //  still expecting file pieces
                                         let chunk_size = downloading.metadata.chunk_size.clone();
                                         let piece_number = downloading.received_pieces.len() as u32;
-    
+
                                         yield_get_piece(
                                             ProcessNode {
                                                 node: context.key.server.clone(),
@@ -1615,7 +1615,7 @@ impl bindings::MicrokernelProcess for Component {
                                 FileSystemResponse::SeekWithinOpen(uri_string) => {
                                     let parsed_context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
-                                    let FileTransferAdditionalContext::Piece { piece_number } = 
+                                    let FileTransferAdditionalContext::Piece { piece_number } =
                                             parsed_context.additional else {
                                         bail(
                                             "SeekWithinOpen needs piece_number context".into(),
@@ -1626,7 +1626,7 @@ impl bindings::MicrokernelProcess for Component {
                                         continue;
                                     };
                                     let uploading = uploads.get(&parsed_context.key).unwrap();
-    
+
                                     bindings::yield_results(vec![
                                         (
                                             bindings::WitProtomessage {
@@ -1665,7 +1665,7 @@ impl bindings::MicrokernelProcess for Component {
                                             continue;
                                         },
                                     };
-    
+
                                     handle_fs_error(
                                         error,
                                         &our_name,
@@ -1688,7 +1688,7 @@ impl bindings::MicrokernelProcess for Component {
                             match response {
                                 FileTransferResponse::Started(metadata) => {
                                     print_to_terminal("Started");
-    
+
                                     let uri_string = metadata.key.uri_string.clone();
                                     let key = FileTransferKey {
                                         requester: our_name.clone(),
@@ -1715,7 +1715,7 @@ impl bindings::MicrokernelProcess for Component {
                                             downloads.keys().collect::<Vec<_>>(),
                                         ).as_str()
                                     );
-    
+
                                     let context = serde_json::to_string(&FileTransferContext {
                                         key,
                                         additional: FileTransferAdditionalContext::Empty,
@@ -1749,14 +1749,14 @@ impl bindings::MicrokernelProcess for Component {
                                 },
                                 FileTransferResponse::FilePiece(file_piece) => {
                                     print_to_terminal("FilePiece");
-    
+
                                     //  TODO: confirm bytes match alleged piece hash
                                     let key = FileTransferKey {
                                         requester: our_name.clone(),
                                         server: message.wire.source_ship.clone(),
                                         uri_string: file_piece.uri_string.clone(),
                                     };
-    
+
                                     let Some(bytes) = message.payload.bytes.clone() else {
                                         bail(
                                             "FilePiece must be sent bytes".into(),
@@ -1766,7 +1766,7 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                         continue;
                                     };
-    
+
                                     let downloading = downloads.get_mut(&key).unwrap();
                                     if downloading.received_pieces.len() != file_piece.piece_number as usize {
                                         bail(
@@ -1778,7 +1778,7 @@ impl bindings::MicrokernelProcess for Component {
                                         continue;
                                     }
                                     downloading.received_pieces.push(file_piece.piece_hash);
-    
+
                                     let context = serde_json::to_string(&FileTransferContext {
                                         key,
                                         additional: FileTransferAdditionalContext::Piece {
@@ -1835,13 +1835,13 @@ impl bindings::MicrokernelProcess for Component {
                                     print_to_terminal("****");
                                 },
                             }
-                        } else if "ws" == message.wire.source_app {
+                        } else if "net" == message.wire.source_app {
                             if let Ok(networking_error) =
                                     serde_json::from_str::<NetworkingError>(payload_json_string) {
-    
+
                                 let context: FileTransferContext =
                                     serde_json::from_str(&context).unwrap();
-    
+
                                 handle_networking_error(
                                     networking_error,
                                     &our_name,

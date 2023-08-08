@@ -1,7 +1,6 @@
 use crate::types::*;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +42,7 @@ async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
     wm: WrappedMessage,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let Some(value) = wm.message.payload.json.clone() else {
     panic!("http_client: request must have JSON payload, got: {:?}", wm.message);

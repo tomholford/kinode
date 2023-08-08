@@ -330,7 +330,7 @@
 
           const result = await fetch(`/file-transfer/view-files/${targetNode}`).then(r => r.json()).catch(() => null)
           console.log('READ DIR RESULT:')
-  
+
           if (!result || !result.ReadDir) {
             alert('Error viewing files')
             return
@@ -339,7 +339,7 @@
           document.getElementById('target-node').value = ''
           currentTarget = targetNode
           document.getElementById('remote-files').textContent = `${targetNode}'s Files`
-  
+
           const files = result.ReadDir
           document.getElementById('view-files-form').style.display = 'none'
           document.getElementById('remote-file-list').style.display = 'flex'

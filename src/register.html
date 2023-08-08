@@ -272,7 +272,7 @@
         </div>
         <div class="row label-row" id="current-username-display" style="display: none;">
           <label for="nft-contract">Current Username(s):</label>
-          
+
         </div>
         <div class="row label-row">
           <label for="nft-contract">Uq Name</label>
@@ -417,14 +417,14 @@
             return false
           } else {
             const currentUsernames = document.querySelectorAll('.current-username')
-            
+
             if (currentUsernames && currentUsernames.length && Array.from(currentUsernames).some(ele => uqName === ele.innerText)) {
               input.setCustomValidity('');
               input.reportValidity();
               return true
             } else {
               const alreadyTaken = await fetch(`/check-username/${uqName}`)
-  
+
               if (alreadyTaken.status === 409) {
                 input.setCustomValidity('Uq name already taken');
                 input.reportValidity();

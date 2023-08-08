@@ -18,6 +18,7 @@ fn main() {
     println!("cargo:rerun-if-changed=http-proxy/src");
     println!("cargo:rerun-if-changed=file-transfer/src");
     println!("cargo:rerun-if-changed=apps-home/src");
+    println!("cargo:rerun-if-changed=sequencer/src");
     let pwd = std::env::current_dir().unwrap();
     run_command(
         Command::new("cargo")
@@ -43,4 +44,8 @@ fn main() {
       Command::new("cargo")
             .args(&["component", "build", &format!("--manifest-path={}/apps-home/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
     ).unwrap();
+    run_command(
+        Command::new("cargo")
+              .args(&["component", "build", &format!("--manifest-path={}/sequencer/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
+      ).unwrap();
 }

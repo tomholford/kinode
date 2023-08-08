@@ -27,7 +27,7 @@ struct FileRef {
     mode: FileSystemMode,
 }
 
-fn get_entry_type(is_dir: bool, is_file: bool, is_symlink: bool) -> FileSystemEntryType {
+fn get_entry_type(_is_dir: bool, is_file: bool, is_symlink: bool) -> FileSystemEntryType {
     if is_symlink {
         FileSystemEntryType::Symlink
     } else if is_file {
@@ -507,7 +507,7 @@ async fn handle_request(
                 let entry = match entries.next_entry().await {
                     Ok(e) => e,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't get next entry: {}",
@@ -524,7 +524,7 @@ async fn handle_request(
                 let metadata = match entry.metadata().await {
                     Ok(m) => m,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't read metadata: {}",
@@ -538,7 +538,7 @@ async fn handle_request(
                 let file_name = match entry.file_name().into_string() {
                     Ok(f) => f,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't put entry name into string: {:?}",

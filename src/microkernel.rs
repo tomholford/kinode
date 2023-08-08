@@ -6,7 +6,6 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-use tokio::fs;
 use serde::{Serialize, Deserialize};
 
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
@@ -1009,7 +1008,6 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: Identity,
-    process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -1018,6 +1016,7 @@ pub async fn kernel(
     send_to_fs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
+    pill: Vec<WrappedMessage>,
 ) {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1041,145 +1040,8 @@ pub async fn kernel(
         ).await
     );
 
-    // always start process manager on boot
-    let process_manager_wasm_bytes = fs::read(&process_manager_wasm_path).await.unwrap();
-    let start_process_manager_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "process_manager".to_string(),
-                            wasm_bytes_uri: process_manager_wasm_path,
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(process_manager_wasm_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_process_manager_message).await.unwrap();
-
-    // always start terminal on boot
-    let terminal_wasm_bytes = fs::read("terminal.wasm").await.unwrap();
-    let start_terminal_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "terminal".into(),
-                            wasm_bytes_uri: "terminal.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(terminal_wasm_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_terminal_message).await.unwrap();
-
-    // always start http-bindings on boot
-    let http_bindings_bytes = fs::read("http_bindings.wasm").await.unwrap();
-    let start_http_bindings_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "http_bindings".into(),
-                            wasm_bytes_uri: "http_bindings.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(http_bindings_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_http_bindings_message).await.unwrap();
-
-    // always start apps-home on boot
-    let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
-    let start_apps_home_message = WrappedMessage {
-        id: rand::random(),
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Request(false),
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "kernel".to_string(),
-                target_ship: our.name.clone(),
-                target_app: "kernel".to_string(),
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(
-                    KernelRequest::StartProcess(
-                        ProcessStart{
-                            process_name: "apps_home".into(),
-                            wasm_bytes_uri: "apps_home.wasm".into(),
-                        }
-                    )
-                ).unwrap()),
-                bytes: Some(apps_home_bytes),
-            },
-        },
-    };
-    send_to_loop.send(start_apps_home_message).await.unwrap();
-
-    // DEMO ONLY: start file_transfer app at boot
-    if let Ok(ft_bytes) = fs::read("file_transfer.wasm").await {
-        let start_apps_ft = WrappedMessage {
-            id: rand::random(),
-            rsvp: None,
-            message: Message {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.name.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.name.clone(),
-                    target_app: "kernel".to_string(),
-                },
-                payload: Payload {
-                    json: Some(serde_json::to_value(
-                        KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "file_transfer".into(),
-                                wasm_bytes_uri: "file_transfer.wasm".into(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(ft_bytes),
-                },
-            },
-        };
-        send_to_loop.send(start_apps_ft).await.unwrap();
+    for message in pill {
+        send_to_loop.send(message).await.unwrap();
     }
 
     let _ = event_loop_handle.await;

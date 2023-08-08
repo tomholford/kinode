@@ -171,7 +171,7 @@
         font-weight: 600;
       }
 
-      #current-username {
+      .current-username {
         cursor: pointer;
         padding: 0.5em;
         border: 1px solid white;
@@ -179,15 +179,7 @@
         margin: 1em 0;
       }
 
-      #current-username {
-        cursor: pointer;
-        padding: 0.5em;
-        border: 1px solid white;
-        border-radius: 4px;
-        margin: 1em 0;
-      }
-
-      #current-username:hover {
+      .current-username:hover {
         border: 1px solid white;
         color: #027;
         background-color: white;
@@ -279,8 +271,8 @@
           <div id="current-address"></div>
         </div>
         <div class="row label-row" id="current-username-display" style="display: none;">
-          <label for="nft-contract">Current Username:</label>
-          <div id="current-username"></div>
+          <label for="nft-contract">Current Username(s):</label>
+
         </div>
         <div class="row label-row">
           <label for="nft-contract">Uq Name</label>
@@ -353,18 +345,27 @@
           const usernameResponse = await fetch(`/check-address/${address}`)
 
           if (usernameResponse.status < 400) {
-            const username = await usernameResponse.text()
+            const usernamesString = await usernameResponse.text()
+            const usernames = usernamesString.split(',')
+            const usernameDisplay = document.getElementById('current-username-display')
+            usernameDisplay.innerHTML = ''
 
-            if (username) {
-              document.getElementById('current-username-display').style.display = 'block'
-              document.getElementById('current-username').innerText = username
-              document.getElementById('current-username').addEventListener('click', () => {
-                document.querySelector('input[name="uq-name"]').value = username
-                document.getElementById('password')?.focus()
+            if (usernameDisplay && usernames.length > 0) {
+              usernames.forEach((username) => {
+                if (!username) return
+                const usernameDiv = document.createElement('div')
+                usernameDiv.classList.add('current-username')
+                usernameDiv.innerText = username
+                usernameDisplay.appendChild(usernameDiv)
+                usernameDisplay.style.display = 'block'
+
+                usernameDiv.addEventListener('click', () => {
+                  document.querySelector('input[name="uq-name"]').value = username
+                  document.getElementById('password')?.focus()
+                })
               })
             }
           }
-
         } catch (err) {}
       }
 
@@ -415,21 +416,31 @@
             input.reportValidity();
             return false
           } else {
-            const alreadyTaken = await fetch(`/check-username/${uqName}`)
+            const currentUsernames = document.querySelectorAll('.current-username')
 
-            if (alreadyTaken.status === 409 && uqName !== document.getElementById('current-username').innerText) {
-              input.setCustomValidity('Uq name already taken');
-              input.reportValidity();
-              return false
-            } else {
+            if (currentUsernames && currentUsernames.length && Array.from(currentUsernames).some(ele => uqName === ele.innerText)) {
               input.setCustomValidity('');
               input.reportValidity();
               return true
+            } else {
+              const alreadyTaken = await fetch(`/check-username/${uqName}`)
+
+              if (alreadyTaken.status === 409) {
+                input.setCustomValidity('Uq name already taken');
+                input.reportValidity();
+                return false
+              } else {
+                input.setCustomValidity('');
+                input.reportValidity();
+                return true
+              }
             }
+
           }
         } catch (err) {
-          input.setCustomValidity('Uq name already taken');
-          input.reportValidity();
+          console.log(err)
+          document.querySelector('input[name="uq-name"]')?.setCustomValidity('Uq name already taken');
+          document.querySelector('input[name="uq-name"]')?.reportValidity();
           return false
         }
       }
@@ -490,7 +501,13 @@
 
           const httpServerPort = await registerResult.text()
 
-          setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 10000)
+          const interval = setInterval(async () => {
+            const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+            if (homepageResult.status < 400) {
+              clearInterval(interval)
+              window.location.href = `http://localhost:${httpServerPort}/`
+            }
+          }, 2000);
         } catch (err) {
           console.error(err)
           window.alert(CONNECTION_ERROR)

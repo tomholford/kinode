@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=process-manager/src");
     println!("cargo:rerun-if-changed=terminal/src");
     println!("cargo:rerun-if-changed=http-bindings/src");
+    println!("cargo:rerun-if-changed=http-proxy/src");
     println!("cargo:rerun-if-changed=file-transfer/src");
     println!("cargo:rerun-if-changed=apps-home/src");
     println!("cargo:rerun-if-changed=sequencer/src");
@@ -30,6 +31,10 @@ fn main() {
     run_command(
         Command::new("cargo")
             .args(&["component", "build", &format!("--manifest-path={}/http-bindings/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
+    ).unwrap();
+    run_command(
+        Command::new("cargo")
+            .args(&["component", "build", &format!("--manifest-path={}/http-proxy/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
     ).unwrap();
     run_command(
         Command::new("cargo")

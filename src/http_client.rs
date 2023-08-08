@@ -1,7 +1,6 @@
 use crate::types::*;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,14 +23,14 @@ struct HttpClientResponse {
 // !message tuna http_client {"method": "PUT", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {"Content-Type": "application/json"}, "body": "{\"title\": \"foo\", \"body\": \"bar\"}"}
 
 pub async fn http_client(
-    our_name: &str,
+    our_name: String,
     send_to_loop: MessageSender,
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
 ) {
     while let Some(message) = recv_in_client.recv().await {
         tokio::spawn(handle_message(
-            our_name.to_string(),
+            our_name.clone(),
             send_to_loop.clone(),
             message,
             print_tx.clone(),
@@ -43,7 +42,7 @@ async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
     wm: WrappedMessage,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let Some(value) = wm.message.payload.json.clone() else {
     panic!("http_client: request must have JSON payload, got: {:?}", wm.message);

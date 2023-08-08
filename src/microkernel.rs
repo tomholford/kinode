@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wasmtime::component::*;
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 use tokio::sync::mpsc;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -9,12 +9,14 @@ use tokio::task::JoinHandle;
 use tokio::fs;
 use serde::{Serialize, Deserialize};
 
+use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
+
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
 use crate::microkernel::component::microkernel_process::types::WitMessageType;
-use crate::microkernel::component::microkernel_process::types::WitPayload;
 use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
+use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
 use crate::microkernel::component::microkernel_process::types::WitWire;
 
 bindgen!({
@@ -90,6 +92,12 @@ struct Process {
     message_queue: VecDeque<WrappedMessage>,
 }
 
+struct ProcessWasi {
+    process: Process,
+    table: Table,
+    wasi: WasiCtx,
+}
+
 #[derive(Clone, Debug)]
 struct CauseMetadata {
     id: u64,
@@ -147,42 +155,71 @@ fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
 }
 
-impl Host for Process {
+impl Host for ProcessWasi {
+}
+
+impl WasiView for ProcessWasi {
+    fn table(&self) -> &Table {
+        &self.table
+    }
+    fn table_mut(&mut self) -> &mut Table {
+        &mut self.table
+    }
+    fn ctx(&self) -> &WasiCtx {
+        &self.wasi
+    }
+    fn ctx_mut(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
 }
 
 #[async_trait::async_trait]
-impl MicrokernelProcessImports for Process {
+impl MicrokernelProcessImports for ProcessWasi {
     async fn yield_results(&mut self, results: Vec<(WitProtomessage, String)>) -> Result<()> {
         let _ = send_process_results_to_loop(
             results,
-            self.metadata.our_name.clone(),
-            self.metadata.process_name.clone(),
-            self.send_to_loop.clone(),
-            &self.prompting_message,
-            &mut self.contexts,
+            self.process.metadata.our_name.clone(),
+            self.process.metadata.process_name.clone(),
+            self.process.send_to_loop.clone(),
+            &self.process.prompting_message,
+            &mut self.process.contexts,
         ).await;
         Ok(())
     }
 
     async fn await_next_message(&mut self) -> Result<(WitMessage, String)> {
         let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
-            &mut self.message_queue,
-            &mut self.recv_in_process,
-            &mut self.send_to_terminal,
-            &self.contexts,
+            &mut self.process.message_queue,
+            &mut self.process.recv_in_process,
+            &mut self.process.send_to_terminal,
+            &self.process.contexts,
         ).await;
-        self.prompting_message = Some(wrapped_message);
+        self.process.prompting_message = Some(wrapped_message);
         process_input
     }
 
-    async fn yield_and_await_response(&mut self, result: (WitProtomessage, String)) -> Result<(WitMessage, String)> {
+    // async fn yield_and_await_response(&mut self, result: WitProtomessage) -> Result<WitMessage> {
+    async fn yield_and_await_response(
+        &mut self,
+        target: WitProcessNode,
+        payload: WitPayload,
+    ) -> Result<WitMessage> {
+        let protomessage = WitProtomessage {
+            protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
+                is_expecting_response: true,
+                target_ship: target.node,
+                target_app: target.process,
+            }),
+            payload,
+        };
+
         let ids = send_process_results_to_loop(
-            vec![result],
-            self.metadata.our_name.clone(),
-            self.metadata.process_name.clone(),
-            self.send_to_loop.clone(),
-            &self.prompting_message,
-            &mut self.contexts,
+            vec![(protomessage, "".into())],
+            self.process.metadata.our_name.clone(),
+            self.process.metadata.process_name.clone(),
+            self.process.send_to_loop.clone(),
+            &self.process.prompting_message,
+            &mut self.process.contexts,
         ).await;
 
         if 1 != ids.len() {
@@ -191,17 +228,17 @@ impl MicrokernelProcessImports for Process {
 
         let (wrapped_message, process_input) = get_and_send_specific_loop_message_to_process(
             ids[0],
-            &mut self.message_queue,
-            &mut self.recv_in_process,
-            &mut self.send_to_terminal,
-            &self.contexts,
+            &mut self.process.message_queue,
+            &mut self.process.recv_in_process,
+            &mut self.process.send_to_terminal,
+            &self.process.contexts,
         ).await;
-        self.prompting_message = Some(wrapped_message);
+        self.process.prompting_message = Some(wrapped_message);
         process_input
     }
 
     async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
-        self.send_to_terminal
+        self.process.send_to_terminal
             .send(Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
@@ -228,7 +265,7 @@ async fn get_and_send_specific_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String)>) {
+) -> (WrappedMessage, Result<WitMessage>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -237,11 +274,18 @@ async fn get_and_send_specific_loop_message_to_process(
            & !(("net" == wrapped_message.message.wire.source_app)
                & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
               ) {
-            return send_loop_message_to_process(
+            let message = send_loop_message_to_process(
                 wrapped_message,
                 send_to_terminal,
                 contexts,
             ).await;
+            return (
+                message.0,
+                match message.1 {
+                    Ok(r) => Ok(r.0),
+                    Err(e) => Err(e),
+                },
+            );
         }
 
         message_queue.push_back(wrapped_message);
@@ -254,6 +298,7 @@ async fn get_and_send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<(WitMessage, String)>) {
+    //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
         match message_queue.pop_front() {
@@ -604,24 +649,32 @@ async fn make_process_loop(
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
-    MicrokernelProcess::add_to_linker(&mut linker, |state: &mut Process| state).unwrap();
+    MicrokernelProcess::add_to_linker(&mut linker, |state: &mut ProcessWasi| state).unwrap();
 
+    let mut table = Table::new();
+    let wasi = WasiCtxBuilder::new().inherit_stdio().build(&mut table).unwrap();
+
+    wasi::command::add_to_linker(&mut linker).unwrap();
     let mut store = Store::new(
         engine,
-        Process {
-            metadata,
-            recv_in_process,
-            send_to_loop: send_to_loop.clone(),
-            send_to_terminal: send_to_terminal.clone(),
-            prompting_message: None,
-            contexts: HashMap::new(),
-            message_queue: VecDeque::new(),
+        ProcessWasi {
+            process: Process {
+                metadata,
+                recv_in_process,
+                send_to_loop: send_to_loop.clone(),
+                send_to_terminal: send_to_terminal.clone(),
+                prompting_message: None,
+                contexts: HashMap::new(),
+                message_queue: VecDeque::new(),
+            },
+            table,
+            wasi,
         },
     );
 
     Box::pin(
         async move {
-            let (bindings, _) = MicrokernelProcess::instantiate_async(
+            let (bindings, _bindings) = MicrokernelProcess::instantiate_async(
                 &mut store,
                 &component,
                 &linker
@@ -761,22 +814,34 @@ async fn handle_kernel_request(
             return;
         },
         KernelRequest::StopProcess(cmd) => {
-            let _ = senders.remove(&cmd.process_name);
-            let process_handle = process_handles
-                .remove(&cmd.process_name).unwrap();
-            process_handle.abort();
-            let MessageType::Request(
-                is_expecting_response
-            ) = message.message_type else {
+            let MessageType::Request(is_expecting_response) = message.message_type else {
                 send_to_terminal
                     .send(Printout {
-                        verbosity: 1,
+                        verbosity: 0,
                         content: "kernel: StopProcess requires Request, got Response".into()
                     })
                     .await
                     .unwrap();
                 return;
             };
+            let _ = senders.remove(&cmd.process_name);
+            let process_handle = match process_handles.remove(&cmd.process_name) {
+                Some(ph) => ph,
+                None => {
+                    send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "kernel: no such process {} to Stop",
+                                cmd.process_name,
+                            ),
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                },
+            };
+            process_handle.abort();
             if !is_expecting_response {
                 return;
             }
@@ -943,7 +1008,7 @@ async fn make_event_loop(
 
 
 pub async fn kernel(
-    our: &Identity,
+    our: Identity,
     process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
@@ -955,8 +1020,10 @@ pub async fn kernel(
     send_to_http_client: MessageSender,
 ) {
     let mut config = Config::new();
-    config.async_support(true);
+    config.cache_config_load_default().unwrap();
+    config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
     config.wasm_component_model(true);
+    config.async_support(true);
     let engine = Engine::new(&config).unwrap();
 
     let event_loop_handle = tokio::spawn(
@@ -1058,6 +1125,35 @@ pub async fn kernel(
     };
     send_to_loop.send(start_http_bindings_message).await.unwrap();
 
+    // always start http-proxy on boot
+    let http_proxy_bytes = fs::read("http_proxy.wasm").await.unwrap();
+    let start_http_proxy_message = WrappedMessage {
+        id: rand::random(),
+        rsvp: None,
+        message: Message {
+            message_type: MessageType::Request(false),
+            wire: Wire {
+                source_ship: our.name.clone(),
+                source_app: "kernel".to_string(),
+                target_ship: our.name.clone(),
+                target_app: "kernel".to_string(),
+            },
+            payload: Payload {
+                json: Some(serde_json::to_value(
+                    KernelRequest::StartProcess(
+                        ProcessStart{
+                            process_name: "http_proxy".into(),
+                            wasm_bytes_uri: "http_proxy.wasm".into(),
+                        }
+                    )
+                ).unwrap()),
+                bytes: Some(http_proxy_bytes),
+            },
+        },
+    };
+    send_to_loop.send(start_http_proxy_message).await.unwrap();
+
+
     // always start apps-home on boot
     let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();
     let start_apps_home_message = WrappedMessage {
@@ -1085,6 +1181,35 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_apps_home_message).await.unwrap();
+
+    // DEMO ONLY: start file_transfer app at boot
+    if let Ok(ft_bytes) = fs::read("file_transfer.wasm").await {
+        let start_apps_ft = WrappedMessage {
+            id: rand::random(),
+            rsvp: None,
+            message: Message {
+                message_type: MessageType::Request(false),
+                wire: Wire {
+                    source_ship: our.name.clone(),
+                    source_app: "kernel".to_string(),
+                    target_ship: our.name.clone(),
+                    target_app: "kernel".to_string(),
+                },
+                payload: Payload {
+                    json: Some(serde_json::to_value(
+                        KernelRequest::StartProcess(
+                            ProcessStart{
+                                process_name: "file_transfer".into(),
+                                wasm_bytes_uri: "file_transfer.wasm".into(),
+                            }
+                        )
+                    ).unwrap()),
+                    bytes: Some(ft_bytes),
+                },
+            },
+        };
+        send_to_loop.send(start_apps_ft).await.unwrap();
+    }
 
     let _ = event_loop_handle.await;
 }

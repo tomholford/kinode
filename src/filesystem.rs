@@ -27,7 +27,7 @@ struct FileRef {
     mode: FileSystemMode,
 }
 
-fn get_entry_type(is_dir: bool, is_file: bool, is_symlink: bool) -> FileSystemEntryType {
+fn get_entry_type(_is_dir: bool, is_file: bool, is_symlink: bool) -> FileSystemEntryType {
     if is_symlink {
         FileSystemEntryType::Symlink
     } else if is_file {
@@ -214,13 +214,13 @@ fn make_error_message(
 }
 
 pub async fn fs_sender(
-    our_name: &str,
-    home_directory_path: &str,
+    our_name: String,
+    home_directory_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver
 ) {
-    if let Err(e) = create_dir_if_dne(home_directory_path).await {
+    if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
     }
     let home_directory_path = fs::canonicalize(home_directory_path)
@@ -237,7 +237,7 @@ pub async fn fs_sender(
     while let Some(message) = recv_in_fs.recv().await {
         let source_ship = &message.message.wire.source_ship;
         let source_app = &message.message.wire.source_app;
-        if our_name != source_ship {
+        if &our_name != source_ship {
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
                 our_name,
@@ -261,7 +261,7 @@ pub async fn fs_sender(
                                 send_to_loop
                                     .send(
                                         make_error_message(
-                                            our_name.into(),
+                                            our_name.clone(),
                                             message.id.clone(),
                                             message.message.wire.source_app.clone(),
                                             e,
@@ -277,7 +277,7 @@ pub async fn fs_sender(
                             send_to_loop
                                 .send(
                                     make_error_message(
-                                        our_name.into(),
+                                        our_name.clone(),
                                         message.id.clone(),
                                         message.message.wire.source_app.clone(),
                                         e,
@@ -303,7 +303,7 @@ pub async fn fs_sender(
                 },
             }
         );
-        let our_name = our_name.to_string();
+        let our_name = our_name.clone();
         let home_directory_path = home_directory_path.to_string();
         let source_app = source_app.to_string();
         let id = message.id.clone();
@@ -507,7 +507,7 @@ async fn handle_request(
                 let entry = match entries.next_entry().await {
                     Ok(e) => e,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't get next entry: {}",
@@ -524,7 +524,7 @@ async fn handle_request(
                 let metadata = match entry.metadata().await {
                     Ok(m) => m,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't read metadata: {}",
@@ -538,7 +538,7 @@ async fn handle_request(
                 let file_name = match entry.file_name().into_string() {
                     Ok(f) => f,
                     Err(e) => {
-                        send_to_terminal.send(Printout {
+                        let _ = send_to_terminal.send(Printout {
                             verbosity: 0,
                             content: format!(
                                 "filesystem: ReadDir couldn't put entry name into string: {:?}",

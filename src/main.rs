@@ -31,7 +31,7 @@ mod net;
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
-const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100;
+const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
@@ -40,11 +40,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
-async fn indexing(blockchain_url: &str, pki: OnchainPKI, _print_sender: PrintSender) {
+async fn indexing(blockchain_url: String, pki: OnchainPKI, _print_sender: PrintSender) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         interval.tick().await;
-        let response = match reqwest::get(blockchain_url).await {
+        let response = match reqwest::get(&blockchain_url).await {
             Ok(response) => {
                 if response.status().is_success() {
                     response
@@ -71,18 +71,19 @@ async fn main() {
     // For use with https://github.com/tokio-rs/console
     // console_subscriber::init();
 
+    // DEMO ONLY: remove all CLI arguments
     let args: Vec<String> = env::args().collect();
-    // let process_manager_wasm_path = args[1].clone();
-    let process_manager_wasm_path = "process_manager.wasm";
-    let home_directory_path = &args[1];
+    let process_manager_wasm_path = args[1].clone();
+    // let process_manager_wasm_path = "process_manager.wasm";
+    let home_directory_path = &args[2];
     // let home_directory_path = "home";
     // create home directory if it does not already exist
     if let Err(e) = fs::create_dir_all(home_directory_path).await {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    // let blockchain_url = &args[3];
-    let blockchain_url = "http://localhost:8080/blockchain.json";
+    let blockchain_url = &args[3];
+    // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -276,7 +277,7 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr".into()]
+                vec!["rolr3".into()]
             } else {
                 vec![]
             },
@@ -346,7 +347,68 @@ async fn main() {
      *
      *  if any of these modules fail, the program exits with an error.
      */
-    let quit: String = tokio::select! {
+
+    let kernel_handle = tokio::spawn(
+        microkernel::kernel(
+            our.clone(),
+            process_manager_wasm_path.into(),
+            kernel_message_sender.clone(),
+            print_sender.clone(),
+            kernel_message_receiver,
+            kernel_debug_message_receiver,
+            net_message_sender.clone(),
+            fs_message_sender,
+            http_server_sender,
+            http_client_message_sender,
+        )
+    );
+    let net_handle = tokio::spawn(
+        net::networking(
+            our.clone(),
+            our_ip,
+            networking_keypair,
+            pki.clone(),
+            kernel_message_sender.clone(),
+            print_sender.clone(),
+            net_message_receiver,
+        )
+    );
+    let indexing_handle = tokio::spawn(
+        indexing(
+            blockchain_url.clone(),
+            pki.clone(),
+            print_sender.clone(),
+        )
+    );
+    let fs_handle = tokio::spawn(
+        filesystem::fs_sender(
+            our.name.clone(),
+            home_directory_path.into(),
+            kernel_message_sender.clone(),
+            print_sender.clone(),
+            fs_message_receiver
+        )
+    );
+    let http_server_handle = tokio::spawn(
+        http_server::http_server(
+            our.name.clone(),
+            http_server_port,
+            http_server_receiver,
+            kernel_message_sender.clone(),
+            print_sender.clone(),
+        )
+    );
+    let http_client_handle = tokio::spawn(
+        http_client::http_client(
+            our.name.clone(),
+            kernel_message_sender.clone(),
+            http_client_message_receiver,
+            print_sender.clone(),
+        )
+    );
+    let quit = tokio::select! {
+        //  TODO: spin terminal::terminal out into its own task;
+        //        get error due to it not being `Send`
         term = terminal::terminal(
             &our,
             VERSION,
@@ -358,54 +420,12 @@ async fn main() {
             Ok(_) => "graceful shutdown".to_string(),
             Err(e) => format!("exiting with error: {:?}", e),
         },
-        _ = microkernel::kernel(
-            &our,
-            process_manager_wasm_path.into(),
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            kernel_message_receiver,
-            kernel_debug_message_receiver,
-            net_message_sender.clone(),
-            fs_message_sender.clone(),
-            http_server_sender.clone(),
-            http_client_message_sender.clone(),
-        ) => { "microkernel died".to_string() },
-        _ = net::networking(
-            our.clone(),
-            our_ip,
-            networking_keypair,
-            pki.clone(),
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            net_message_receiver,
-        ) => { "networking module died".to_string() },
-        // temporary process to keep up-to-date on chain,
-        // will replace with full-fledged indexing
-        _ = indexing(
-            blockchain_url,
-            pki.clone(),
-            print_sender.clone(),
-        ) => { "indexing died".to_string() },
-        _ = filesystem::fs_sender(
-            &our.name,
-            home_directory_path,
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            fs_message_receiver
-        ) => { "filesystem died".to_string() },
-        _ = http_server::http_server(
-            &our.name,
-            http_server_port,
-            http_server_receiver,
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-        ) => { "http_server died".to_string() },
-        _ = http_client::http_client(
-            &our.name,
-            kernel_message_sender.clone(),
-            http_client_message_receiver,
-            print_sender.clone(),
-        ) => { "http-client died".to_string() },
+        _ = kernel_handle => {"".into()},
+        _ = net_handle => {"".into()},
+        _ = indexing_handle => {"".into()},
+        _ = fs_handle => {"".into()},
+        _ = http_server_handle => {"".into()},
+        _ = http_client_handle => {"".into()},
     };
     let _ = crossterm::terminal::disable_raw_mode();
     println!("");

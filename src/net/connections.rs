@@ -92,7 +92,9 @@ pub async fn build_routed_connection(
         drop(peers_write);
         if let Some((ip, port)) = &router_id.ws_routing {
             if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                if let Ok(Ok((websocket, _response))) =
+                    timeout(TIMEOUT, connect_async(ws_url)).await
+                {
                     //
                     // we were able to connect to one of their routers:
                     // try to connect to it normally as a peer, then
@@ -273,6 +275,7 @@ async fn maintain_connection(
     let (ack_tx, mut ack_rx) = unbounded_channel::<NetworkMessage>();
 
     let s_our = our.clone();
+    let s_peers = peers.clone();
     let message_sender = tokio::spawn(async move {
         while let Some((message, result_tx)) = message_rx.recv().await {
             write_stream
@@ -299,29 +302,36 @@ async fn maintain_connection(
                         }
                     }
                 }
-                NetworkMessage::Msg { from, to, id, .. } => {
+                NetworkMessage::Msg { from, to, .. } => {
                     // await for the ack with timeout
                     // TODO move this to a dedicated task for performance gainz?
                     match timeout(TIMEOUT, ack_rx.recv()).await {
-                        Ok(Some(NetworkMessage::Ack(ack_id))) => {
+                        Ok(Some(NetworkMessage::Ack(_))) => {
                             // message delivered
-                            if id == ack_id {
-                                result_tx.unwrap().send(Ok(None)).unwrap();
-                            } else {
-                                println!("networking: ack mismatch!!\r");
-                                result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
-                            }
+                            // TODO match acks, figure out how
+                            // if id == ack_id {
+                            result_tx.unwrap().send(Ok(None)).unwrap();
+                            // } else {
+                            //     result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                            // }
                         }
                         Err(_) => {
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
                             if to == with {
                                 break;
+                            } else {
+                                // send a kill message to our handler for that peer
+                                let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
-                        _ => {
+                        e => {
+                            println!("net: {:?}\r", e);
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == with {
                                 break;
+                            } else if from == s_our.name {
+                                // send a kill message to our handler for that peer
+                                let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
                     }
@@ -427,6 +437,7 @@ async fn maintain_connection(
                                         )) {
                                             if let Ok(Ok(Some(resp))) = result_rx.await {
                                                 let _ = self_tx.send((resp, None));
+                                                return;
                                             }
                                         }
                                     }
@@ -478,6 +489,7 @@ async fn maintain_connection(
                                     )) {
                                         if let Ok(Ok(None)) = result_rx.await {
                                             let _ = self_tx.send((NetworkMessage::Ack(id), None));
+                                            return;
                                         }
                                     }
                                 }
@@ -509,23 +521,22 @@ async fn peer_handler(
     who: String,
     cipher: Aes256GcmSiv,
     nonce: Arc<Nonce>,
-    forwarder: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
+    mut forwarder: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
     mut receiver: UnboundedReceiver<Vec<u8>>,
     mut destructor: UnboundedReceiver<()>,
     socket_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     kernel_message_tx: MessageSender,
 ) {
-    let f_nonce = nonce.clone();
-    let f_cipher = cipher.clone();
 
     let kill = tokio::spawn(async move {
         let _ = destructor.recv().await;
         return;
     });
 
+    let f_nonce = nonce.clone();
+    let f_cipher = cipher.clone();
+    let f_who = who.clone();
     let forwarder = tokio::spawn(async move {
-        let socket_tx = socket_tx;
-        let mut forwarder = forwarder;
         while let Some((message, result_tx)) = forwarder.recv().await {
             // if message is raw, we should encrypt.
             // otherwise, simply send
@@ -536,7 +547,7 @@ async fn peer_handler(
                             let _ = socket_tx.send((
                                 NetworkMessage::Msg {
                                     from: our.name.clone(),
-                                    to: who.clone(),
+                                    to: f_who.clone(),
                                     id: message.id,
                                     contents: encrypted,
                                 },
@@ -564,6 +575,7 @@ async fn peer_handler(
                         continue;
                     }
                 }
+                println!("net: decryption error with message from {who}\r");
                 break;
             }
         } => {}

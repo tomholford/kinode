@@ -39,6 +39,11 @@ interface types {
         protomessage-type: wit-protomessage-type,
         payload: wit-payload,
     }
+
+    record wit-process-node {
+        node: string,
+        process: string,
+    }
 }
 
 world microkernel-process {
@@ -50,12 +55,13 @@ world microkernel-process {
         wit-request-type-with-target,
         wit-protomessage-type,
         wit-protomessage,
+        wit-process-node,
     }
 
     import print-to-terminal: func(verbosity: u8, message: string)
     import yield-results: func(results: list<tuple<wit-protomessage, string>>)
     import await-next-message: func() -> tuple<wit-message, string>
-    import yield-and-await-response: func(protomessage: tuple<wit-protomessage, string>) -> tuple<wit-message, string>
+    import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> wit-message
     import get-current-unix-time: func() -> u64
     import get-insecure-uniform-u64: func() -> u64
     export run-process: func(our-name: string, process-name: string)

@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
+
+mod process_lib;
+
 use bindings::print_to_terminal;
+use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitMessageType;
 use bindings::component::microkernel_process::types::WitPayload;
 use bindings::component::microkernel_process::types::WitProtomessageType;
@@ -202,6 +206,11 @@ enum FileTransferAdditionalContext {
     Piece { piece_number: u32 },
 }
 
+enum MessageHandledStatus {
+    ReadyForNext,
+    Done,
+}
+
 fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
 }
@@ -237,595 +246,432 @@ fn handle_fs_error(
     }
 }
 
+fn handle_message(
+    message: WitMessage,
+    context: String,
+    mut uploading: &mut Option<Uploading>,
+    our_name: &str,
+    process_name: &str,
+) -> anyhow::Result<MessageHandledStatus> {
+
+    let our_filesystem = bindings::WitProcessNode {
+        node: &our_name,
+        process: "filesystem",
+    };
+
+    match message.message_type {
+        WitMessageType::Request(_is_expecting_response) => {
+            //  TODO: perms;
+            //   only GetFile and Cancel allowed from non file_transfer
+            //   and Cancel should probably only be allowed from same
+            //   process as GetFile came from
+            print_to_terminal(1, "Request");
+            match process_lib::parse_message_json(message.payload.json)? {
+                FileTransferRequest::GetFile(get_file) => {
+                    //  1. close Append file handle, if it exists
+                    //  2. open AppendOverwrite file handle
+                    //  3. download from scratch
+
+                    print_to_terminal(1, "GetFile");
+
+                    let key = FileTransferKey {
+                        requester: our_name.into(),
+                        server: get_file.target_ship.clone(),
+                        uri_string: get_file.uri_string.clone(),
+                    };
+
+                    let file_transfer_request_type = WitProtomessageType::Request(
+                            WitRequestTypeWithTarget {
+                                is_expecting_response: true,
+                                target_ship: &get_file.target_ship,
+                                target_app: &process_name,
+                            },
+                        );
+                    let their_file_transfer = bindings::WitProcessNode {
+                        node: &get_file.target_ship,
+                        process: &process_name,
+                    };
+
+                    //  TODO: error handle
+                    let _ = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(FileSystemRequest {
+                            uri_string: get_file.uri_string.clone(),
+                            action: FileSystemAction::Close(FileSystemMode::Append),
+                        }),
+                        None,
+                    )?;
+
+                    //  TODO: error handle
+                    let message = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(FileSystemRequest {
+                            uri_string: get_file.uri_string.clone(),
+                            action: FileSystemAction::Open(FileSystemMode::AppendOverwrite),
+                        }),
+                        None,
+                    )?;
+
+                    //  TODO: error handle
+                    let message = process_lib::yield_and_await_response(
+                        &get_file.target_ship,
+                        process_name,
+                        Some(&FileTransferRequest::Start(FileTransferStart {
+                            uri_string: get_file.uri_string.clone(),
+                            chunk_size: get_file.chunk_size.clone(),
+                        })),
+                        None,
+                    )?;
+
+                    let FileTransferResponse::Started(metadata) =
+                            process_lib::parse_message_json(message.payload.json)? else {
+                        return Err(anyhow::anyhow!("expected Response type Started"));
+                    };
+
+                    let mut downloading = Downloading {
+                        metadata,
+                        received_pieces: vec![],
+                    };
+
+                    let mut piece_number = 0;
+                    loop {
+                        let message = process_lib::yield_and_await_response(
+                            &get_file.target_ship,
+                            process_name,
+                            Some(&FileTransferRequest::GetPiece(FileTransferGetPiece {
+                                uri_string: get_file.uri_string.clone(),
+                                chunk_size: get_file.chunk_size.clone(),
+                                piece_number,
+                            })),
+                            None,
+                        )?;
+
+                        let FileTransferResponse::FilePiece(file_piece) =
+                                process_lib::parse_message_json(message.payload.json)? else {
+                            return Err(anyhow::anyhow!("expected Response type FilePiece"));
+                        };
+
+                        if get_file.uri_string != file_piece.uri_string {
+                            panic!("file_transfer: GetPiece wrong uri_string");
+                        }
+                        if downloading.received_pieces.len() != piece_number as usize {
+                            panic!("file_transfer: GetPiece wrong piece_number");
+                        }
+
+                        let Some(bytes) = message.payload.bytes else {
+                            return Err(anyhow::anyhow!(
+                                "GetPiece: no bytes",
+                            ));
+                        };
+
+                        //  TODO: handle errors
+                        let _ = process_lib::yield_and_await_response(
+                            our_name,
+                            "filesystem",
+                            Some(FileSystemRequest {
+                                uri_string: file_piece.uri_string,
+                                action: FileSystemAction::Append,
+                            }),
+                            Some(bytes),
+                        )?;
+
+                        print_to_terminal(1, format!(
+                            "file_transfer: appended",
+                        ).as_str());
+
+                        piece_number += 1;
+
+                        if downloading.metadata.number_pieces == piece_number {
+                            //  received last piece; confirm file is good
+                            let message = process_lib::yield_and_await_response(
+                                our_name,
+                                "filesystem",
+                                Some(&FileSystemRequest {
+                                    uri_string: get_file.uri_string.clone(),
+                                    action: FileSystemAction::GetMetadata,
+                                }),
+                                None,
+                            )?;
+
+                            let FileSystemResponse::GetMetadata(file_metadata) =
+                                    process_lib::parse_message_json(message.payload.json)? else {
+                                return Err(anyhow::anyhow!("expected Response type GetMetadata"));
+                            };
+
+                            if Some(downloading.metadata.hash) == file_metadata.hash {
+                                //  file is good; clean up
+
+                                //  TODO: error handle
+                                let _ = process_lib::yield_and_await_response(
+                                    our_name,
+                                    "filesystem",
+                                    Some(&FileSystemRequest {
+                                        uri_string: get_file.uri_string.clone(),
+                                        action: FileSystemAction::Close(FileSystemMode::Append),
+                                    }),
+                                    None,
+                                )?;
+
+
+                                print_to_terminal(0, format!(
+                                    "file_transfer: successfully downloaded {} from {}",
+                                    get_file.uri_string,
+                                    get_file.target_ship,
+                                ).as_str());
+
+                                process_lib::yield_one_request(
+                                    false,
+                                    &get_file.target_ship,
+                                    &process_name,
+                                    Some(FileTransferRequest::Done {
+                                        uri_string: get_file.uri_string.clone(),
+                                    }),
+                                    None,
+                                    None::<FileTransferContext>,
+                                )?;
+                            }
+                            return Ok(MessageHandledStatus::Done);
+                        }
+                        downloading.received_pieces.push(file_piece.piece_hash);
+                    }
+
+
+                },
+                FileTransferRequest::Start(start) => {
+                    print_to_terminal(1, "Start");
+
+                    let chunk_size = start.chunk_size;
+
+                    let key =  FileTransferKey {
+                        requester: message.wire.source_ship,
+                        server: our_name.into(),
+                        uri_string: start.uri_string.clone(),
+                    };
+
+                    let message = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(&FileSystemRequest {
+                            uri_string: start.uri_string.clone(),
+                            action: FileSystemAction::GetMetadata,
+                        }),
+                        None,
+                    )?;
+
+                    let FileSystemResponse::GetMetadata(file_metadata) =
+                            process_lib::parse_message_json(message.payload.json)? else {
+                        return Err(anyhow::anyhow!("expected Response type GetMetadata"));
+                    };
+
+                    if file_metadata.uri_string != start.uri_string {
+                        //  TODO: back to panic?
+                        // bail(
+                        return Err(anyhow::anyhow!(
+                            "GetMetadata Response non-matching uri_string",
+                        ));
+                    }
+
+                    let number_pieces = div_round_up(
+                        file_metadata.len,
+                        chunk_size
+                    ) as u32;
+                    let Some(hash) = file_metadata.hash else {
+                        // bail(
+                        return Err(anyhow::anyhow!(
+                            "GetMetadata did not get hash from fs",
+                        ));
+                    };
+                    let metadata = FileTransferMetadata {
+                        key: key.clone(),
+                        hash,
+                        chunk_size,
+                        number_pieces,
+                        number_bytes: file_metadata.len,
+                    };
+                    *uploading = Some(Uploading {
+                        metadata: metadata.clone(),
+                        number_sent_pieces: 0,
+                    });
+
+                    //  TODO: handle in case of errors
+                    let _ = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(&FileSystemRequest {
+                            uri_string: file_metadata.uri_string,
+                            action: FileSystemAction::Open(
+                                FileSystemMode::Read
+                            ),
+                        }),
+                        None,
+                    )?;
+
+                    process_lib::yield_one_response(
+                        Some(FileTransferResponse::Started(metadata)),
+                        None,
+                        None::<FileTransferContext>,
+                    )?;
+                },
+                FileTransferRequest::GetPiece(get_piece) => {
+                    print_to_terminal(1, "GetPiece");
+
+                    let key = FileTransferKey {
+                        requester: message.wire.source_ship.clone(),
+                        server: our_name.into(),
+                        uri_string: get_piece.uri_string.clone(),
+                    };
+
+                    let Some(ref mut uploading) = uploading else {
+                        panic!("file_transfer: GetPiece uploading must be set");
+                    };
+
+                    let message = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(&FileSystemRequest {
+                            uri_string: get_piece.uri_string.clone(),
+                            action: FileSystemAction::ReadChunkFromOpen(
+                                get_piece.chunk_size,
+                            ),
+                        }),
+                        None,
+                    )?;
+
+                    let FileSystemResponse::ReadChunkFromOpen(uri_hash) =
+                            process_lib::parse_message_json(message.payload.json)? else {
+                        return Err(anyhow::anyhow!("expected Response type ReadChunkFromOpen"));
+                    };
+
+                    if get_piece.uri_string != uri_hash.uri_string {
+                        panic!("file_transfer: ReadChunkFromOpen wrong uri_string");
+                    }
+
+                    let Some(bytes) = message.payload.bytes else {
+                        // bail(
+                        return Err(anyhow::anyhow!(
+                            "ReadChunkFromOpen: no bytes",
+                        ));
+                    };
+
+                    if uploading.number_sent_pieces != get_piece.piece_number {
+                        panic!(
+                            "file_transfer: piece_number {} differs from state {}",
+                            get_piece.piece_number,
+                            uploading.number_sent_pieces,
+                        );
+                    }
+
+                    uploading.number_sent_pieces += 1;
+
+                    process_lib::yield_one_response(
+                        Some(FileTransferResponse::FilePiece(FileTransferFilePiece {
+                            uri_string: uri_hash.uri_string,
+                            piece_number: get_piece.piece_number,
+                            piece_hash: uri_hash.hash,
+                        })),
+                        Some(bytes),
+                        None::<FileTransferContext>,
+                    )?;
+                },
+                FileTransferRequest::Done { uri_string } => {
+                    let _ = process_lib::yield_and_await_response(
+                        our_name,
+                        "filesystem",
+                        Some(&FileSystemRequest {
+                            uri_string: uri_string.clone(),
+                            action: FileSystemAction::Close(FileSystemMode::Read),
+                        }),
+                        None,
+                    )?;
+
+
+                    print_to_terminal(0, format!(
+                        "file_transfer: done transferring {} to {}",
+                        uri_string,
+                        message.wire.source_ship,
+                    ).as_str());
+
+                    return Ok(MessageHandledStatus::Done);
+                },
+            }
+            return Ok(MessageHandledStatus::ReadyForNext);
+        },
+        WitMessageType::Response => {
+            print_to_terminal(1, "Response");
+
+            if "filesystem" == message.wire.source_app {
+                match process_lib::parse_message_json(message.payload.json)? {
+                    FileSystemResponse::Error(error) => {
+                        let context: FileTransferContext = serde_json::from_str(&context)?;
+
+                        handle_fs_error(
+                            error,
+                            &our_name,
+                            &process_name,
+                            context.key,
+                        );
+                    },
+                    _ => {
+                        panic!("file_transfer: unexpected filesystem Response");
+                    },
+                }
+            } else if process_name == message.wire.source_app {
+                match process_lib::parse_message_json(message.payload.json)? {
+                    _ => {
+                        panic!("file_transfer: unexpected file_transfer Response");
+                    },
+                }
+            } else if "ws" == message.wire.source_app {
+                let networking_error = process_lib::parse_message_json(message.payload.json)?;
+                let context: FileTransferContext = serde_json::from_str(&context)?;
+
+                handle_networking_error(
+                    networking_error,
+                    &our_name,
+                    &process_name,
+                    context.key,
+                );
+            }
+            return Ok(MessageHandledStatus::ReadyForNext);
+        },
+    }
+}
+
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         print_to_terminal(1, "file_transfer_one_off: begin");
-
-        let filesystem_request_type = WitProtomessageType::Request(
-            WitRequestTypeWithTarget {
-                is_expecting_response: true,
-                target_ship: &our_name,
-                target_app: "filesystem",
-            },
-        );
 
         let mut uploading: Option<Uploading> = None;
 
         loop {
             let (message, context) = bindings::await_next_message();
-            let Some(ref payload_json_string) = message.payload.json else {
-                print_to_terminal(1, "file_transfer: require non-empty json payload");
-                continue;
-            };
-
-            print_to_terminal(1,
-                format!("{}: got json {}", process_name, payload_json_string).as_str()
-            );
-
-            match message.message_type {
-                WitMessageType::Request(_is_expecting_response) => {
-                    //  TODO: perms;
-                    //   only GetFile and Cancel allowed from non file_transfer
-                    //   and Cancel should probably only be allowed from same
-                    //   process as GetFile came from
-                    print_to_terminal(1, "Request");
-                    let request: FileTransferRequest =
-                        match serde_json::from_str(payload_json_string) {
-                            Ok(result) => result,
-                            Err(e) => {
-                                print_to_terminal(1, format!("couldnt parse json string: {}", e).as_str());
-                                continue;
-                            },
-                        };
-                    match request {
-                        FileTransferRequest::GetFile(get_file) => {
-                            //  1. close Append file handle, if it exists
-                            //  2. open AppendOverwrite file handle
-                            //  3. download from scratch
-
-                            print_to_terminal(1, "GetFile");
-
-                            let key = FileTransferKey {
-                                requester: our_name.clone(),
-                                server: get_file.target_ship.clone(),
-                                uri_string: get_file.uri_string.clone(),
-                            };
-
-                            let file_transfer_request_type = WitProtomessageType::Request(
-                                    WitRequestTypeWithTarget {
-                                        is_expecting_response: true,
-                                        target_ship: &get_file.target_ship,
-                                        target_app: &process_name,
-                                    },
-                                );
-
-                            //  TODO: error handle
-                            let (_, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: get_file.uri_string.clone(),
-                                                action: FileSystemAction::Close(
-                                                    FileSystemMode::Append
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            //  TODO: error handle
-                            let (message, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: get_file.uri_string.clone(),
-                                                action: FileSystemAction::Open(
-                                                    FileSystemMode::AppendOverwrite
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            //  TODO: error handle
-                            let (message, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: file_transfer_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileTransferRequest::Start(
-                                                FileTransferStart {
-                                                    uri_string: get_file.uri_string.clone(),
-                                                    chunk_size: get_file.chunk_size.clone(),
-                                                }
-                                            )
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(1,
-                                    "file_transfer: require non-empty json payload"
-                                );
-                                continue;
-                            };
-
-                            let Ok(FileTransferResponse::Started(metadata)) =
-                                    serde_json::from_str(payload_json_string) else {
-                                panic!("Response to Start not Started");
-                            };
-
-                            let mut downloading = Downloading {
-                                metadata,
-                                received_pieces: vec![],
-                            };
-
-                            let mut piece_number = 0;
-                            loop {
-                                let (message, _) = bindings::yield_and_await_response((
-                                    bindings::WitProtomessage {
-                                        protomessage_type: file_transfer_request_type.clone(),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferRequest::GetPiece(
-                                                    FileTransferGetPiece {
-                                                        uri_string: get_file.uri_string.clone(),
-                                                        chunk_size: get_file.chunk_size.clone(),
-                                                        piece_number,
-                                                    }
-                                                )
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
-                                    },
-                                    "",
-                                ));
-
-                                let Some(ref payload_json_string) = message.payload.json else {
-                                    print_to_terminal(1,
-                                        "file_transfer: require non-empty json payload"
-                                    );
-                                    continue;
-                                };
-
-                                let Ok(FileTransferResponse::FilePiece(file_piece)) =
-                                        serde_json::from_str(payload_json_string) else {
-                                    panic!("Response to GetPiece not FilePiece");
-                                };
-
-                                if get_file.uri_string != file_piece.uri_string {
-                                    panic!("file_transfer: GetPiece wrong uri_string");
-                                }
-                                if downloading.received_pieces.len() != piece_number as usize {
-                                    panic!("file_transfer: GetPiece wrong piece_number");
-                                }
-
-                                let Some(bytes) = message.payload.bytes else {
-                                    bail(
-                                        "GetPiece: no bytes".into(),
-                                        &our_name,
-                                        &process_name,
-                                        key.clone(),
-                                    );
-                                    continue;
-                                };
-
-                                //  TODO: handle errors
-                                let (_, _) = bindings::yield_and_await_response((
-                                    bindings::WitProtomessage {
-                                        protomessage_type: filesystem_request_type.clone(),
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: file_piece.uri_string,
-                                                    action: FileSystemAction::Append,
-                                                }
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
-                                    },
-                                    "",
-                                ));
-
-                                print_to_terminal(1, format!(
-                                    "file_transfer: appended",
-                                ).as_str());
-
-                                piece_number += 1;
-
-                                if downloading.metadata.number_pieces == piece_number {
-                                    //  received last piece; confirm file is good
-                                    let (message, _) = bindings::yield_and_await_response((
-                                        bindings::WitProtomessage {
-                                            protomessage_type: filesystem_request_type.clone(),
-                                            payload: &WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileSystemRequest {
-                                                        uri_string: get_file.uri_string.clone(),
-                                                        action: FileSystemAction::GetMetadata,
-                                                    }
-                                                ).unwrap()),
-                                                bytes: None,
-                                            },
-                                        },
-                                        "",
-                                    ));
-
-                                    let Some(ref payload_json_string) = message.payload.json else {
-                                        print_to_terminal(1,
-                                            "file_transfer: require non-empty json payload"
-                                        );
-                                        continue;
-                                    };
-
-                                    let Ok(FileSystemResponse::GetMetadata(file_metadata)) =
-                                            serde_json::from_str(payload_json_string) else {
-                                        panic!("Response to GetMetadata not metadata");
-                                    };
-                                    if Some(downloading.metadata.hash) == file_metadata.hash {
-                                        //  file is good; clean up
-
-                                        //  TODO: error handle
-                                        let (_, _) = bindings::yield_and_await_response((
-                                            bindings::WitProtomessage {
-                                                protomessage_type: filesystem_request_type.clone(),
-                                                payload: &WitPayload {
-                                                    json: Some(serde_json::to_string(
-                                                        &FileSystemRequest {
-                                                            uri_string: get_file.uri_string.clone(),
-                                                            action: FileSystemAction::Close(
-                                                                FileSystemMode::Append
-                                                            ),
-                                                        }
-                                                    ).unwrap()),
-                                                    bytes: None,
-                                                },
-                                            },
-                                            "",
-                                        ));
-
-
-                                        print_to_terminal(1, format!(
-                                            "file_transfer: successfully downloaded {} from {}",
-                                            get_file.uri_string,
-                                            get_file.target_ship,
-                                        ).as_str());
-
-                                        bindings::yield_results(vec![
-                                            (
-                                                bindings::WitProtomessage {
-                                                    protomessage_type: WitProtomessageType::Request(
-                                                        WitRequestTypeWithTarget {
-                                                            is_expecting_response: false,
-                                                            target_ship: &get_file.target_ship,
-                                                            target_app: &process_name,
-                                                        },
-                                                    ),
-                                                    payload: &WitPayload {
-                                                        json: Some(serde_json::to_string(
-                                                            &FileTransferRequest::Done {
-                                                                uri_string: get_file.uri_string,
-                                                            }
-                                                        ).unwrap()),
-                                                        bytes: None,
-                                                    },
-                                                },
-                                                "",
-                                            ),
-                                        ].as_slice());
-
-                                        return;
-                                    }
-
-
-                                }
-                                downloading.received_pieces.push(file_piece.piece_hash);
-                            }
-
-
-                        },
-                        FileTransferRequest::Start(start) => {
-                            print_to_terminal(1, "Start");
-
-                            let chunk_size = start.chunk_size;
-
-                            let key =  FileTransferKey {
-                                requester: message.wire.source_ship,
-                                server: our_name.clone(),
-                                uri_string: start.uri_string.clone(),
-                            };
-
-                            let (message, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: start.uri_string.clone(),
-                                                action: FileSystemAction::GetMetadata,
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(1,
-                                    "file_transfer: require non-empty json payload"
-                                );
-                                continue;
-                            };
-
-                            let Ok(FileSystemResponse::GetMetadata(file_metadata)) =
-                                    serde_json::from_str(payload_json_string) else {
-                                panic!("Response to GetMetadata not metadata");
-                            };
-
-
-                            if file_metadata.uri_string != start.uri_string {
-                                //  TODO: back to panic?
-                                bail(
-                                    "GetMetadata Response non-matching uri_string".into(),
-                                    &our_name,
-                                    &process_name,
-                                    key
-                                );
-                                continue;
-                            }
-
-                            let number_pieces = div_round_up(
-                                file_metadata.len,
-                                chunk_size
-                            ) as u32;
-                            let Some(hash) = file_metadata.hash else {
-                                bail(
-                                    "GetMetadata did not get hash from fs".into(),
-                                    &our_name,
-                                    &process_name,
-                                    key,
-                                );
-                                continue;
-                            };
-                            let metadata = FileTransferMetadata {
-                                key: key.clone(),
-                                hash,
-                                chunk_size,
-                                number_pieces,
-                                number_bytes: file_metadata.len,
-                            };
-                            uploading = Some(Uploading {
-                                    metadata: metadata.clone(),
-                                    number_sent_pieces: 0,
-                                });
-
-                            //  TODO: handle in case of errors
-                            let (_, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: file_metadata.uri_string,
-                                                action: FileSystemAction::Open(
-                                                    FileSystemMode::Read
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            bindings::yield_results(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferResponse::Started(metadata)
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
-                                    },
-                                    "",
-                                )
-                            ].as_slice());
-                        },
-                        FileTransferRequest::GetPiece(get_piece) => {
-                            print_to_terminal(1, "GetPiece");
-
-                            let key = FileTransferKey {
-                                requester: message.wire.source_ship.clone(),
-                                server: our_name.clone(),
-                                uri_string: get_piece.uri_string.clone(),
-                            };
-
-                            let Some(ref mut uploading) = uploading else {
-                                panic!("file_transfer: GetPiece uploading must be set");
-                            };
-
-                            let (message, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: get_piece.uri_string.clone(),
-                                                action: FileSystemAction::ReadChunkFromOpen(
-                                                    get_piece.chunk_size,
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-                            let Some(ref payload_json_string) = message.payload.json else {
-                                print_to_terminal(1,
-                                    "file_transfer: require non-empty json payload"
-                                );
-                                continue;
-                            };
-
-                            let Ok(FileSystemResponse::ReadChunkFromOpen(uri_hash)) =
-                                    serde_json::from_str(payload_json_string) else {
-                                panic!("Response to ReadChunkFromOpen not RCFO");
-                            };
-
-                            if get_piece.uri_string != uri_hash.uri_string {
-                                panic!("file_transfer: ReadChunkFromOpen wrong uri_string");
-                            }
-
-                            let Some(bytes) = message.payload.bytes else {
-                                bail(
-                                    "ReadChunkFromOpen: no bytes".into(),
-                                    &our_name,
-                                    &process_name,
-                                    key,
-                                );
-                                continue;
-                            };
-
-                            if uploading.number_sent_pieces != get_piece.piece_number {
-                                panic!(
-                                    "file_transfer: piece_number {} differs from state {}",
-                                    get_piece.piece_number,
-                                    uploading.number_sent_pieces,
-                                );
-                            }
-
-                            uploading.number_sent_pieces += 1;
-
-                            bindings::yield_results(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: &WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferResponse::FilePiece(
-                                                    FileTransferFilePiece {
-                                                        uri_string: uri_hash.uri_string,
-                                                        piece_number: get_piece.piece_number,
-                                                        piece_hash: uri_hash.hash,
-                                                    }
-                                                )
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
-                                    },
-                                    "",
-                                )
-                            ].as_slice());
-                        },
-                        FileTransferRequest::Done { uri_string } => {
-                            let (_, _) = bindings::yield_and_await_response((
-                                bindings::WitProtomessage {
-                                    protomessage_type: filesystem_request_type.clone(),
-                                    payload: &WitPayload {
-                                        json: Some(serde_json::to_string(
-                                            &FileSystemRequest {
-                                                uri_string: uri_string.clone(),
-                                                action: FileSystemAction::Close(
-                                                    FileSystemMode::Read
-                                                ),
-                                            }
-                                        ).unwrap()),
-                                        bytes: None,
-                                    },
-                                },
-                                "",
-                            ));
-
-
-                            print_to_terminal(1, format!(
-                                "file_transfer: done transferring {} to {}",
-                                uri_string,
-                                message.wire.source_ship,
-                            ).as_str());
-
+            match handle_message(
+                message,
+                context,
+                &mut uploading,
+                &our_name,
+                &process_name,
+            ) {
+                Ok(status) => {
+                    match status {
+                        MessageHandledStatus::ReadyForNext => {},
+                        MessageHandledStatus::Done => {
                             return;
                         },
                     }
                 },
-                WitMessageType::Response => {
-                    print_to_terminal(1, "Response");
-
-                    if "filesystem" == message.wire.source_app {
-                        let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
-                        match response {
-                            FileSystemResponse::Error(error) => {
-                                let context: FileTransferContext =
-                                        match serde_json::from_str(&context) {
-                                    Ok(c) => c,
-                                    Err(_) => {
-                                        print_to_terminal(1, format!(
-                                            "file_transfer: FileSystemError: {:?}",
-                                            error,
-                                        ).as_str());
-                                        continue;
-                                    },
-                                };
-
-                                handle_fs_error(
-                                    error,
-                                    &our_name,
-                                    &process_name,
-                                    context.key,
-                                );
-                            },
-                            _ => {
-                                panic!(
-                                    "file_transfer: unexpected filesystem Response: {:?}",
-                                    response,
-                                );
-                            },
-                        }
-                    } else if process_name == message.wire.source_app {
-                        let response: FileTransferResponse =
-                            serde_json::from_str(payload_json_string).unwrap();
-                        match response {
-                            _ => {
-                                panic!(
-                                    "file_transfer: unexpected file_transfer Response: {:?}",
-                                    response,
-                                );
-                            },
-                        }
-                    } else if "net" == message.wire.source_app {
-                        if let Ok(networking_error) =
-                                serde_json::from_str::<NetworkingError>(payload_json_string) {
-
-                            let context: FileTransferContext =
-                                serde_json::from_str(&context).unwrap();
-
-                            handle_networking_error(
-                                networking_error,
-                                &our_name,
-                                &process_name,
-                                context.key,
-                            );
-                        }
-                    }
+                Err(e) => {
+                    //  TODO: should bail / Cancel
+                    print_to_terminal(format!(
+                        0,
+                        "{}: error: {:?}",
+                        process_name,
+                        e,
+                    ).as_str());
                 },
-            }
+            };
         }
     }
 }

@@ -14,11 +14,13 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinSet;
+use tokio::time::timeout;
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
 mod connections;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const META_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -96,15 +98,18 @@ pub async fn networking(
                 continue;
             }
             let start = std::time::Instant::now();
-            // TODO can we move this into its own task?
-            let result = message_to_peer(
-                s_our.clone(),
-                s_our_ip.clone(),
-                s_keypair.clone(),
-                s_pki.clone(),
-                s_peers.clone(),
-                wm.clone(),
-                s_kernel_message_tx.clone(),
+            // TODO can we move this into its own task? absolutely..
+            let result = timeout(
+                META_TIMEOUT,
+                message_to_peer(
+                    s_our.clone(),
+                    s_our_ip.clone(),
+                    s_keypair.clone(),
+                    s_pki.clone(),
+                    s_peers.clone(),
+                    wm.clone(),
+                    s_kernel_message_tx.clone(),
+                ),
             )
             .await;
 
@@ -118,10 +123,15 @@ pub async fn networking(
                 .await;
 
             match result {
-                Ok(()) => continue,
-                Err(e) => {
+                Ok(Ok(())) => continue,
+                Ok(Err(e)) => {
                     let _ = s_kernel_message_tx
                         .send(make_kernel_response(&s_our, wm, e))
+                        .await;
+                }
+                Err(_) => {
+                    let _ = s_kernel_message_tx
+                        .send(make_kernel_response(&s_our, wm, NetworkError::Timeout))
                         .await;
                 }
             }
@@ -182,7 +192,9 @@ async fn connect_to_routers(
         if let Some(router_id) = pki.read().await.get(router_name) {
             if let Some((ip, port)) = &router_id.ws_routing {
                 if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                    if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                    if let Ok(Ok((websocket, _response))) =
+                        timeout(TIMEOUT, connect_async(ws_url)).await
+                    {
                         // this is a real and functional router! woohoo
                         if let Ok(active_peer) = build_connection(
                             our.clone(),
@@ -211,7 +223,9 @@ async fn connect_to_routers(
             if let Some(router_id) = pki.read().await.get(&router_name) {
                 if let Some((ip, port)) = &router_id.ws_routing {
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                        if let Ok(Ok((websocket, _response))) =
+                            timeout(TIMEOUT, connect_async(ws_url)).await
+                        {
                             // this is a real and functional router! woohoo
                             if let Ok(active_peer) = build_connection(
                                 our.clone(),
@@ -313,7 +327,10 @@ async fn message_to_peer(
                 //
                 Some((ip, port)) => {
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        if let Ok((websocket, _response)) = connect_async(ws_url).await {
+                        // if we can't connect in 5s, peer is offline
+                        if let Ok(Ok((websocket, _response))) =
+                            timeout(TIMEOUT, connect_async(ws_url)).await
+                        {
                             let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                             let conn = connections::build_connection(
                                 our.clone(),

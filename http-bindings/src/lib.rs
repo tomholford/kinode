@@ -67,7 +67,7 @@ impl bindings::MicrokernelProcess for Component {
 
                     if action == "bind-app" && path != "" && app != "" {
                         bindings.insert(path.to_string(), app.to_string());
-                    } else if action == "request" && path != "" {
+                    } else if action == "request" {
                         bindings::print_to_terminal("http_bindings: got request");
 
                         // // if the request path is "/", starts with "/~" or "/apps", then we need to check the uqbar-auth cookie
@@ -136,13 +136,15 @@ impl bindings::MicrokernelProcess for Component {
                         
                         for (key, _value) in &bindings {
                             let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
-                            if key_segments.len() != path_segments.len() {
+                            if key_segments.len() != path_segments.len() && !key.contains("/.*") {
                                 continue;
                             }
 
                             let mut paths_match = true;
                             for i in 0..key_segments.len() {
-                                if  !(key_segments[i].starts_with(":") || key_segments[i] == path_segments[i]) {
+                                if key_segments[i] == ".*" {
+                                    break;
+                                } else if !(key_segments[i].starts_with(":") || key_segments[i] == path_segments[i]) {
                                     paths_match = false;
                                     break;
                                 } else if key_segments[i].starts_with(":") {
@@ -171,6 +173,7 @@ impl bindings::MicrokernelProcess for Component {
                                         payload: &WitPayload {
                                             json: Some(serde_json::json!({
                                                 "path": registered_path,
+                                                "raw_path": path,
                                                 "method": message_json["method"],
                                                 "headers": message_json["headers"],
                                                 "query_params": message_json["query_params"],

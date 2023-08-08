@@ -89,6 +89,14 @@ cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_o
 cp README.md home/dolph/file_transfer/
 cp README.md home/dolph/file_transfer_one_off/
 
+# For releases:
+cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/tuna/
+cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/dolph/
+cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/tuna/
+cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/dolph/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/tuna/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/dolph/
+
 # Terminal A: add hi++ apps to process_manager
 cargo r process_manager.wasm home/tuna tuna
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}

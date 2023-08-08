@@ -294,7 +294,13 @@
 
           if (result.status === 200) {
             const httpServerPort = await result.text()
-            setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 3000)
+            const interval = setInterval(async () => {
+              const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+              if (homepageResult.status < 400) {
+                clearInterval(interval)
+                window.location.replace(`http://localhost:${httpServerPort}`)
+              }
+            }, 2000);
           } else if (result.status === 405) {
             window.alert('Incorrect password. Please try again.')
             document.getElementById('loading').style.display = 'none'
@@ -326,7 +332,14 @@
             })
 
             const httpServerPort = await loginResult.text()
-            setTimeout(() => window.location.replace(`http://localhost:${httpServerPort}`), 3000)
+
+            const interval = setInterval(async () => {
+              const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+              if (homepageResult.status < 400) {
+                clearInterval(interval)
+                window.location.replace(`http://localhost:${httpServerPort}/`)
+              }
+            }, 2000);
           }
 
         } catch (err) {

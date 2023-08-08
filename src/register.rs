@@ -42,19 +42,26 @@ pub async fn register(
             let pki = pki.clone();
             async move {
                 let pki_read = pki.read().await;
+
+                let mut usernames: Vec<String> = Vec::new();
+
                 for (username, identity) in pki_read.iter() {
                     if identity.address == address {
-                        return Ok::<_, Rejection>(warp::reply::with_status(
-                            username.clone(),
-                            warp::http::StatusCode::OK,
-                        ));
+                        usernames.push(username.to_string());
                     }
                 }
 
-                Ok::<_, Rejection>(warp::reply::with_status(
-                    "Not Found".to_string(),
-                    warp::http::StatusCode::NOT_FOUND,
-                ))
+                if !usernames.is_empty() {
+                    Ok::<_, Rejection>(warp::reply::with_status(
+                        usernames.join(","),
+                        warp::http::StatusCode::OK,
+                    ))
+                } else {
+                    Ok::<_, Rejection>(warp::reply::with_status(
+                        "Not taken".to_string(),
+                        warp::http::StatusCode::NO_CONTENT,
+                    ))
+                }
             }
         }
     });

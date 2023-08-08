@@ -496,6 +496,7 @@ async fn maintain_connection(
                                     )) {
                                         if let Ok(Ok(None)) = result_rx.await {
                                             let _ = self_tx.send((NetworkMessage::Ack(id), None));
+                                            return;
                                         }
                                     }
                                 }

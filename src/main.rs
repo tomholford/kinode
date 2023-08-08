@@ -276,7 +276,7 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr".into()]
+                vec!["rolr3".into()]
             } else {
                 vec![]
             },

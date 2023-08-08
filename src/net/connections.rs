@@ -336,7 +336,7 @@ async fn maintain_connection(
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == with {
                                 break;
-                            } else {
+                            } else if from == s_our.name {
                                 // send a kill message to our handler for that peer
                                 println!("killing peer {to}\r");
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());

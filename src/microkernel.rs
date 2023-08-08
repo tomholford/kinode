@@ -237,9 +237,9 @@ impl MicrokernelProcessImports for ProcessWasi {
         process_input
     }
 
-    async fn print_to_terminal(&mut self, message: String) -> Result<()> {
+    async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         self.process.send_to_terminal
-            .send(Printout { verbosity: 1, content: message })
+            .send(Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
@@ -1152,7 +1152,7 @@ pub async fn kernel(
         },
     };
     send_to_loop.send(start_http_proxy_message).await.unwrap();
-    
+
 
     // always start apps-home on boot
     let apps_home_bytes = fs::read("apps_home.wasm").await.unwrap();

@@ -142,7 +142,7 @@ fn failure(http_head: serde_json::Value) {
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         assert!(process_name == "sequencer");
-        bindings::print_to_terminal("sequencer: initialized");
+        bindings::print_to_terminal(1, "sequencer: initialized");
 
         // get blockchain.json from home directory
         bindings::yield_results(
@@ -171,7 +171,7 @@ impl bindings::MicrokernelProcess for Component {
 
         let (fs_response, _) = bindings::await_next_message();
 
-        bindings::print_to_terminal("sequencer: got blockchain.json");
+        bindings::print_to_terminal(1, "sequencer: got blockchain.json");
 
         let mut pki: OnchainPKI = match fs_response.payload.bytes {
             Some(b) => serde_json::from_str::<OnchainPKI>(&String::from_utf8(b).unwrap()).unwrap(),
@@ -248,7 +248,7 @@ impl bindings::MicrokernelProcess for Component {
             ) {
                 Ok(i) => i,
                 Err(e) => {
-                    bindings::print_to_terminal(
+                    bindings::print_to_terminal(1,
                         format!("sequencer error: failed to deserialize identity: {}", e).as_str(),
                     );
                     failure(http_head);
@@ -258,7 +258,7 @@ impl bindings::MicrokernelProcess for Component {
             let new_identity = match parse_transaction(http_body) {
                 Some(i) => i,
                 None => {
-                    bindings::print_to_terminal("sequencer error: got invalid transaction");
+                    bindings::print_to_terminal(1, "sequencer error: got invalid transaction");
                     failure(http_head);
                     continue;
                 }

@@ -10,7 +10,7 @@ const PROXY_HOME_PAGE: &str = include_str!("http-proxy.html");
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        bindings::print_to_terminal("apps-home: start");
+        bindings::print_to_terminal(1, "apps-home: start");
         bindings::yield_results(
           vec![(
               bindings::WitProtomessage {
@@ -99,8 +99,8 @@ impl bindings::MicrokernelProcess for Component {
                 panic!("foo")
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
-            bindings::print_to_terminal(format!("apps-home: got request: {}", message_from_loop).as_str());
-            bindings::print_to_terminal(format!("METHOD: {}", message_from_loop["method"]).as_str());
+            bindings::print_to_terminal(1, format!("apps-home: got request: {}", message_from_loop).as_str());
+            bindings::print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
 
             if message_from_loop["path"] == "/apps/proxy" && message_from_loop["method"] == "GET" {
                 bindings::yield_results(vec![(
@@ -149,7 +149,7 @@ impl bindings::MicrokernelProcess for Component {
                 let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
                 let username = body["username"].as_str().unwrap_or("");
 
-                bindings::print_to_terminal(format!("Register proxy for: {}", username).as_str());
+                bindings::print_to_terminal(1, format!("Register proxy for: {}", username).as_str());
 
                 if !username.is_empty() {
                     registrations.insert(username.to_string(), "foo".to_string());
@@ -174,7 +174,7 @@ impl bindings::MicrokernelProcess for Component {
                     "",
                 )].as_slice());
             } else if message_from_loop["path"] == "/proxy/register" && message_from_loop["method"] == "DELETE" {
-                bindings::print_to_terminal("HERE IN /proxy/register to delete something");
+                bindings::print_to_terminal(1, "HERE IN /proxy/register to delete something");
                 let username = message_from_loop["query_params"]["username"].as_str().unwrap_or("");
 
                 let mut status = 204;
@@ -185,7 +185,7 @@ impl bindings::MicrokernelProcess for Component {
                     status = 400;
                 }
 
-                // TODO when we have an actual webpage, uncomment this as a response 
+                // TODO when we have an actual webpage, uncomment this as a response
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
@@ -205,7 +205,7 @@ impl bindings::MicrokernelProcess for Component {
             } else if message_from_loop["path"] == "/proxy/serve/:username/.*" {
                 let username = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let raw_path = message_from_loop["raw_path"].as_str().unwrap_or("");
-                bindings::print_to_terminal(format!("proxy for user: {}", username).as_str());
+                bindings::print_to_terminal(1, format!("proxy for user: {}", username).as_str());
 
                 if username.is_empty() || raw_path.is_empty() {
                     bindings::yield_results(vec![(
@@ -244,10 +244,10 @@ impl bindings::MicrokernelProcess for Component {
                 } else {
                     let path_parts: Vec<&str> = raw_path.split('/').collect();
                     let mut proxied_path = "/".to_string();
-        
+
                     if let Some(pos) = path_parts.iter().position(|&x| x == "serve") {
                         proxied_path = path_parts[pos+2..].join("/");
-                        bindings::print_to_terminal(format!("Path to proxy: /{}", proxied_path).as_str());
+                        bindings::print_to_terminal(1, format!("Path to proxy: /{}", proxied_path).as_str());
                     }
 
                     let res = process_lib::yield_and_await_response(
@@ -262,7 +262,7 @@ impl bindings::MicrokernelProcess for Component {
                         })),
                         message.payload.bytes,
                     ).unwrap(); // TODO unwrap
-                    bindings::print_to_terminal("FINISHED YIELD AND AWAIT");
+                    bindings::print_to_terminal(1, "FINISHED YIELD AND AWAIT");
                     bindings::yield_results(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,

@@ -112,7 +112,7 @@ fn handle_message(
         WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.payload.json)? {
                 ProcessManagerCommand::Start(start) => {
-                    print_to_terminal("process manager: start");
+                    print_to_terminal(1, "process manager: start");
                     if reserved_process_names.contains(&start.process_name) {
                         return Err(anyhow::anyhow!(
                             "cannot add process {} with name amongst {:?}",
@@ -137,7 +137,7 @@ fn handle_message(
                     )?;
                 },
                 ProcessManagerCommand::Stop(stop) => {
-                    print_to_terminal("process manager: stop");
+                    print_to_terminal(1, "process manager: stop");
                     let _ = metadatas
                         .remove(&stop.process_name)
                         .ok_or(anyhow::anyhow!("no process data found to remove"))?;
@@ -148,10 +148,10 @@ fn handle_message(
                         false,
                     )?;
 
-                    println!("process manager: {:?}", metadatas.keys().collect::<Vec<_>>());
+                    println!("process manager: {:?}\r", metadatas.keys().collect::<Vec<_>>());
                 },
                 ProcessManagerCommand::Restart(restart) => {
-                    print_to_terminal("process manager: restart");
+                    print_to_terminal(1, "process manager: restart");
 
                     send_stop_to_loop(
                         our_name.into(),
@@ -230,7 +230,7 @@ fn handle_message(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal("process_manager: begin");
+        print_to_terminal(1, "process_manager: begin");
 
         let reserved_process_names = vec![
             "filesystem".to_string(),
@@ -254,7 +254,7 @@ impl bindings::MicrokernelProcess for Component {
             ) {
                 Ok(()) => {},
                 Err(e) => {
-                    print_to_terminal(format!(
+                    print_to_terminal(0, format!(
                         "{}: error: {:?}",
                         process_name,
                         e,

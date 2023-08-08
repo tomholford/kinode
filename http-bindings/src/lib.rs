@@ -35,10 +35,10 @@ struct Component;
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, _dap: String) {
-        bindings::print_to_terminal("http_bindings: start");
+        bindings::print_to_terminal(1, "http_bindings: start");
         // TODO needs to be some kind of HttpPath => String
         let mut bindings: HashMap<String, String> = HashMap::new();
-        
+
         loop {
             let (message, _) = bindings::await_next_message();
             let Some(message_json_text) = message.payload.json else {
@@ -47,11 +47,11 @@ impl bindings::MicrokernelProcess for Component {
             let message_json: serde_json::Value = match serde_json::from_str(&message_json_text) {
                 Ok(v) => v,
                 Err(_) => {
-                    bindings::print_to_terminal("http_bindings: failed to parse message_json_text");
+                    bindings::print_to_terminal(1, "http_bindings: failed to parse message_json_text");
                     continue;
                 },
             };
-            
+
             match message.message_type {
                 WitMessageType::Request(_) => {
                     let action = &message_json["action"];
@@ -68,7 +68,7 @@ impl bindings::MicrokernelProcess for Component {
                     if action == "bind-app" && path != "" && app != "" {
                         bindings.insert(path.to_string(), app.to_string());
                     } else if action == "request" {
-                        bindings::print_to_terminal("http_bindings: got request");
+                        bindings::print_to_terminal(1, "http_bindings: got request");
 
                         // // if the request path is "/", starts with "/~" or "/apps", then we need to check the uqbar-auth cookie
                         // let re = Regex::new(r"^/(~/.+|apps/.+|)$").unwrap();
@@ -97,7 +97,7 @@ impl bindings::MicrokernelProcess for Component {
                         //                         "id": message_json["id"],
                         //                         "status": 401,
                         //                         "headers": {"Content-Type": "text/plain"},
-                                                
+
                         //                     }).to_string()),
                         //                     bytes: Some("Unauthorized".as_bytes().to_vec()),
                         //                 },
@@ -117,7 +117,7 @@ impl bindings::MicrokernelProcess for Component {
                         //                         "id": message_json["id"],
                         //                         "status": 401,
                         //                         "headers": {"Content-Type": "text/plain"},
-                                                
+
                         //                     }).to_string()),
                         //                     bytes: Some("Unauthorized".as_bytes().to_vec()),
                         //                 },
@@ -133,7 +133,7 @@ impl bindings::MicrokernelProcess for Component {
                         let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                         let mut registered_path = path;
                         let mut url_params: HashMap<String, String> = HashMap::new();
-                        
+
                         for (key, _value) in &bindings {
                             let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                             if key_segments.len() != path_segments.len() && !key.contains("/.*") {
@@ -160,7 +160,7 @@ impl bindings::MicrokernelProcess for Component {
 
                         match bindings.get(registered_path) {
                             Some(app) => {
-                                bindings::print_to_terminal(&("http_bindings: properly unwrapped path ".to_string() + registered_path));
+                                bindings::print_to_terminal(1, &("http_bindings: properly unwrapped path ".to_string() + registered_path));
                                 bindings::yield_results(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Request(
@@ -187,7 +187,7 @@ impl bindings::MicrokernelProcess for Component {
                                 )].as_slice());
                             },
                             None => {
-                                bindings::print_to_terminal("http_bindings: no app found at this path");
+                                bindings::print_to_terminal(1, "http_bindings: no app found at this path");
                                 bindings::yield_results(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Response,
@@ -196,7 +196,7 @@ impl bindings::MicrokernelProcess for Component {
                                                 "id": message_json["id"],
                                                 "status": 404,
                                                 "headers": {"Content-Type": "text/plain"},
-                                                
+
                                             }).to_string()),
                                             bytes: Some("404 Not Found".as_bytes().to_vec()),
                                         },
@@ -206,7 +206,7 @@ impl bindings::MicrokernelProcess for Component {
                             },
                         }
                     } else {
-                        bindings::print_to_terminal(
+                        bindings::print_to_terminal(1,
                             format!(
                                 "http_bindings: unexpected action: {:?}",
                                 &message_json["action"],
@@ -214,7 +214,7 @@ impl bindings::MicrokernelProcess for Component {
                         );
                     }
                 },
-                WitMessageType::Response => bindings::print_to_terminal("http_bindings: got unexpected response"),
+                WitMessageType::Response => bindings::print_to_terminal(1, "http_bindings: got unexpected response"),
             }
         }
     }

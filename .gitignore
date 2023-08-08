@@ -1,5 +1,6 @@
 /target
 .vscode
+.app-signing
 *.swp
 /home
 blockchain.json
@@ -13,3 +14,4 @@ blockchain.json
 /terminal/target
 /register-login/target
 /apps-home/target
+

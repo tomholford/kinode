@@ -50,6 +50,7 @@ impl bindings::MicrokernelProcess for Component {
                                 "status": 200,
                                 "headers": {
                                     "Content-Type": "text/html",
+                                    "Access-Control-Allow-Origin": "*"
                                 },
                             }).to_string()),
                             bytes: Some(APPS_HOME_PAGE.replace("${our}", &our.to_string()).as_bytes().to_vec())

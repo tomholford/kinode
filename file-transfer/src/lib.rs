@@ -579,7 +579,26 @@ impl bindings::MicrokernelProcess for Component {
                     payload: &WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/file-transfer/get-file/cancel",
+                            "path": "/file-transfer/cancel-download",
+                            "app": process_name
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+                "",
+            ), (
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target_ship: our_name.as_str(),
+                            target_app: "http_bindings",
+                        }
+                    ),
+                    payload: &WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/file-transfer/status/:target_node/:uri_string",
                             "app": process_name
                         }).to_string()),
                         bytes: None
@@ -617,18 +636,16 @@ impl bindings::MicrokernelProcess for Component {
                                     "Content-Type": "text/html",
                                 },
                             }).to_string()),
-                            bytes: Some(FILE_TRANSFER_PAGE.as_bytes().to_vec())
+                            bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
                         }
                     },
                     "",
                 )].as_slice());
-            }
-
-            if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
+            } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
                 let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let uri_string = String::from("fs://.");
 
-                if (target_node.is_empty()) {
+                if target_node.is_empty() {
                     print_to_terminal("file_transfer: target_node is empty");
                     bindings::yield_results(vec![(
                         bindings::WitProtomessage {
@@ -658,21 +675,39 @@ impl bindings::MicrokernelProcess for Component {
                     additional: FileTransferAdditionalContext::Empty,
                 }).unwrap();
 
-                let message = bindings::yield_and_await_response(
-                    bindings::WitProcessNode {
-                        node: &target_node,
-                        process: &process_name,
-                    },
-                    &WitPayload {
-                        json: Some(serde_json::to_string(
-                            &FileTransferRequest::ReadDir {
-                                target_node: target_node.to_string(),
-                                uri_string: uri_string.clone(),
-                            }
-                        ).unwrap()),
-                        bytes: None,
-                    },
-                );
+                let message = if our_name == target_node {
+                    bindings::yield_and_await_response(
+                        bindings::WitProcessNode {
+                            node: &target_node,
+                            process: "filesystem",
+                        },
+                        &WitPayload {
+                            json: Some(serde_json::to_string(
+                                &FileSystemRequest {
+                                    uri_string,
+                                    action: FileSystemAction::ReadDir,
+                                }
+                            ).unwrap()),
+                            bytes: None,
+                        },
+                    )
+                } else {
+                    bindings::yield_and_await_response(
+                        bindings::WitProcessNode {
+                            node: &target_node,
+                            process: &process_name,
+                        },
+                        &WitPayload {
+                            json: Some(serde_json::to_string(
+                                &FileTransferRequest::ReadDir {
+                                    target_node: target_node.to_string(),
+                                    uri_string: uri_string.clone(),
+                                }
+                            ).unwrap()),
+                            bytes: None,
+                        },
+                    )
+                };
 
                 let Some(ref payload_json_string) = message.payload.json else {
                     print_to_terminal("file_transfer: require non-empty json payload");
@@ -695,10 +730,6 @@ impl bindings::MicrokernelProcess for Component {
                     continue;
                 };
 
-                print_to_terminal(
-                    format!("READ DIR RESULT: {}", payload_json_string).as_str()
-                );
-
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
@@ -712,6 +743,116 @@ impl bindings::MicrokernelProcess for Component {
                             }).to_string()),
                             // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
                             bytes: Some(payload_json_string.as_bytes().to_vec())
+                        }
+                    },
+                    "",
+                )].as_slice());
+            } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
+                // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
+                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_json_string = match String::from_utf8(body_bytes) {
+                    Ok(s) => s,
+                    Err(_) => String::new()
+                };
+                print_to_terminal(format!("BODY: {}", body_json_string).as_str());
+                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+
+                yield_get_file(
+                    &our_name,
+                    &process_name,
+                    body["target_node"].as_str().unwrap_or("").to_string(),
+                    format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+                    body["chunk_size"].as_u64().unwrap_or(1024001),
+                );
+
+                bindings::yield_results(vec![(
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 204,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("Success".as_bytes().to_vec())
+                        }
+                    },
+                    "",
+                )].as_slice());
+            } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/cancel-download" {
+                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_json_string = match String::from_utf8(body_bytes) {
+                    Ok(s) => s,
+                    Err(_) => String::new()
+                };
+                print_to_terminal(format!("BODY: {}", body_json_string).as_str());
+                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+
+                let key = FileTransferKey {
+                    requester: our_name.clone(),
+                    server: body["target_node"].as_str().unwrap_or("").to_string(),
+                    uri_string: body["uri_string"].as_str().unwrap_or("").to_string(),
+                };
+
+                downloads.remove(&key);
+
+                yield_close(
+                    &our_name,
+                    format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+                    FileSystemMode::Append,
+                    "",
+                );
+
+                bindings::yield_results(vec![(
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 204,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("Success".as_bytes().to_vec())
+                        }
+                    },
+                    "",
+                )].as_slice());
+            } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/status/:target_node/:uri_string" {
+                let target_node = message_from_loop["url_params"]["target_node"].as_str().unwrap_or("");
+                let uri_string = message_from_loop["url_params"]["uri_string"].as_str().unwrap_or("");
+                // print_to_terminal(format!(
+                //     "downloads: {}",
+                //     downloads.len().to_string(),
+                // ).as_str());
+
+                let mut percentage_downloaded = 0;
+                let mut have_file = false;
+                for (key, val) in downloads.iter() {
+                    // print_to_terminal(format!("record://{}/{}", key.server, key.uri_string).as_str());
+                    // print_to_terminal(format!("request://{}/{}", target_node, uri_string).as_str());
+                    if key.server == target_node && key.uri_string == format!("fs://{}", uri_string) {
+                        percentage_downloaded = (val.received_pieces.len() as f32 / val.metadata.number_pieces as f32 * 100.0) as u32;
+                        have_file = true;
+                        break;
+                    }
+                }
+
+                bindings::yield_results(vec![(
+                    bindings::WitProtomessage {
+                        protomessage_type: WitProtomessageType::Response,
+                        payload: &WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 200,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some(percentage_downloaded.to_string().as_bytes().to_vec())
                         }
                     },
                     "",

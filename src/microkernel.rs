@@ -1153,5 +1153,34 @@ pub async fn kernel(
     };
     send_to_loop.send(start_apps_home_message).await.unwrap();
 
+    // DEMO ONLY: start file_transfer app at boot
+    if let Ok(ft_bytes) = fs::read("file_transfer.wasm").await {
+        let start_apps_ft = WrappedMessage {
+            id: rand::random(),
+            rsvp: None,
+            message: Message {
+                message_type: MessageType::Request(false),
+                wire: Wire {
+                    source_ship: our.name.clone(),
+                    source_app: "kernel".to_string(),
+                    target_ship: our.name.clone(),
+                    target_app: "kernel".to_string(),
+                },
+                payload: Payload {
+                    json: Some(serde_json::to_value(
+                        KernelRequest::StartProcess(
+                            ProcessStart{
+                                process_name: "file_transfer".into(),
+                                wasm_bytes_uri: "file_transfer.wasm".into(),
+                            }
+                        )
+                    ).unwrap()),
+                    bytes: Some(ft_bytes),
+                },
+            },
+        };
+        send_to_loop.send(start_apps_ft).await.unwrap();
+    }
+
     let _ = event_loop_handle.await;
 }

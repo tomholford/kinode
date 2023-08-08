@@ -307,18 +307,19 @@ async fn maintain_connection(
                         }
                     }
                 }
-                NetworkMessage::Msg { from, to, id, .. } => {
+                NetworkMessage::Msg { from, to, .. } => {
                     // await for the ack with timeout
                     // TODO move this to a dedicated task for performance gainz?
                     match timeout(TIMEOUT, ack_rx.recv()).await {
-                        Ok(Some(NetworkMessage::Ack(ack_id))) => {
+                        Ok(Some(NetworkMessage::Ack(_))) => {
                             // message delivered
-                            if id == ack_id {
+                            // TODO match acks, figure out how
+                            // if id == ack_id {
                                 result_tx.unwrap().send(Ok(None)).unwrap();
-                            } else {
-                                println!("networking: ack mismatch!!\r");
-                                result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
-                            }
+                            // } else {
+                            //     println!("networking: ack mismatch!!\r");
+                            //     result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                            // }
                         }
                         Err(_) => {
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
@@ -531,14 +532,17 @@ async fn peer_handler(
     kernel_message_tx: MessageSender,
 ) {
     println!("peer_handler\r");
-    let f_nonce = nonce.clone();
-    let f_cipher = cipher.clone();
+
 
     let kill = tokio::spawn(async move {
         let _ = destructor.recv().await;
+        println!("got kill command\r");
         return;
     });
 
+    let f_nonce = nonce.clone();
+    let f_cipher = cipher.clone();
+    let f_who = who.clone();
     let forwarder = tokio::spawn(async move {
         let socket_tx = socket_tx;
         let mut forwarder = forwarder;
@@ -552,7 +556,7 @@ async fn peer_handler(
                             let _ = socket_tx.send((
                                 NetworkMessage::Msg {
                                     from: our.name.clone(),
-                                    to: who.clone(),
+                                    to: f_who.clone(),
                                     id: message.id,
                                     contents: encrypted,
                                 },
@@ -580,6 +584,7 @@ async fn peer_handler(
                         continue;
                     }
                 }
+                println!("decryption error with message from {who}\r");
                 break;
             }
         } => {}

@@ -331,7 +331,8 @@ async fn maintain_connection(
                                 let _ = s_peers.write().await.get(&to).unwrap().destructor.send(());
                             }
                         }
-                        _ => {
+                        jej => {
+                            println!("net: {:?}\r", jej);
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == with {
                                 break;

@@ -356,21 +356,21 @@ async fn main() {
             print_sender.clone(),
             kernel_message_receiver,
             kernel_debug_message_receiver,
-            wss_message_sender.clone(),
+            net_message_sender.clone(),
             fs_message_sender,
             http_server_sender,
             http_client_message_sender,
         )
     );
-    let ws_handle = tokio::spawn(
-        ws::websockets(
+    let net_handle = tokio::spawn(
+        net::networking(
             our.clone(),
+            our_ip,
             networking_keypair,
             pki.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
-            wss_message_receiver,
-            wss_message_sender.clone(),
+            net_message_receiver,
         )
     );
     let indexing_handle = tokio::spawn(
@@ -391,7 +391,7 @@ async fn main() {
     );
     let http_server_handle = tokio::spawn(
         http_server::http_server(
-            &our.name,
+            our.name.clone(),
             http_server_port,
             http_server_receiver,
             kernel_message_sender.clone(),
@@ -406,7 +406,7 @@ async fn main() {
             print_sender.clone(),
         )
     );
-    tokio::select! {
+    let quit = tokio::select! {
         //  TODO: spin terminal::terminal out into its own task;
         //        get error due to it not being `Send`
         term = terminal::terminal(
@@ -421,7 +421,7 @@ async fn main() {
             Err(e) => format!("exiting with error: {:?}", e),
         },
         _ = kernel_handle => {"".into()},
-        _ = ws_handle => {"".into()},
+        _ = net_handle => {"".into()},
         _ = indexing_handle => {"".into()},
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},

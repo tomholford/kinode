@@ -21,7 +21,7 @@ type HttpResponseSenders = Arc<Mutex<HashMap<u64, HttpSender>>>;
 
 /// http driver
 pub async fn http_server(
-    our: &String,
+    our: String,
     our_port: u16,
     message_rx: MessageReceiver,
     message_tx: MessageSender,

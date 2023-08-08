@@ -19,6 +19,7 @@ use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketSt
 mod connections;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const META_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -96,15 +97,18 @@ pub async fn networking(
                 continue;
             }
             let start = std::time::Instant::now();
-            // TODO can we move this into its own task?
-            let result = message_to_peer(
-                s_our.clone(),
-                s_our_ip.clone(),
-                s_keypair.clone(),
-                s_pki.clone(),
-                s_peers.clone(),
-                wm.clone(),
-                s_kernel_message_tx.clone(),
+            // TODO can we move this into its own task? absolutely..
+            let result = tokio::time::timeout(
+                META_TIMEOUT,
+                message_to_peer(
+                    s_our.clone(),
+                    s_our_ip.clone(),
+                    s_keypair.clone(),
+                    s_pki.clone(),
+                    s_peers.clone(),
+                    wm.clone(),
+                    s_kernel_message_tx.clone(),
+                ),
             )
             .await;
 
@@ -118,10 +122,15 @@ pub async fn networking(
                 .await;
 
             match result {
-                Ok(()) => continue,
-                Err(e) => {
+                Ok(Ok(())) => continue,
+                Ok(Err(e)) => {
                     let _ = s_kernel_message_tx
                         .send(make_kernel_response(&s_our, wm, e))
+                        .await;
+                }
+                Err(_) => {
+                    let _ = s_kernel_message_tx
+                        .send(make_kernel_response(&s_our, wm, NetworkError::Timeout))
                         .await;
                 }
             }
@@ -176,6 +185,7 @@ async fn connect_to_routers(
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) {
+    println!("connect_to_routers\r");
     // first accumulate as many connections as possible
     let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
     for router_name in &our.allowed_routers {
@@ -278,6 +288,7 @@ async fn message_to_peer(
     wm: WrappedMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkError> {
+    println!("message_to_peer\r");
     let target = &wm.message.wire.target_ship;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
@@ -383,6 +394,7 @@ async fn handle_incoming_message(
     peers: Peers,
     print_tx: PrintSender,
 ) {
+    println!("handle_incoming_message\r");
     if message.wire.source_ship != our.name {
         let _ = print_tx
             .send(Printout {

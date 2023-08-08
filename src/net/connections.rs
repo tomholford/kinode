@@ -445,10 +445,12 @@ async fn maintain_connection(
                                         )) {
                                             if let Ok(Ok(Some(resp))) = result_rx.await {
                                                 let _ = self_tx.send((resp, None));
+                                                return;
                                             }
                                         }
                                     }
                                     // NACK here has id 0 because it's a response to a handshake
+                                    println!("nack1\r");
                                     let _ = self_tx.send((NetworkMessage::Nack(0), None));
                                 }
                             });
@@ -466,6 +468,7 @@ async fn maintain_connection(
                                     continue;
                                 }
                             }
+                            println!("nack2\r");
                             let _ = self_tx.send((NetworkMessage::Nack(id), None));
                             continue;
                         }
@@ -500,6 +503,7 @@ async fn maintain_connection(
                                         }
                                     }
                                 }
+                                println!("nack3\r");
                                 let _ = self_tx.send((NetworkMessage::Nack(id), None));
                             });
                             continue;

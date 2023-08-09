@@ -10,6 +10,8 @@ use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
+mod process_lib;
+
 struct Component;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -292,8 +294,8 @@ fn handle_next_message(
 
                     //  TODO: error handle
                     let _ = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(FileSystemRequest {
                             uri_string: get_file.uri_string.clone(),
                             action: FileSystemAction::Close(FileSystemMode::Append),
@@ -303,8 +305,8 @@ fn handle_next_message(
 
                     //  TODO: error handle
                     let message = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(FileSystemRequest {
                             uri_string: get_file.uri_string.clone(),
                             action: FileSystemAction::Open(FileSystemMode::AppendOverwrite),
@@ -314,8 +316,8 @@ fn handle_next_message(
 
                     //  TODO: error handle
                     let message = process_lib::yield_and_await_response(
-                        &get_file.target_ship,
-                        process_name,
+                        get_file.target_ship.clone(),
+                        process_name.into(),
                         Some(&FileTransferRequest::Start(FileTransferStart {
                             uri_string: get_file.uri_string.clone(),
                             chunk_size: get_file.chunk_size.clone(),
@@ -336,8 +338,8 @@ fn handle_next_message(
                     let mut piece_number = 0;
                     loop {
                         let message = process_lib::yield_and_await_response(
-                            &get_file.target_ship,
-                            process_name,
+                            get_file.target_ship.clone(),
+                            process_name.into(),
                             Some(&FileTransferRequest::GetPiece(FileTransferGetPiece {
                                 uri_string: get_file.uri_string.clone(),
                                 chunk_size: get_file.chunk_size.clone(),
@@ -366,8 +368,8 @@ fn handle_next_message(
 
                         //  TODO: handle errors
                         let _ = process_lib::yield_and_await_response(
-                            our_name,
-                            "filesystem",
+                            our_name.into(),
+                            "filesystem".into(),
                             Some(FileSystemRequest {
                                 uri_string: file_piece.uri_string,
                                 action: FileSystemAction::Append,
@@ -384,8 +386,8 @@ fn handle_next_message(
                         if downloading.metadata.number_pieces == piece_number {
                             //  received last piece; confirm file is good
                             let message = process_lib::yield_and_await_response(
-                                our_name,
-                                "filesystem",
+                                our_name.into(),
+                                "filesystem".into(),
                                 Some(&FileSystemRequest {
                                     uri_string: get_file.uri_string.clone(),
                                     action: FileSystemAction::GetMetadata,
@@ -403,8 +405,8 @@ fn handle_next_message(
 
                                 //  TODO: error handle
                                 let _ = process_lib::yield_and_await_response(
-                                    our_name,
-                                    "filesystem",
+                                    our_name.into(),
+                                    "filesystem".into(),
                                     Some(&FileSystemRequest {
                                         uri_string: get_file.uri_string.clone(),
                                         action: FileSystemAction::Close(FileSystemMode::Append),
@@ -449,8 +451,8 @@ fn handle_next_message(
                     };
 
                     let message = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: start.uri_string.clone(),
                             action: FileSystemAction::GetMetadata,
@@ -495,8 +497,8 @@ fn handle_next_message(
 
                     //  TODO: handle in case of errors
                     let _ = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: file_metadata.uri_string,
                             action: FileSystemAction::Open(
@@ -526,8 +528,8 @@ fn handle_next_message(
                     };
 
                     let message = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: get_piece.uri_string.clone(),
                             action: FileSystemAction::ReadChunkFromOpen(
@@ -575,8 +577,8 @@ fn handle_next_message(
                 },
                 FileTransferRequest::Done { uri_string } => {
                     let _ = process_lib::yield_and_await_response(
-                        our_name,
-                        "filesystem",
+                        our_name.into(),
+                        "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: uri_string.clone(),
                             action: FileSystemAction::Close(FileSystemMode::Read),
@@ -659,12 +661,13 @@ impl bindings::MicrokernelProcess for Component {
                 },
                 Err(e) => {
                     //  TODO: should bail / Cancel
-                    print_to_terminal(format!(
-                        0,
-                        "{}: error: {:?}",
-                        process_name,
-                        e,
-                    ).as_str());
+                    print_to_terminal(0, 
+                        format!(
+                            "{}: error: {:?}",
+                            process_name,
+                            e,
+                        ).as_str()
+                    );
                 },
             };
         }

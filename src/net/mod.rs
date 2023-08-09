@@ -1,4 +1,4 @@
-use std::collections::{VecDeque, HashSet};
+use std::collections::VecDeque;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::net::connections::build_connection;
@@ -153,6 +153,7 @@ pub async fn networking(
                             pki.clone(),
                             peers.clone(),
                             kernel_message_tx.clone(),
+                            print_tx.clone(),
                         ).await;
                     }
                     Some((_ip, port)) => {
@@ -186,6 +187,7 @@ async fn connect_to_routers(
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
+    print_tx: PrintSender,
 ) {
     // first accumulate as many connections as possible
     let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
@@ -221,7 +223,12 @@ async fn connect_to_routers(
     while let Some(err) = routers.join_next().await {
         if let Ok(Ok(router_name)) = err {
             // try to reconnect
-            println!("reconnecting to router: {router_name}\r");
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!("reconnecting to router: {router_name}\r"),
+                })
+                .await;
             if let Some(router_id) = pki.read().await.get(&router_name) {
                 if let Some((ip, port)) = &router_id.ws_routing {
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
@@ -241,7 +248,6 @@ async fn connect_to_routers(
                             )
                             .await
                             {
-                                println!("reconnected successfully with {router_name}\r");
                                 routers.spawn(active_peer);
                             }
                         }

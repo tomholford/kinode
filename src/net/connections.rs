@@ -326,7 +326,6 @@ async fn maintain_connection(
                             }
                         }
                         e => {
-                            println!("net: {:?}\r", e);
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
                             if from == s_our.name && to == s_with {
                                 break;

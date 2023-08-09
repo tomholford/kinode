@@ -92,7 +92,7 @@ pub async fn networking(
     let s_print_tx = print_tx.clone();
     let sender = tokio::spawn(async move {
         while let Some(wm) = message_rx.recv().await {
-            if wm.message.wire.target_ship == s_our.name {
+            if wm.target.node == s_our.name {
                 handle_incoming_message(&s_our, wm.message, s_peers.clone(), s_print_tx.clone())
                     .await;
                 continue;
@@ -292,7 +292,7 @@ async fn message_to_peer(
     wm: WrappedMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkError> {
-    let target = &wm.message.wire.target_ship;
+    let target = &wm.target.node;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
         // if we have the peer, simply send the message to their sender
@@ -396,18 +396,23 @@ async fn message_to_peer(
 
 async fn handle_incoming_message(
     our: &Identity,
-    message: Message,
+    message: Result<Message, DeWitError>,
     peers: Peers,
     print_tx: PrintSender,
 ) {
-    if message.wire.source_ship != our.name {
+    let Ok(message) = message else {
+        return;  //  TODO: handle error?
+    };
+
+    if message.source.node != our.name {
         let _ = print_tx
             .send(Printout {
                 verbosity: 0,
                 content: format!(
                     "\x1b[3;32m{}: {}\x1b[0m",
-                    message.wire.source_ship,
+                    message.source.node,
                     message
+                        .content
                         .payload
                         .json
                         .as_ref()
@@ -418,6 +423,7 @@ async fn handle_incoming_message(
     } else {
         // available commands: peers
         match message
+            .content
             .payload
             .json
             .as_ref()
@@ -463,20 +469,27 @@ fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, Networkin
 fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -> WrappedMessage {
     WrappedMessage {
         id: wm.id,
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Response,
-            wire: Wire {
-                source_ship: our.name.clone(),
-                source_app: "net".into(),
-                target_ship: our.name.clone(),
-                target_app: wm.message.wire.source_app,
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(err).unwrap_or("".into())),
-                bytes: None,
+        target: ProcessNode {
+            node: our.name.clone(),
+            process: match wm.message {
+                Ok(m) => m.source.process,
+                Err(e) => e.source.process,
             },
         },
+        rsvp: None,
+        message: Ok(Message {
+            source: ProcessNode {
+                node: our.name.clone(),
+                process: "net".into(),
+            },
+            content: MessageContent {
+                message_type: MessageType::Response,
+                payload: Payload {
+                    json: Some(serde_json::to_value(err).unwrap_or("".into())),
+                    bytes: None,
+                },
+            }
+        }),
     }
 }
 

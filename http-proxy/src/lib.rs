@@ -41,11 +41,13 @@ impl bindings::MicrokernelProcess for Component {
                   protomessage_type: WitProtomessageType::Request(
                       WitRequestTypeWithTarget {
                           is_expecting_response: false,
-                          target_ship: our_name.as_str(),
-                          target_app: "http_bindings",
+                          target: WitProcessNode {
+                              node: our_name.clone(),
+                              process: "http_bindings".into(),
+                          },
                       }
                   ),
-                  payload: &WitPayload {
+                  payload: WitPayload {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
                           "path": "/proxy/list",
@@ -54,17 +56,19 @@ impl bindings::MicrokernelProcess for Component {
                       bytes: None
                   }
               },
-              "",
+              "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/proxy/register",
@@ -73,17 +77,19 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/proxy/serve/:username/.*",
@@ -92,15 +98,15 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             )].as_slice()
         ));
 
         let mut registrations: HashMap<String, String> = HashMap::new();
 
         loop {
-            let (message, _) = bindings::await_next_message();
-            let Some(message_from_loop_string) = message.payload.json else {
+            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
+            let Some(message_from_loop_string) = message.content.payload.json else {
                 panic!("foo")
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
@@ -108,10 +114,10 @@ impl bindings::MicrokernelProcess for Component {
             bindings::print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
 
             if message_from_loop["path"] == "/apps/proxy" && message_from_loop["method"] == "GET" {
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 200,
@@ -122,13 +128,13 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name.to_string()).as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["path"] == "/proxy/list" && message_from_loop["method"] == "GET" {
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 200,
@@ -142,11 +148,11 @@ impl bindings::MicrokernelProcess for Component {
                             .as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["path"] == "/proxy/register" && message_from_loop["method"] == "POST" {
                 let mut status = 204;
-                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
                     Ok(s) => s,
                     Err(_) => String::new()
@@ -162,10 +168,10 @@ impl bindings::MicrokernelProcess for Component {
                     status = 400;
                 }
 
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": status,
@@ -176,8 +182,8 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["path"] == "/proxy/register" && message_from_loop["method"] == "DELETE" {
                 bindings::print_to_terminal(1, "HERE IN /proxy/register to delete something");
                 let username = message_from_loop["query_params"]["username"].as_str().unwrap_or("");
@@ -191,10 +197,10 @@ impl bindings::MicrokernelProcess for Component {
                 }
 
                 // TODO when we have an actual webpage, uncomment this as a response
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": status,
@@ -205,18 +211,18 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["path"] == "/proxy/serve/:username/.*" {
                 let username = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let raw_path = message_from_loop["raw_path"].as_str().unwrap_or("");
                 bindings::print_to_terminal(1, format!("proxy for user: {}", username).as_str());
 
                 if username.is_empty() || raw_path.is_empty() {
-                    bindings::yield_results(vec![(
+                    bindings::yield_results(Ok(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
+                            payload: WitPayload {
                                 json: Some(serde_json::json!({
                                     "action": "response",
                                     "status": 404,
@@ -227,13 +233,13 @@ impl bindings::MicrokernelProcess for Component {
                                 bytes: Some("Not Found".to_string().as_bytes().to_vec())
                             }
                         },
-                        "",
-                    )].as_slice());
+                        "".into(),
+                    )].as_slice()));
                 } else if !registrations.contains_key(username) {
-                    bindings::yield_results(vec![(
+                    bindings::yield_results(Ok(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
+                            payload: WitPayload {
                                 json: Some(serde_json::json!({
                                     "action": "response",
                                     "status": 403,
@@ -244,8 +250,8 @@ impl bindings::MicrokernelProcess for Component {
                                 bytes: Some("Not Authorized".to_string().as_bytes().to_vec())
                             }
                         },
-                        "",
-                    )].as_slice());
+                        "".into(),
+                    )].as_slice()));
                 } else {
                     let path_parts: Vec<&str> = raw_path.split('/').collect();
                     let mut proxied_path = "/".to_string();
@@ -256,8 +262,8 @@ impl bindings::MicrokernelProcess for Component {
                     }
 
                     let res = process_lib::yield_and_await_response(
-                        &username,
-                        "http_bindings",
+                        username.into(),
+                        "http_bindings".into(),
                         Some(json!({
                             "action": "request",
                             "method": message_from_loop["method"],
@@ -265,26 +271,26 @@ impl bindings::MicrokernelProcess for Component {
                             "headers": message_from_loop["headers"],
                             "query_params": message_from_loop["query_params"],
                         })),
-                        message.payload.bytes,
+                        message.content.payload.bytes,
                     ).unwrap(); // TODO unwrap
                     bindings::print_to_terminal(1, "FINISHED YIELD AND AWAIT");
-                    bindings::yield_results(vec![(
+                    bindings::yield_results(Ok(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
-                                json: res.payload.json,
-                                bytes: res.payload.bytes,
+                            payload: WitPayload {
+                                json: res.content.payload.json,
+                                bytes: res.content.payload.bytes,
                             }
                         },
-                        "",
-                    )].as_slice());
+                        "".into(),
+                    )].as_slice()));
                 }
 
             } else {
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 404,
@@ -295,8 +301,8 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some("Not Found".as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             }
         }
     }

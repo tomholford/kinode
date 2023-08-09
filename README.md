@@ -40,9 +40,9 @@ Replace `file-transfer` with the desired component.
 
 ### Boot
 
-Boot takes 3 arguments: the desired process manager, the home directory, and the URL of a "blockchain" RPC endpoint. You can just use `process_manager.wasm`, which will already be built. Use the home directory you created previously and select a name for the node. For the third argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
+Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the second argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run process_manager.wasm home http://147.135.114.167:8083/blockchain.json
+cargo run home http://147.135.114.167:8083/blockchain.json
 ```
 
 If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
@@ -77,26 +77,26 @@ Now that the node has started, look to the example usage section below to see wh
 ```bash
 # Create tuna and dolph home directories, and populate them:
 mkdir home
-mkdir home/tuna
-mkdir home/dolph
-mkdir home/dolph/file_transfer
-mkdir home/dolph/file_transfer_one_off
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/tuna/
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/dolph/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/tuna/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/dolph/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/tuna/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/dolph/
-cp README.md home/dolph/file_transfer/
-cp README.md home/dolph/file_transfer_one_off/
+mkdir home/${FIRST_NODE}
+mkdir home/${SECOND_NODE}
+mkdir home/${SECOND_NODE}/file_transfer
+mkdir home/${SECOND_NODE}/file_transfer_one_off
+cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${FIRST_NODE}/
+cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${SECOND_NODE}/
+cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${FIRST_NODE}/
+cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${SECOND_NODE}/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${FIRST_NODE}/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${SECOND_NODE}/
+cp README.md home/${SECOND_NODE}/file_transfer/
+cp README.md home/${SECOND_NODE}/file_transfer_one_off/
 
 # For releases:
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/tuna/
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/dolph/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/tuna/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/dolph/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/tuna/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/dolph/
+cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
+cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
+cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${FIRST_NODE}/
+cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${SECOND_NODE}/
+cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/${FIRST_NODE}/
+cp file-transfer-one-off/target/wasm32-unknown-unknown//file_transfer_one_off.wasm home/${SECOND_NODE}/
 
 # Terminal A: add hi++ apps to process_manager
 cargo r process_manager.wasm home/tuna tuna

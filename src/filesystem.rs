@@ -53,7 +53,7 @@ async fn create_dir_if_dne(path: &str) -> Result<(), FileSystemError> {
 
 async fn to_absolute_path(
     home_directory_path: &str,
-    source_app: &str,
+    source_process: &str,
     uri_string: &str
 ) -> Result<String, FileSystemError> {
     let uri = match uri_string.parse::<Uri>() {
@@ -91,11 +91,11 @@ async fn to_absolute_path(
     }
 
     let base_path =
-        if HAS_FULL_HOME_ACCESS.contains(source_app) {
+        if HAS_FULL_HOME_ACCESS.contains(source_process) {
             home_directory_path.to_string()
         } else {
-            join_paths(home_directory_path.into(), source_app.into())?
-            // make_sandbox_dir_path(home_directory_path, source_app)
+            join_paths(home_directory_path.into(), source_process.into())?
+            // make_sandbox_dir_path(home_directory_path, source_process)
         };
 
     join_paths(base_path, relative_file_path)
@@ -196,20 +196,24 @@ fn make_error_message(
 ) -> WrappedMessage {
     WrappedMessage {
         id,
-        rsvp: None,
-        message: Message {
-            message_type: MessageType::Response,
-            wire: Wire {
-                source_ship: our_name.clone(),
-                source_app: "filesystem".into(),
-                target_ship: our_name,
-                target_app: source_process,
-            },
-            payload: Payload {
-                json: Some(serde_json::to_value(FileSystemResponse::Error(error)).unwrap()),
-                bytes: None,
-            },
+        target: ProcessNode {
+            node: our_name.clone(),
+            process: source_process,
         },
+        rsvp: None,
+        message: Ok(Message {
+            source: ProcessNode {
+                node: our_name,
+                process: "filesystem".into(),
+            },
+            content: MessageContent {
+                message_type: MessageType::Response,
+                payload: Payload {
+                    json: Some(serde_json::to_value(FileSystemResponse::Error(error)).unwrap()),
+                    bytes: None,
+                },
+            },
+        }),
     }
 }
 
@@ -234,26 +238,30 @@ pub async fn fs_sender(
         HashMap::new();
 
     //  TODO: store or back up in DB/kv?
-    while let Some(message) = recv_in_fs.recv().await {
-        let source_ship = &message.message.wire.source_ship;
-        let source_app = &message.message.wire.source_app;
-        if &our_name != source_ship {
+    while let Some(wrapped_message) = recv_in_fs.recv().await {
+        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { ref source, content: _ }), }
+                = wrapped_message else {
+            panic!("filesystem: unexpected Error")  //  TODO: implement error handling
+        };
+
+        let source_process = &source.process;
+        if our_name != source.node {
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
                 our_name,
-                &message,
+                &wrapped_message,
             );
             continue;
         }
         let open_files = Arc::clone(
-            match process_to_open_files.get(source_app) {
+            match process_to_open_files.get(source_process) {
                 Some(open_files) => open_files,
                 None => {
                     //  create process sandbox directory
-                    if !HAS_FULL_HOME_ACCESS.contains(source_app) {
+                    if !HAS_FULL_HOME_ACCESS.contains(source_process) {
                         let sandbox_dir_path_result = join_paths(
                             home_directory_path.into(),
-                            source_app.into(),
+                            source_process.into(),
                         );
                         let sandbox_dir_path = match sandbox_dir_path_result {
                             Ok(sandbox_dir_path) => sandbox_dir_path,
@@ -262,8 +270,8 @@ pub async fn fs_sender(
                                     .send(
                                         make_error_message(
                                             our_name.clone(),
-                                            message.id.clone(),
-                                            message.message.wire.source_app.clone(),
+                                            id.clone(),
+                                            source_process.into(),
                                             e,
                                         )
                                     )
@@ -278,8 +286,8 @@ pub async fn fs_sender(
                                 .send(
                                     make_error_message(
                                         our_name.clone(),
-                                        message.id.clone(),
-                                        message.message.wire.source_app.clone(),
+                                        id.clone(),
+                                        source_process.into(),
                                         e,
                                     )
                                 )
@@ -296,24 +304,24 @@ pub async fn fs_sender(
 
                     //  create open_files entry
                     process_to_open_files.insert(
-                        source_app.to_string(),
+                        source_process.to_string(),
                         Arc::new(Mutex::new(HashMap::new())),
                     );
-                    process_to_open_files.get(source_app).unwrap()
+                    process_to_open_files.get(source_process).unwrap()
                 },
             }
         );
         let our_name = our_name.clone();
         let home_directory_path = home_directory_path.to_string();
-        let source_app = source_app.to_string();
-        let id = message.id.clone();
+        let source_process = source_process.into();
+        let id = id.clone();
         let send_to_loop = send_to_loop.clone();
         let send_to_terminal = send_to_terminal.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_request(
                 our_name.clone(),
                 home_directory_path,
-                message,
+                wrapped_message,
                 open_files,
                 send_to_loop.clone(),
                 send_to_terminal,
@@ -323,7 +331,7 @@ pub async fn fs_sender(
                         make_error_message(
                             our_name.into(),
                             id,
-                            source_app,
+                            source_process,
                             e,
                         )
                     )
@@ -338,15 +346,18 @@ pub async fn fs_sender(
 async fn handle_request(
     our_name: String,
     home_directory_path: String,
-    message: WrappedMessage,
+    wrapped_message: WrappedMessage,
     open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
-    let WrappedMessage { id, rsvp, message } = message;
-    let Some(value) = message.payload.json.clone() else {
+    let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
+            = wrapped_message else {
+        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
+    };
+    let Some(value) = content.payload.json.clone() else {
         return Err(FileSystemError::BadJson {
-            json: message.payload.json,
+            json: content.payload.json,
             error: "missing payload".into(),
         })
     };
@@ -355,23 +366,23 @@ async fn handle_request(
         Ok(r) => r,
         Err(e) => {
             return Err(FileSystemError::BadJson {
-                json: message.payload.json,
+                json: content.payload.json,
                 error: format!("parse failed: {:?}", e),
             })
         },
     };
 
-    let source_app = &message.wire.source_app;
+    let source_process = &source.process;
     // let file_path = get_file_path(&request.uri_string).await;
     let file_path = to_absolute_path(
         &home_directory_path,
-        source_app,
+        source_process,
         &request.uri_string
     ).await?;
-    if HAS_FULL_HOME_ACCESS.contains(source_app) {
+    if HAS_FULL_HOME_ACCESS.contains(source_process) {
         if !std::path::Path::new(&file_path).starts_with(&home_directory_path) {
             return Err(FileSystemError::IllegalAccess {
-                process_name: source_app.into(),
+                process_name: source_process.into(),
                 attempted_dir: file_path,
                 sandbox_dir: home_directory_path,
             })
@@ -379,11 +390,11 @@ async fn handle_request(
     } else {
         let sandbox_dir_path = join_paths(
             home_directory_path,
-            source_app.into(),
+            source_process.into(),
         )?;
         if !std::path::Path::new(&file_path).starts_with(&sandbox_dir_path) {
             return Err(FileSystemError::IllegalAccess {
-                process_name: source_app.into(),
+                process_name: source_process.into(),
                 attempted_dir: file_path,
                 sandbox_dir: sandbox_dir_path,
             })
@@ -428,7 +439,7 @@ async fn handle_request(
             }
         },
         FileSystemAction::Write => {
-            let Some(payload_bytes) = message.payload.bytes.clone() else {
+            let Some(payload_bytes) = content.payload.bytes.clone() else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
             if let Err(e) = fs::write(&file_path, &payload_bytes).await {
@@ -676,9 +687,7 @@ async fn handle_request(
                     })
                 },
             };
-            let payload_bytes = match message
-                    .payload
-                    .bytes {
+            let payload_bytes = match content.payload.bytes {
                 Some(b) => b.clone(),
                 None =>  {
                     return Err(FileSystemError::BadBytes { action: "Append".into() })
@@ -795,17 +804,21 @@ async fn handle_request(
 
     let response = WrappedMessage {
         id,
-        rsvp,
-        message: Message {
-            message_type: MessageType::Response,
-            wire: Wire {
-                source_ship: our_name.clone(),
-                source_app: "filesystem".to_string(),
-                target_ship: our_name.clone(),
-                target_app: message.wire.source_app.clone(),
-            },
-            payload: response_payload,
+        target: ProcessNode {
+            node: our_name.clone(),
+            process: source.process.clone(),
         },
+        rsvp,
+        message: Ok(Message {
+            source: ProcessNode {
+                node: our_name.clone(),
+                process: "filesystem".into(),
+            },
+            content: MessageContent {
+                message_type: MessageType::Response,
+                payload: response_payload,
+            },
+        }),
     };
 
     let _ = send_to_loop.send(response).await;

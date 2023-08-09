@@ -609,17 +609,19 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/status/:target_node/:uri_string",
@@ -774,7 +776,7 @@ impl bindings::MicrokernelProcess for Component {
                 )].as_slice()));
             } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
                 // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
-                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
                     Ok(s) => s,
                     Err(_) => String::new()
@@ -807,7 +809,7 @@ impl bindings::MicrokernelProcess for Component {
                     "".into(),
                 )].as_slice()));
             } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/cancel-download" {
-                let body_bytes = message.payload.bytes.unwrap_or(vec![]);
+                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
                     Ok(s) => s,
                     Err(_) => String::new()

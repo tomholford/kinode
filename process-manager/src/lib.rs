@@ -71,10 +71,17 @@ enum KernelResponse {
     StopProcess(KernelStopProcess),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessNode {
+    pub node: String,
+    pub process: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessMetadata {
-    our_name: String,
-    process_name: String,
+    our: ProcessNode,
+    // our_name: String,
+    // process_name: String,
     wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
 }
@@ -196,7 +203,7 @@ fn handle_message(
                     match process_lib::parse_message_json(message.content.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
                             metadatas.insert(
-                                metadata.process_name.clone(),
+                                metadata.our.process.clone(),
                                 metadata,
                             );
                             //  TODO: response?
@@ -211,7 +218,7 @@ fn handle_message(
                                 &our_name,
                                 process_name,
                                 Some(ProcessManagerCommand::Start(ProcessStart {
-                                    process_name: removed.process_name,
+                                    process_name: removed.our.process,
                                     wasm_bytes_uri: removed.wasm_bytes_uri,
                                 })),
                                 None,

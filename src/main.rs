@@ -73,16 +73,15 @@ async fn main() {
 
     // DEMO ONLY: remove all CLI arguments
     let args: Vec<String> = env::args().collect();
-    let process_manager_wasm_path = args[1].clone();
     // let process_manager_wasm_path = "process_manager.wasm";
-    let home_directory_path = &args[2];
+    let home_directory_path = &args[1];
     // let home_directory_path = "home";
     // create home directory if it does not already exist
     if let Err(e) = fs::create_dir_all(home_directory_path).await {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let blockchain_url = &args[3];
+    let blockchain_url = &args[2];
     // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
 
     // kernel receives system messages via this channel, all other modules send messages

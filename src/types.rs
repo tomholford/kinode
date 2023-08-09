@@ -146,9 +146,20 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Message {{ source: {:?}, content: {:?} }}",
+            "Message {{ source: {:?}, content: {} }}",
             self.source,
             self.content,
+        )
+    }
+}
+
+impl std::fmt::Display for MessageContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "MessageContent {{ message_type: {:?}, payload: {} }}",
+            self.message_type,
+            self.payload,
         )
     }
 }
@@ -159,12 +170,16 @@ impl std::fmt::Display for WrappedMessage {
             Some(ref rsvp) => format!("{}", rsvp),
             None => "None".into(),
         };
+        let message = match self.message {
+            Ok(ref m) => format!("{}", m),
+            Err(ref e) => format!("{:?}", e),
+        };
         write!(
             f,
-            "WrappedMessage {{ id: {}, rsvp: {}, message: {:?} }}",
+            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
             self.id,
             rsvp,
-            self.message,
+            message,
         )
     }
 }

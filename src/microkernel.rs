@@ -280,37 +280,37 @@ fn json_to_string(json: &serde_json::Value) -> String {
 
 fn de_wit_process_node(wit: &WitProcessNode) -> ProcessNode {
     ProcessNode {
-        node: wit.node,
-        process: wit.process,
+        node: wit.node.clone(),
+        process: wit.process.clone(),
     }
 }
 
 fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
     WitProcessNode {
-        node: dewit.node,
-        process: dewit.process,
+        node: dewit.node.clone(),
+        process: dewit.process.clone(),
     }
 }
 
 fn de_wit_error_content(wit: &WitErrorContent) -> DeWitErrorContent {
     DeWitErrorContent {
-        kind: wit.kind.into(),
-        message: wit.message.into(),
+        kind: wit.kind.clone(),
+        message: wit.message.clone(),
     }
 }
 
 fn en_wit_error_content(dewit: &DeWitErrorContent) -> WitErrorContent {
     WitErrorContent {
-        kind: dewit.kind.into(),
-        message: dewit.message.into(),
+        kind: dewit.kind.clone(),
+        message: dewit.message.clone(),
     }
 }
 
 fn de_wit_error(wit: &WitError) -> DeWitError {
     DeWitError {
         source: ProcessNode {
-            node: wit.source.node.into(),
-            process: wit.source.process.into(),
+            node: wit.source.node.clone(),
+            process: wit.source.process.clone(),
         },
         timestamp: wit.timestamp.clone(),
         content: de_wit_error_content(&wit.content),
@@ -320,8 +320,8 @@ fn de_wit_error(wit: &WitError) -> DeWitError {
 fn en_wit_error(dewit: &DeWitError) -> WitError {
     WitError {
         source: WitProcessNode {
-            node: dewit.source.node.into(),
-            process: dewit.source.process.into(),
+            node: dewit.source.node.clone(),
+            process: dewit.source.process.clone(),
         },
         timestamp: dewit.timestamp.clone(),
         content: en_wit_error_content(&dewit.content),
@@ -533,7 +533,7 @@ fn handle_response_case(
     contexts: &HashMap<u64, ProcessContext>,
 ) -> Option<(u64, ProcessNode)> {
     match prompting_message.message {
-        Ok(pm_message) => {
+        Ok(ref pm_message) => {
             match pm_message.content.message_type {
                 MessageType::Request(is_expecting_response) => {
                     if is_expecting_response {
@@ -590,7 +590,7 @@ fn handle_response_case(
                 },
             }
         },
-        Err(e) => {
+        Err(ref e) => {
             let Some(context) = contexts.get(&prompting_message.id) else {
                 println!("couldn't find context to route response");
                 return None;

@@ -44,9 +44,29 @@ async fn handle_message(
     wm: WrappedMessage,
     _print_tx: PrintSender,
 ) {
-    let Some(value) = wm.message.payload.json.clone() else {
-    panic!("http_client: request must have JSON payload, got: {:?}", wm.message);
-  };
+    let WrappedMessage { ref id, target: _, ref rsvp, message: Ok(Message { ref source, ref content }), }
+            = wm else {
+        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
+    };
+
+    let target = match content.message_type {
+        MessageType::Response => panic!("http_client: should not get a response message"),
+        MessageType::Request(is_expecting_response) => {
+            if is_expecting_response {
+                ProcessNode {
+                    node: our.clone(),
+                    process: source.process.clone(),
+                }
+            } else {
+                let Some(rsvp) = rsvp else { panic!("http_client: no rsvp"); };
+                rsvp.clone()
+            }
+        }
+    };
+
+    let Some(value) = content.payload.json.clone() else {
+        panic!("http_client: request must have JSON payload, got: {:?}", wm);
+    };
 
     let req: HttpClientRequest = match serde_json::from_value(value) {
         Ok(req) => req,
@@ -80,36 +100,22 @@ async fn handle_message(
     };
 
     let message = WrappedMessage {
-        id: wm.id,
+        id: id.clone(),
+        target,
         rsvp: None,
-        message: Message {
-            message_type: MessageType::Response,
-            wire: match wm.message.message_type {
-                MessageType::Response => panic!("http_client: should not get a response message"),
-                MessageType::Request(is_expecting_response) => {
-                    if is_expecting_response {
-                        Wire {
-                            source_ship: our.clone(),
-                            source_app: "http_client".to_string(),
-                            target_ship: our.clone(),
-                            target_app: wm.message.wire.source_app.clone(),
-                        }
-                    } else {
-                        let Some(rsvp) = wm.rsvp else { panic!("http_client: no rsvp"); };
-                        Wire {
-                            source_ship: our.clone(),
-                            source_app: "http_client".to_string(),
-                            target_ship: rsvp.node.clone(),
-                            target_app: rsvp.process.clone(),
-                        }
-                    }
-                }
+        message: Ok(Message {
+            source: ProcessNode {
+                node: our.clone(),
+                process: "http_client".into(),
             },
-            payload: Payload {
-                json: Some(serde_json::to_value(http_client_response).unwrap()),
-                bytes: Some(response.bytes().await.unwrap().to_vec()),
+            content: MessageContent {
+                message_type: MessageType::Response,
+                payload: Payload {
+                    json: Some(serde_json::to_value(http_client_response).unwrap()),
+                    bytes: Some(response.bytes().await.unwrap().to_vec()),
+                },
             },
-        },
+        }),
     };
 
     send_to_loop.send(message).await.unwrap();

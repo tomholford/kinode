@@ -276,6 +276,7 @@ async fn maintain_connection(
 
     let s_our = our.clone();
     let s_peers = peers.clone();
+    let s_with = with.clone();
     let message_sender = tokio::spawn(async move {
         while let Some((message, result_tx)) = message_rx.recv().await {
             write_stream
@@ -317,7 +318,7 @@ async fn maintain_connection(
                         }
                         Err(_) => {
                             result_tx.unwrap().send(Err(NetworkError::Timeout)).unwrap();
-                            if to == with {
+                            if to == s_with {
                                 break;
                             } else {
                                 // send a kill message to our handler for that peer
@@ -327,7 +328,7 @@ async fn maintain_connection(
                         e => {
                             println!("net: {:?}\r", e);
                             result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
-                            if from == s_our.name && to == with {
+                            if from == s_our.name && to == s_with {
                                 break;
                             } else if from == s_our.name {
                                 // send a kill message to our handler for that peer
@@ -460,6 +461,9 @@ async fn maintain_connection(
                                 }
                             }
                             let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                            if with == from {
+                                break;
+                            }
                             continue;
                         }
                         NetworkMessage::Msg {

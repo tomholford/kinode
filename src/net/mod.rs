@@ -1,10 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashSet};
 use std::{collections::HashMap, sync::Arc};
 
 use crate::net::connections::build_connection;
 use crate::types::*;
 
 use aes_gcm_siv::Nonce;
+use async_recursion::async_recursion;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
 use ethers::prelude::k256::{self, Secp256k1};
@@ -220,6 +221,7 @@ async fn connect_to_routers(
     while let Some(err) = routers.join_next().await {
         if let Ok(Ok(router_name)) = err {
             // try to reconnect
+            println!("reconnecting to router: {router_name}\r");
             if let Some(router_id) = pki.read().await.get(&router_name) {
                 if let Some((ip, port)) = &router_id.ws_routing {
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
@@ -239,6 +241,7 @@ async fn connect_to_routers(
                             )
                             .await
                             {
+                                println!("reconnected successfully with {router_name}\r");
                                 routers.spawn(active_peer);
                             }
                         }
@@ -283,6 +286,7 @@ async fn receive_incoming_connections(
     }
 }
 
+#[async_recursion]
 async fn message_to_peer(
     our: Identity,
     our_ip: String,
@@ -313,6 +317,22 @@ async fn message_to_peer(
     } else {
         drop(peers_write);
     }
+    // if peer is a *router*, reconnect will be attempted automatically.
+    // TODO: *wait* here until this is *known to have happened*!
+    // this solution is only remotely acceptable because of the META_TIMEOUT
+    if our.allowed_routers.contains(target) {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        return message_to_peer(
+            our,
+            our_ip,
+            keypair.clone(),
+            pki.clone(),
+            peers,
+            wm,
+            kernel_message_tx,
+        )
+        .await;
+    }
     // search PKI for peer and attempt to create a connection, then resend
     match pki.read().await.get(target) {
         // peer does not exist in PKI!
@@ -331,12 +351,11 @@ async fn message_to_peer(
                         if let Ok(Ok((websocket, _response))) =
                             timeout(TIMEOUT, connect_async(ws_url)).await
                         {
-                            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                             let conn = connections::build_connection(
                                 our.clone(),
-                                keypair,
+                                keypair.clone(),
                                 Some(peer_id.clone()),
-                                Some((NetworkMessage::Raw(wm.clone()), Some(result_tx))),
+                                None,
                                 pki.clone(),
                                 peers.clone(),
                                 websocket,
@@ -346,10 +365,16 @@ async fn message_to_peer(
                             if conn.is_err() {
                                 return Err(NetworkError::Offline);
                             }
-                            match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
-                                Ok(_) => return Ok(()),
-                                Err(e) => return Err(e),
-                            }
+                            return message_to_peer(
+                                our,
+                                our_ip,
+                                keypair.clone(),
+                                pki.clone(),
+                                peers,
+                                wm,
+                                kernel_message_tx,
+                            )
+                            .await;
                         }
                     }
                     return Err(NetworkError::Offline);

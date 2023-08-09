@@ -10,7 +10,7 @@ struct Messages {
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(_: String, _: String) {
-        bindings::print_to_terminal("hi++: start");
+        bindings::print_to_terminal(1, "hi++: start");
 
         let mut messages = Messages {
             received: vec![],
@@ -29,7 +29,7 @@ impl bindings::MicrokernelProcess for Component {
                     messages.received.push(
                         serde_json::to_value(&message_from_loop_string).unwrap()
                     );
-                    bindings::print_to_terminal(
+                    bindings::print_to_terminal(0,
                         format!(
                             "hi++: got message {}",
                             message_from_loop_string
@@ -70,7 +70,7 @@ impl bindings::MicrokernelProcess for Component {
                         ].as_slice()
                     );
                 } else {
-                    bindings::print_to_terminal(
+                    bindings::print_to_terminal(0,
                         format!(
                             "hi++: unexpected action (expected either 'send' or 'receive'): {:?}",
                             &message_from_loop["action"],
@@ -78,7 +78,7 @@ impl bindings::MicrokernelProcess for Component {
                     );
                 }
             } else {
-                bindings::print_to_terminal(
+                bindings::print_to_terminal(0,
                     format!(
                         "hi++: unexpected action: {:?}",
                         &message_from_loop["action"],

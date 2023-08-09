@@ -236,9 +236,9 @@ impl MicrokernelProcessImports for ProcessWasi {
         process_input
     }
 
-    async fn print_to_terminal(&mut self, message: String) -> Result<()> {
+    async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         self.process.send_to_terminal
-            .send(Printout { verbosity: 1, content: message })
+            .send(Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
@@ -270,7 +270,7 @@ async fn get_and_send_specific_loop_message_to_process(
         //  if message id matches the one we sent out
         //   AND the message is not a websocket ack
         if (awaited_message_id == wrapped_message.id)
-           & !(("ws" == wrapped_message.message.wire.source_app)
+           & !(("net" == wrapped_message.message.wire.source_app)
                & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
               ) {
             let message = send_loop_message_to_process(
@@ -450,7 +450,7 @@ async fn send_process_results_to_loop(
                                     println!("couldn't find context to route response");
                                     continue;
                                 };
-                                println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
+                                // println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
                                 let Some(ref ultimate) = context.ultimate else {
                                     println!("couldn't find ultimate cause to route response");
                                     continue;
@@ -883,7 +883,7 @@ async fn make_event_loop(
     mut recv_in_loop: MessageReceiver,
     mut recv_debug_in_loop: DebugReceiver,
     send_to_loop: MessageSender,
-    send_to_wss: MessageSender,
+    send_to_net: MessageSender,
     send_to_fs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
@@ -936,12 +936,12 @@ async fn make_event_loop(
                         //     send_to_terminal.clone(),
                         // ).await;
                         if our_name != wrapped_message.message.wire.target_ship {
-                            match send_to_wss.send(wrapped_message).await {
+                            match send_to_net.send(wrapped_message).await {
                                 Ok(()) => {
                                     send_to_terminal
                                         .send(Printout {
                                             verbosity: 1,
-                                            content: "event loop: sent to wss".to_string(),
+                                            content: "event loop: message sent to network".to_string(),
                                         })
                                         .await
                                         .unwrap();
@@ -949,8 +949,8 @@ async fn make_event_loop(
                                 Err(e) => {
                                     send_to_terminal
                                         .send(Printout {
-                                            verbosity: 1,
-                                            content: format!("event loop: failed to send to wss: {}", e),
+                                            verbosity: 0,
+                                            content: format!("event loop: message to network failed: {}", e),
                                         })
                                         .await
                                         .unwrap();
@@ -970,8 +970,8 @@ async fn make_event_loop(
                                 ).await;
                             //  XX temporary branch to assist in pure networking debugging
                             //  can be removed when ws WASM module is ready
-                            } else if to == "ws" {
-                                let _ = send_to_wss.send(wrapped_message).await;
+                            } else if to == "net" {
+                                let _ = send_to_net.send(wrapped_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
                                 match senders.get(&to) {

@@ -1,7 +1,7 @@
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm,
-    Key, // Or `Aes128Gcm`
+    Key,
 };
 use lazy_static::__Deref;
 use reqwest;
@@ -19,7 +19,6 @@ use crate::http_server::find_open_port;
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
-mod engine;
 mod filesystem;
 mod http_client;
 mod http_server;
@@ -27,7 +26,7 @@ mod microkernel;
 mod register;
 mod terminal;
 mod types;
-mod ws;
+mod net;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -100,7 +99,7 @@ async fn main() {
     let (kernel_debug_message_sender, kernel_debug_message_receiver): (DebugSender, DebugReceiver) =
         mpsc::channel(EVENT_LOOP_DEBUG_CHANNEL_CAPACITY);
     // websocket sender receives send messages via this channel, kernel send messages
-    let (wss_message_sender, wss_message_receiver): (MessageSender, MessageReceiver) =
+    let (net_message_sender, net_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
@@ -231,6 +230,7 @@ async fn main() {
                 our_ip, registration_port
             );
         }
+
         let (tx, mut rx) = mpsc::channel::<(Registration, Document, String)>(1);
         let (registration, serialized_networking_keypair, signature) = tokio::select! {
             _ = register::register(tx, kill_rx, registration_port, http_server_port, pki.clone())
@@ -284,7 +284,7 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["routeroflastresort".into()]
+                vec!["rolr3".into()]
             } else {
                 vec![]
             },
@@ -362,22 +362,22 @@ async fn main() {
             print_sender.clone(),
             kernel_message_receiver,
             kernel_debug_message_receiver,
-            wss_message_sender.clone(),
+            net_message_sender.clone(),
             fs_message_sender,
             http_server_sender,
             http_client_message_sender,
             boot_sequence,
         )
     );
-    let ws_handle = tokio::spawn(
-        ws::websockets(
+    let net_handle = tokio::spawn(
+        net::networking(
             our.clone(),
+            our_ip,
             networking_keypair,
             pki.clone(),
             kernel_message_sender.clone(),
             print_sender.clone(),
-            wss_message_receiver,
-            wss_message_sender.clone(),
+            net_message_receiver,
         )
     );
     let indexing_handle = tokio::spawn(
@@ -399,6 +399,7 @@ async fn main() {
     let http_server_handle = tokio::spawn(
         http_server::http_server(
             our.name.clone(),
+            http_server_port,
             http_server_receiver,
             kernel_message_sender.clone(),
             print_sender.clone(),
@@ -412,7 +413,7 @@ async fn main() {
             print_sender.clone(),
         )
     );
-    tokio::select! {
+    let quit = tokio::select! {
         //  TODO: spin terminal::terminal out into its own task;
         //        get error due to it not being `Send`
         term = terminal::terminal(
@@ -427,10 +428,13 @@ async fn main() {
             Err(e) => format!("exiting with error: {:?}", e),
         },
         _ = kernel_handle => {"".into()},
-        _ = ws_handle => {"".into()},
+        _ = net_handle => {"".into()},
         _ = indexing_handle => {"".into()},
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},
         _ = http_client_handle => {"".into()},
     };
+    let _ = crossterm::terminal::disable_raw_mode();
+    println!("");
+    println!("\x1b[38;5;196m{}\x1b[0m", quit);
 }

@@ -1,6 +1,6 @@
 use crossterm::{
     cursor,
-    event::{EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{EnableBracketedPaste, DisableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
     style::Print,
     terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
@@ -214,7 +214,7 @@ pub async fn terminal(
                             modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
-                            execute!(stdout, EnableBracketedPaste)?;
+                            execute!(stdout, DisableBracketedPaste, terminal::SetTitle(""))?;
                             disable_raw_mode()?;
                             break;
                         },
@@ -224,6 +224,15 @@ pub async fn terminal(
                             modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
+                            let _ = print_tx.send(
+                                Printout {
+                                    verbosity: 0,
+                                    content: match verbose_mode {
+                                        true => "verbose mode off".into(),
+                                        false => "verbose mode on".into(),
+                                    }
+                                }
+                            ).await;
                             verbose_mode = !verbose_mode;
                         },
                         // CTRL+J: toggle debug mode -- makes system-level event loop step-through
@@ -564,7 +573,7 @@ pub async fn terminal(
             }
         }
     }
-    execute!(stdout.lock(), EnableBracketedPaste)?;
+    execute!(stdout.lock(), DisableBracketedPaste, terminal::SetTitle(""))?;
     disable_raw_mode()
 }
 

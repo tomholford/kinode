@@ -1,13 +1,12 @@
+cargo_component_bindings::generate!();
+
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
-mod process_lib;
-
 use bindings::print_to_terminal;
-use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
@@ -246,27 +245,26 @@ fn handle_fs_error(
     }
 }
 
-fn handle_message(
-    message: WitMessage,
-    context: String,
+fn handle_next_message(
     mut uploading: &mut Option<Uploading>,
     our_name: &str,
     process_name: &str,
 ) -> anyhow::Result<MessageHandledStatus> {
+    let (message, context) = bindings::await_next_message()?;
 
-    let our_filesystem = bindings::WitProcessNode {
-        node: &our_name,
-        process: "filesystem",
+    let our_filesystem = WitProcessNode {
+        node: our_name.into(),
+        process: "filesystem".into(),
     };
 
-    match message.message_type {
+    match message.content.message_type {
         WitMessageType::Request(_is_expecting_response) => {
             //  TODO: perms;
             //   only GetFile and Cancel allowed from non file_transfer
             //   and Cancel should probably only be allowed from same
             //   process as GetFile came from
             print_to_terminal(1, "Request");
-            match process_lib::parse_message_json(message.payload.json)? {
+            match process_lib::parse_message_json(message.content.payload.json)? {
                 FileTransferRequest::GetFile(get_file) => {
                     //  1. close Append file handle, if it exists
                     //  2. open AppendOverwrite file handle
@@ -280,17 +278,17 @@ fn handle_message(
                         uri_string: get_file.uri_string.clone(),
                     };
 
+                    let their_file_transfer = WitProcessNode {
+                        node: get_file.target_ship.clone(),
+                        process: process_name.into(),
+                    };
+
                     let file_transfer_request_type = WitProtomessageType::Request(
                             WitRequestTypeWithTarget {
                                 is_expecting_response: true,
-                                target_ship: &get_file.target_ship,
-                                target_app: &process_name,
+                                target: their_file_transfer.clone(),
                             },
                         );
-                    let their_file_transfer = bindings::WitProcessNode {
-                        node: &get_file.target_ship,
-                        process: &process_name,
-                    };
 
                     //  TODO: error handle
                     let _ = process_lib::yield_and_await_response(
@@ -326,7 +324,7 @@ fn handle_message(
                     )?;
 
                     let FileTransferResponse::Started(metadata) =
-                            process_lib::parse_message_json(message.payload.json)? else {
+                            process_lib::parse_message_json(message.content.payload.json)? else {
                         return Err(anyhow::anyhow!("expected Response type Started"));
                     };
 
@@ -349,7 +347,7 @@ fn handle_message(
                         )?;
 
                         let FileTransferResponse::FilePiece(file_piece) =
-                                process_lib::parse_message_json(message.payload.json)? else {
+                                process_lib::parse_message_json(message.content.payload.json)? else {
                             return Err(anyhow::anyhow!("expected Response type FilePiece"));
                         };
 
@@ -360,7 +358,7 @@ fn handle_message(
                             panic!("file_transfer: GetPiece wrong piece_number");
                         }
 
-                        let Some(bytes) = message.payload.bytes else {
+                        let Some(bytes) = message.content.payload.bytes else {
                             return Err(anyhow::anyhow!(
                                 "GetPiece: no bytes",
                             ));
@@ -396,7 +394,7 @@ fn handle_message(
                             )?;
 
                             let FileSystemResponse::GetMetadata(file_metadata) =
-                                    process_lib::parse_message_json(message.payload.json)? else {
+                                    process_lib::parse_message_json(message.content.payload.json)? else {
                                 return Err(anyhow::anyhow!("expected Response type GetMetadata"));
                             };
 
@@ -445,7 +443,7 @@ fn handle_message(
                     let chunk_size = start.chunk_size;
 
                     let key =  FileTransferKey {
-                        requester: message.wire.source_ship,
+                        requester: message.source.node,
                         server: our_name.into(),
                         uri_string: start.uri_string.clone(),
                     };
@@ -461,7 +459,7 @@ fn handle_message(
                     )?;
 
                     let FileSystemResponse::GetMetadata(file_metadata) =
-                            process_lib::parse_message_json(message.payload.json)? else {
+                            process_lib::parse_message_json(message.content.payload.json)? else {
                         return Err(anyhow::anyhow!("expected Response type GetMetadata"));
                     };
 
@@ -518,7 +516,7 @@ fn handle_message(
                     print_to_terminal(1, "GetPiece");
 
                     let key = FileTransferKey {
-                        requester: message.wire.source_ship.clone(),
+                        requester: message.source.node.clone(),
                         server: our_name.into(),
                         uri_string: get_piece.uri_string.clone(),
                     };
@@ -540,7 +538,7 @@ fn handle_message(
                     )?;
 
                     let FileSystemResponse::ReadChunkFromOpen(uri_hash) =
-                            process_lib::parse_message_json(message.payload.json)? else {
+                            process_lib::parse_message_json(message.content.payload.json)? else {
                         return Err(anyhow::anyhow!("expected Response type ReadChunkFromOpen"));
                     };
 
@@ -548,7 +546,7 @@ fn handle_message(
                         panic!("file_transfer: ReadChunkFromOpen wrong uri_string");
                     }
 
-                    let Some(bytes) = message.payload.bytes else {
+                    let Some(bytes) = message.content.payload.bytes else {
                         // bail(
                         return Err(anyhow::anyhow!(
                             "ReadChunkFromOpen: no bytes",
@@ -590,7 +588,7 @@ fn handle_message(
                     print_to_terminal(0, format!(
                         "file_transfer: done transferring {} to {}",
                         uri_string,
-                        message.wire.source_ship,
+                        message.source.node,
                     ).as_str());
 
                     return Ok(MessageHandledStatus::Done);
@@ -601,8 +599,8 @@ fn handle_message(
         WitMessageType::Response => {
             print_to_terminal(1, "Response");
 
-            if "filesystem" == message.wire.source_app {
-                match process_lib::parse_message_json(message.payload.json)? {
+            if "filesystem" == message.source.process {
+                match process_lib::parse_message_json(message.content.payload.json)? {
                     FileSystemResponse::Error(error) => {
                         let context: FileTransferContext = serde_json::from_str(&context)?;
 
@@ -617,14 +615,14 @@ fn handle_message(
                         panic!("file_transfer: unexpected filesystem Response");
                     },
                 }
-            } else if process_name == message.wire.source_app {
-                match process_lib::parse_message_json(message.payload.json)? {
+            } else if process_name == message.source.process {
+                match process_lib::parse_message_json(message.content.payload.json)? {
                     _ => {
                         panic!("file_transfer: unexpected file_transfer Response");
                     },
                 }
-            } else if "ws" == message.wire.source_app {
-                let networking_error = process_lib::parse_message_json(message.payload.json)?;
+            } else if "ws" == message.source.process {
+                let networking_error = process_lib::parse_message_json(message.content.payload.json)?;
                 let context: FileTransferContext = serde_json::from_str(&context)?;
 
                 handle_networking_error(
@@ -646,10 +644,7 @@ impl bindings::MicrokernelProcess for Component {
         let mut uploading: Option<Uploading> = None;
 
         loop {
-            let (message, context) = bindings::await_next_message();
-            match handle_message(
-                message,
-                context,
+            match handle_next_message(
                 &mut uploading,
                 &our_name,
                 &process_name,
@@ -676,4 +671,4 @@ impl bindings::MicrokernelProcess for Component {
     }
 }
 
-bindings::export!(Component);
+// bindings::export!(Component);

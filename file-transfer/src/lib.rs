@@ -1,9 +1,12 @@
+cargo_component_bindings::generate!();
+
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types::WitMessageType;
 use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
@@ -255,7 +258,7 @@ fn handle_fs_error(
     process_name: &str,
     key: FileTransferKey,
     downloads: &mut Downloads,
-    uploads: &mut Uploads,
+    _uploads: &mut Uploads,
 ) {
     match error {
         // //  bad input from user
@@ -309,23 +312,29 @@ fn handle_fs_error(
     }
 }
 
+fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
+    WitProcessNode {
+        node: dewit.node.clone(),
+        process: dewit.process.clone(),
+    }
+}
+
 fn yield_get_piece(
     target: ProcessNode,
     uri_string: String,
     chunk_size: u64,
     piece_number: u32,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: true,
-                        target_ship: &target.node,
-                        target_app: &target.process,
+                        target: en_wit_process_node(&target)
                     }
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileTransferRequest::GetPiece(
                             FileTransferGetPiece {
@@ -338,9 +347,9 @@ fn yield_get_piece(
                     bytes: None,
                 },
             },
-            "",
+            "".into(),
         )
-    ].as_slice());
+    ].as_slice()));
 }
 
 fn yield_get_metadata(
@@ -348,17 +357,19 @@ fn yield_get_metadata(
     uri_string: String,
     context: &str,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: true,
-                        target_ship: our_name,
-                        target_app: "filesystem",
+                        target: WitProcessNode {
+                            node: our_name.into(),
+                            process: "filesystem".into(),
+                        },
                     },
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileSystemRequest {
                             uri_string: uri_string,
@@ -368,9 +379,9 @@ fn yield_get_metadata(
                     bytes: None,
                 },
             },
-            context,
+            context.into(),
         ),
-    ].as_slice());
+    ].as_slice()));
 }
 
 fn yield_get_file(
@@ -380,17 +391,19 @@ fn yield_get_file(
     uri_string: String,
     chunk_size: u64,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: false,
-                        target_ship: our_name,
-                        target_app: process_name,
+                        target: WitProcessNode {
+                            node: our_name.into(),
+                            process: process_name.into(),
+                        },
                     },
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileTransferRequest::GetFile(
                             FileTransferGetFile {
@@ -403,9 +416,9 @@ fn yield_get_file(
                     bytes: None,
                 },
             },
-            "",
+            "".into(),
         )
-    ].as_slice());
+    ].as_slice()));
 }
 
 fn yield_start(
@@ -413,17 +426,16 @@ fn yield_start(
     uri_string: String,
     chunk_size: u64,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: true,
-                        target_ship: &target.node,
-                        target_app: &target.process,
+                        target: en_wit_process_node(&target),
                     },
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileTransferRequest::Start(
                             FileTransferStart {
@@ -435,9 +447,9 @@ fn yield_start(
                     bytes: None,
                 },
             },
-            "",
+            "".into(),
         )
-    ].as_slice());
+    ].as_slice()));
 }
 
 fn yield_close(
@@ -446,17 +458,19 @@ fn yield_close(
     mode: FileSystemMode,
     context: &str,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: true,
-                        target_ship: our_name,
-                        target_app: "filesystem",
+                        target: WitProcessNode {
+                            node: our_name.into(),
+                            process: "filesystem".into(),
+                        },
                     },
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileSystemRequest {
                             uri_string,
@@ -466,9 +480,9 @@ fn yield_close(
                     bytes: None,
                 },
             },
-            context,
+            context.into(),
         ),
-    ].as_slice());
+    ].as_slice()));
 }
 
 fn yield_cancel(
@@ -479,17 +493,19 @@ fn yield_cancel(
     reason: String,
     context: &str,
 ) {
-    bindings::yield_results(vec![
+    bindings::yield_results(Ok(vec![
         (
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Request(
                     WitRequestTypeWithTarget {
                         is_expecting_response: false,
-                        target_ship: &target_node,
-                        target_app: &process_name,
+                        target: WitProcessNode {
+                            node: target_node.into(),
+                            process: process_name.into(),
+                        },
                     },
                 ),
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileTransferRequest::Cancel {
                             key,
@@ -500,26 +516,28 @@ fn yield_cancel(
                     bytes: None,
                 },
             },
-            context,
+            context.into(),
         )
-    ].as_slice());
+    ].as_slice()));
 }
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         print_to_terminal(0, "file_transfer: begin");
         // HTTP bindings
-        bindings::yield_results(
+        bindings::yield_results(Ok(
             vec![(
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/apps/file-transfer",
@@ -528,17 +546,19 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/view-files/:username",
@@ -547,17 +567,19 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/get-file",
@@ -566,17 +588,19 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             ), (
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(
                         WitRequestTypeWithTarget {
                             is_expecting_response: false,
-                            target_ship: our_name.as_str(),
-                            target_app: "http_bindings",
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/cancel-download",
@@ -604,31 +628,32 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "",
+                "".into(),
             )].as_slice()
-        );
+        ));
 
         //  in progress
         let mut downloads: Downloads = HashMap::new();
         let mut uploads: Uploads = HashMap::new();
 
         'main_loop: loop {
-            let (message, context) = bindings::await_next_message();
-            let Some(ref payload_json_string) = message.payload.json else {
+            let (message, context) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
+            let Some(ref payload_json_string) = message.content.payload.json else {
                 print_to_terminal(1, "file_transfer: require non-empty json payload");
                 continue;
             };
 
-            print_to_terminal(1,
-                format!("{}: got json {}", process_name, payload_json_string).as_str()
+            print_to_terminal(
+                1,
+                format!("{}: got json {}", &process_name, payload_json_string).as_str()
             );
 
             let message_from_loop: serde_json::Value = serde_json::from_str(&payload_json_string).unwrap();
             if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/apps/file-transfer" {
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 200,
@@ -639,18 +664,18 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
                 let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let uri_string = String::from("fs://.");
 
                 if target_node.is_empty() {
                     print_to_terminal(1, "file_transfer: target_node is empty");
-                    bindings::yield_results(vec![(
+                    bindings::yield_results(Ok(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
+                            payload: WitPayload {
                                 json: Some(serde_json::json!({
                                     "action": "response",
                                     "status": 400,
@@ -661,8 +686,8 @@ impl bindings::MicrokernelProcess for Component {
                                 bytes: Some("Must specify target node".as_bytes().to_vec())
                             }
                         },
-                        "",
-                    )].as_slice());
+                        "".into(),
+                    )].as_slice()));
                     continue;
                 }
 
@@ -677,9 +702,9 @@ impl bindings::MicrokernelProcess for Component {
 
                 let message = if our_name == target_node {
                     bindings::yield_and_await_response(
-                        bindings::WitProcessNode {
-                            node: &target_node,
-                            process: "filesystem",
+                        &WitProcessNode {
+                            node: target_node.into(),
+                            process: "filesystem".into(),
                         },
                         &WitPayload {
                             json: Some(serde_json::to_string(
@@ -690,12 +715,12 @@ impl bindings::MicrokernelProcess for Component {
                             ).unwrap()),
                             bytes: None,
                         },
-                    )
+                    ).unwrap()  //  TODO: handle error properly
                 } else {
                     bindings::yield_and_await_response(
-                        bindings::WitProcessNode {
-                            node: &target_node,
-                            process: &process_name,
+                        &bindings::WitProcessNode {
+                            node: target_node.into(),
+                            process: process_name.clone(),
                         },
                         &WitPayload {
                             json: Some(serde_json::to_string(
@@ -706,15 +731,15 @@ impl bindings::MicrokernelProcess for Component {
                             ).unwrap()),
                             bytes: None,
                         },
-                    )
+                    ).unwrap()  //  TODO: handle error properly
                 };
 
-                let Some(ref payload_json_string) = message.payload.json else {
+                let Some(ref payload_json_string) = message.content.payload.json else {
                     print_to_terminal(1, "file_transfer: require non-empty json payload");
-                    bindings::yield_results(vec![(
+                    bindings::yield_results(Ok(vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
+                            payload: WitPayload {
                                 json: Some(serde_json::json!({
                                     "action": "response",
                                     "status": 404,
@@ -725,15 +750,15 @@ impl bindings::MicrokernelProcess for Component {
                                 bytes: Some("No result from target node".as_bytes().to_vec())
                             }
                         },
-                        "",
-                    )].as_slice());
+                        "".into(),
+                    )].as_slice()));
                     continue;
                 };
 
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 200,
@@ -745,8 +770,8 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some(payload_json_string.as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
                 // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
                 let body_bytes = message.payload.bytes.unwrap_or(vec![]);
@@ -765,10 +790,10 @@ impl bindings::MicrokernelProcess for Component {
                     body["chunk_size"].as_u64().unwrap_or(1024001),
                 );
 
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 204,
@@ -779,8 +804,8 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some("Success".as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/cancel-download" {
                 let body_bytes = message.payload.bytes.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
@@ -805,10 +830,10 @@ impl bindings::MicrokernelProcess for Component {
                     "",
                 );
 
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 204,
@@ -819,8 +844,8 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some("Success".as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/status/:target_node/:uri_string" {
                 let target_node = message_from_loop["url_params"]["target_node"].as_str().unwrap_or("");
                 let uri_string = message_from_loop["url_params"]["uri_string"].as_str().unwrap_or("");
@@ -841,10 +866,10 @@ impl bindings::MicrokernelProcess for Component {
                     }
                 }
 
-                bindings::yield_results(vec![(
+                bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 200,
@@ -855,10 +880,10 @@ impl bindings::MicrokernelProcess for Component {
                             bytes: Some(percentage_downloaded.to_string().as_bytes().to_vec())
                         }
                     },
-                    "",
-                )].as_slice());
+                    "".into(),
+                )].as_slice()));
             } else {
-                match message.message_type {
+                match message.content.message_type {
                     WitMessageType::Request(_is_expecting_response) => {
                         //  TODO: perms;
                         //   only GetFile and Cancel allowed from non file_transfer
@@ -918,7 +943,7 @@ impl bindings::MicrokernelProcess for Component {
                                 print_to_terminal(1, "Start");
 
                                 let key =  FileTransferKey {
-                                    requester: message.wire.source_ship,
+                                    requester: message.source.node,
                                     server: our_name.clone(),
                                     uri_string: start.uri_string.clone(),
                                 };
@@ -1012,7 +1037,7 @@ impl bindings::MicrokernelProcess for Component {
                                 print_to_terminal(1, "GetPiece");
 
                                 let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
+                                    requester: message.source.node.clone(),
                                     server: our_name.clone(),
                                     uri_string: get_piece.uri_string.clone(),
                                 };
@@ -1054,25 +1079,27 @@ impl bindings::MicrokernelProcess for Component {
                                             bytes: None,
                                         }
                                     };
-                                bindings::yield_results(vec![
+                                bindings::yield_results(Ok(vec![
                                     (
                                         bindings::WitProtomessage {
                                             protomessage_type: WitProtomessageType::Request(
                                                 WitRequestTypeWithTarget {
                                                     is_expecting_response: true,
-                                                    target_ship: &our_name,
-                                                    target_app: "filesystem",
+                                                    target: WitProcessNode {
+                                                        node: our_name.clone(),
+                                                        process: "filesystem".into(),
+                                                    },
                                                 },
                                             ),
-                                            payload: &payload,
+                                            payload,
                                         },
-                                        context.as_str(),
+                                        context,
                                     )
-                                ].as_slice());
+                                ].as_slice()));
                             },
                             FileTransferRequest::Done { uri_string } => {
                                 let key = FileTransferKey {
-                                    requester: message.wire.source_ship.clone(),
+                                    requester: message.source.node.clone(),
                                     server: our_name.clone(),
                                     uri_string: uri_string.clone(),
                                 };
@@ -1086,7 +1113,7 @@ impl bindings::MicrokernelProcess for Component {
                                 print_to_terminal(0, format!(
                                     "file_transfer: done transferring {} to {}",
                                     uri_string,
-                                    message.wire.source_ship,
+                                    message.source.node,
                                 ).as_str());
                             },
                             FileTransferRequest::DisplayOngoing => {
@@ -1125,23 +1152,25 @@ impl bindings::MicrokernelProcess for Component {
                                     //    2. pass fs Reponse on to Requester
                                     let context = serde_json::to_string(&FileTransferContext {
                                         key: FileTransferKey {
-                                            requester: message.wire.source_ship,
+                                            requester: message.source.node,
                                             server: our_name.clone(),
                                             uri_string: uri_string.clone(),
                                         },
                                         additional: FileTransferAdditionalContext::Empty,
                                     }).unwrap();
-                                    bindings::yield_results(vec![
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Request(
                                                     WitRequestTypeWithTarget {
                                                         is_expecting_response: true,
-                                                        target_ship: &our_name,
-                                                        target_app: "filesystem",
+                                                        target: WitProcessNode {
+                                                            node: our_name.clone(),
+                                                            process: "filesystem".into(),
+                                                        },
                                                     },
                                                 ),
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileSystemRequest {
                                                             uri_string,
@@ -1151,9 +1180,9 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: None,
                                                 },
                                             },
-                                            context.as_str(),
+                                            context,
                                         )
-                                    ].as_slice());
+                                    ].as_slice()));
                                 } else {
                                     //  send Request to target
                                     // TODO: attach additional context to say it's http
@@ -1165,17 +1194,19 @@ impl bindings::MicrokernelProcess for Component {
                                         },
                                         additional: FileTransferAdditionalContext::Empty,
                                     }).unwrap();
-                                    bindings::yield_results(vec![
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Request(
                                                     WitRequestTypeWithTarget {
                                                         is_expecting_response: true,
-                                                        target_ship: &target_node,
-                                                        target_app: &process_name,
+                                                        target: WitProcessNode {
+                                                            node: target_node.clone(),
+                                                            process: process_name.clone(),
+                                                        },
                                                     },
                                                 ),
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileTransferRequest::ReadDir {
                                                             target_node: target_node.clone(),
@@ -1185,17 +1216,17 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: None,
                                                 },
                                             },
-                                            context.as_str(),
+                                            context,
                                         )
-                                    ].as_slice());
+                                    ].as_slice()));
                                 }
                             },
                         }
                     },
                     WitMessageType::Response => {
                         print_to_terminal(1, "Response");
-
-                        if "filesystem" == message.wire.source_app {
+    
+                        if "filesystem" == message.source.process {
                             let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                             match response {
                                 FileSystemResponse::GetMetadata(file_metadata) => {
@@ -1257,30 +1288,32 @@ impl bindings::MicrokernelProcess for Component {
                                             key: context.key,
                                             additional: FileTransferAdditionalContext::Empty,
                                         }).unwrap();
-
-                                        bindings::yield_results(vec![
+    
+                                        bindings::yield_results(Ok(vec![
                                             (
                                                 bindings::WitProtomessage {
                                                     protomessage_type: WitProtomessageType::Response,
-                                                    payload: &WitPayload {
+                                                    payload: WitPayload {
                                                         json: Some(serde_json::to_string(
                                                             &FileTransferResponse::Started(metadata)
                                                         ).unwrap()),
                                                         bytes: None,
                                                     },
                                                 },
-                                                "",
+                                                "".into(),
                                             ),
                                             (
                                                 bindings::WitProtomessage {
                                                     protomessage_type: WitProtomessageType::Request(
                                                         WitRequestTypeWithTarget {
                                                             is_expecting_response: true,
-                                                            target_ship: &our_name,
-                                                            target_app: "filesystem",
+                                                            target: WitProcessNode {
+                                                                node: our_name.clone(),
+                                                                process: "filesystem".into(),
+                                                            },
                                                         },
                                                     ),
-                                                    payload: &WitPayload {
+                                                    payload: WitPayload {
                                                         json: Some(serde_json::to_string(
                                                             &FileSystemRequest {
                                                                 uri_string: file_metadata.uri_string,
@@ -1292,9 +1325,9 @@ impl bindings::MicrokernelProcess for Component {
                                                         bytes: None,
                                                     },
                                                 },
-                                                context.as_str(),
+                                                context,
                                             ),
-                                        ].as_slice());
+                                        ].as_slice()));
                                     } else if our_name == context.key.requester {
                                         let Some(downloading) = downloads.get(&context.key) else {
                                             //  re-issue GetFile to self to download from scratch
@@ -1321,17 +1354,19 @@ impl bindings::MicrokernelProcess for Component {
                                                     FileSystemMode::Append,
                                                     context_string.as_str(),
                                                 );
-                                                bindings::yield_results(vec![
+                                                bindings::yield_results(Ok(vec![
                                                     (
                                                         bindings::WitProtomessage {
                                                             protomessage_type: WitProtomessageType::Request(
                                                                 WitRequestTypeWithTarget {
                                                                     is_expecting_response: false,
-                                                                    target_ship: &context.key.server,
-                                                                    target_app: &process_name,
+                                                                    target: WitProcessNode {
+                                                                        node: context.key.server,
+                                                                        process: process_name.clone(),
+                                                                    },
                                                                 },
                                                             ),
-                                                            payload: &WitPayload {
+                                                            payload: WitPayload {
                                                                 json: Some(serde_json::to_string(
                                                                     &FileTransferRequest::Done {
                                                                         uri_string: context.key.uri_string,
@@ -1340,9 +1375,9 @@ impl bindings::MicrokernelProcess for Component {
                                                                 bytes: None,
                                                             },
                                                         },
-                                                        "",
+                                                        "".into(),
                                                     ),
-                                                ].as_slice());
+                                                ].as_slice()));
                                             } else {
                                                 downloads.remove(&context.key);
                                                 print_to_terminal(1, "file_transfer: file corrupted during transfer, please try again");
@@ -1378,20 +1413,20 @@ impl bindings::MicrokernelProcess for Component {
                                     //  serve Request:
                                     //    1. query local fs
                                     //    2. pass fs Reponse on to Requester  <---
-                                    bindings::yield_results(vec![
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Response,
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileTransferResponse::ReadDir(metadatas)
                                                     ).unwrap()),
                                                     bytes: None,
                                                 },
                                             },
-                                            "",
+                                            "".into(),
                                         )
-                                    ].as_slice());
+                                    ].as_slice()));
                                 },
                                 FileSystemResponse::Open { uri_string, mode } => {
                                     match mode {
@@ -1469,17 +1504,19 @@ impl bindings::MicrokernelProcess for Component {
                                                 },
                                                 None => {
                                                     //  starting a fresh download
-                                                    bindings::yield_results(vec![
+                                                    bindings::yield_results(Ok(vec![
                                                         (
                                                             bindings::WitProtomessage {
                                                                 protomessage_type: WitProtomessageType::Request(
                                                                     WitRequestTypeWithTarget {
                                                                         is_expecting_response: true,
-                                                                        target_ship: &our_name,
-                                                                        target_app: "filesystem",
+                                                                        target: WitProcessNode {
+                                                                            node: our_name.clone(),
+                                                                            process: "filesystem".into(),
+                                                                        },
                                                                     },
                                                                 ),
-                                                                payload: &WitPayload {
+                                                                payload: WitPayload {
                                                                     json: Some(serde_json::to_string(
                                                                         &FileSystemRequest {
                                                                             uri_string,
@@ -1491,9 +1528,9 @@ impl bindings::MicrokernelProcess for Component {
                                                                     bytes: None,
                                                                 },
                                                             },
-                                                            context.as_str(),
+                                                            context,
                                                         ),
-                                                    ].as_slice());
+                                                    ].as_slice()));
                                                 }
                                             }
                                         },
@@ -1513,7 +1550,7 @@ impl bindings::MicrokernelProcess for Component {
                                         );
                                         continue;
                                     };
-                                    let Some(bytes) = message.payload.bytes.clone() else {
+                                    let Some(bytes) = message.content.payload.bytes.clone() else {
                                         bail(
                                             "ReadChunkFromOpen: no bytes".into(),
                                             &our_name,
@@ -1543,12 +1580,12 @@ impl bindings::MicrokernelProcess for Component {
                                     }
 
                                     uploading.number_sent_pieces = piece_number.clone() + 1;
-
-                                    bindings::yield_results(vec![
+    
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Response,
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileTransferResponse::FilePiece(
                                                             FileTransferFilePiece {
@@ -1561,9 +1598,9 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: Some(bytes),
                                                 },
                                             },
-                                            "",
+                                            "".into(),
                                         )
-                                    ].as_slice());
+                                    ].as_slice()));
                                 },
                                 FileSystemResponse::Append(uri_string) => {
                                     print_to_terminal(1, "Append");
@@ -1626,18 +1663,20 @@ impl bindings::MicrokernelProcess for Component {
                                         continue;
                                     };
                                     let uploading = uploads.get(&parsed_context.key).unwrap();
-
-                                    bindings::yield_results(vec![
+    
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Request(
                                                     WitRequestTypeWithTarget {
                                                         is_expecting_response: true,
-                                                        target_ship: &our_name,
-                                                        target_app: "filesystem",
+                                                        target: WitProcessNode {
+                                                            node: our_name.clone(),
+                                                            process: "filesystem".into(),
+                                                        },
                                                     },
                                                 ),
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileSystemRequest {
                                                             uri_string: uri_string,
@@ -1649,9 +1688,9 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: None,
                                                 },
                                             },
-                                            context.as_str(),
+                                            context,
                                         )
-                                    ].as_slice());
+                                    ].as_slice()));
                                 },
                                 FileSystemResponse::Error(error) => {
                                     let context: FileTransferContext =
@@ -1682,7 +1721,7 @@ impl bindings::MicrokernelProcess for Component {
                                     ).as_str());
                                 },
                             }
-                        } else if process_name == message.wire.source_app {
+                        } else if process_name == message.source.process {
                             let response: FileTransferResponse =
                                 serde_json::from_str(payload_json_string).unwrap();
                             match response {
@@ -1692,7 +1731,7 @@ impl bindings::MicrokernelProcess for Component {
                                     let uri_string = metadata.key.uri_string.clone();
                                     let key = FileTransferKey {
                                         requester: our_name.clone(),
-                                        server: message.wire.source_ship.clone(),
+                                        server: message.source.node.clone(),
                                         uri_string: uri_string.clone(),
                                     };
                                     if metadata.key != key {
@@ -1720,17 +1759,19 @@ impl bindings::MicrokernelProcess for Component {
                                         key,
                                         additional: FileTransferAdditionalContext::Empty,
                                     }).unwrap();
-                                    bindings::yield_results(vec![
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Request(
                                                     WitRequestTypeWithTarget {
                                                         is_expecting_response: true,
-                                                        target_ship: &our_name,
-                                                        target_app: "filesystem",
+                                                        target: WitProcessNode {
+                                                            node: our_name.clone(),
+                                                            process: "filesystem".into(),
+                                                        },
                                                     },
                                                 ),
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileSystemRequest {
                                                             uri_string: uri_string.clone(),
@@ -1742,9 +1783,9 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: None,
                                                 },
                                             },
-                                            context.as_str(),
+                                            context,
                                         ),
-                                    ].as_slice());
+                                    ].as_slice()));
                                     print_to_terminal(1, "Started 7");
                                 },
                                 FileTransferResponse::FilePiece(file_piece) => {
@@ -1753,11 +1794,11 @@ impl bindings::MicrokernelProcess for Component {
                                     //  TODO: confirm bytes match alleged piece hash
                                     let key = FileTransferKey {
                                         requester: our_name.clone(),
-                                        server: message.wire.source_ship.clone(),
+                                        server: message.source.node.clone(),
                                         uri_string: file_piece.uri_string.clone(),
                                     };
-
-                                    let Some(bytes) = message.payload.bytes.clone() else {
+    
+                                    let Some(bytes) = message.content.payload.bytes.clone() else {
                                         bail(
                                             "FilePiece must be sent bytes".into(),
                                             &our_name,
@@ -1785,17 +1826,19 @@ impl bindings::MicrokernelProcess for Component {
                                             piece_number: file_piece.piece_number,
                                         },
                                     }).unwrap();
-                                    bindings::yield_results(vec![
+                                    bindings::yield_results(Ok(vec![
                                         (
                                             bindings::WitProtomessage {
                                                 protomessage_type: WitProtomessageType::Request(
                                                     WitRequestTypeWithTarget {
                                                         is_expecting_response: true,
-                                                        target_ship: &our_name,
-                                                        target_app: "filesystem",
+                                                        target: WitProcessNode {
+                                                            node: our_name.clone(),
+                                                            process: "filesystem".into(),
+                                                        },
                                                     },
                                                 ),
-                                                payload: &WitPayload {
+                                                payload: WitPayload {
                                                     json: Some(serde_json::to_string(
                                                         &FileSystemRequest {
                                                             uri_string: file_piece.uri_string,
@@ -1805,9 +1848,9 @@ impl bindings::MicrokernelProcess for Component {
                                                     bytes: Some(bytes),
                                                 },
                                             },
-                                            context.as_str(),
+                                            context,
                                         ),
-                                    ].as_slice());
+                                    ].as_slice()));
                                 },
                                 FileTransferResponse::ReadDir(metadatas) => {
                                     // TODO: read the context to see if this is HTTP
@@ -1815,7 +1858,7 @@ impl bindings::MicrokernelProcess for Component {
                                         serde_json::from_str(&context).unwrap();
                                     print_to_terminal(1, format!(
                                         "file_transfer: directory contents of remote://{}/{}/",
-                                        message.wire.source_ship,
+                                        message.source.node,
                                         context["uri_string"].to_string(),
                                     ).as_str());
                                     print_to_terminal(1, "****");
@@ -1835,7 +1878,7 @@ impl bindings::MicrokernelProcess for Component {
                                     print_to_terminal(1, "****");
                                 },
                             }
-                        } else if "net" == message.wire.source_app {
+                        } else if "net" == message.source.process {
                             if let Ok(networking_error) =
                                     serde_json::from_str::<NetworkingError>(payload_json_string) {
 
@@ -1858,4 +1901,4 @@ impl bindings::MicrokernelProcess for Component {
     }
 }
 
-bindings::export!(Component);
+// bindings::export!(Component);

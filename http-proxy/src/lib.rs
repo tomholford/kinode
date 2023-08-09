@@ -1,6 +1,9 @@
+cargo_component_bindings::generate!();
+
+use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
-use bindings::component::microkernel_process::types::WitPayload;
 use std::collections::HashMap;
 use serde_json::json;
 struct Component;
@@ -11,17 +14,19 @@ const PROXY_HOME_PAGE: &str = include_str!("http-proxy.html");
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         bindings::print_to_terminal(1, "apps-home: start");
-        bindings::yield_results(
+        bindings::yield_results(Ok(
           vec![(
               bindings::WitProtomessage {
                   protomessage_type: WitProtomessageType::Request(
                       WitRequestTypeWithTarget {
                           is_expecting_response: false,
-                          target_ship: our_name.as_str(),
-                          target_app: "http_bindings",
+                          target: WitProcessNode {
+                              node: our_name.clone(),
+                              process: "http_bindings".into(),
+                          },
                       }
                   ),
-                  payload: &WitPayload {
+                  payload: WitPayload {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
                           "path": "/apps/proxy",
@@ -30,7 +35,7 @@ impl bindings::MicrokernelProcess for Component {
                       bytes: None
                   }
               },
-              "",
+              "".into(),
           ), (
               bindings::WitProtomessage {
                   protomessage_type: WitProtomessageType::Request(
@@ -89,7 +94,7 @@ impl bindings::MicrokernelProcess for Component {
                 },
                 "",
             )].as_slice()
-        );
+        ));
 
         let mut registrations: HashMap<String, String> = HashMap::new();
 
@@ -297,4 +302,4 @@ impl bindings::MicrokernelProcess for Component {
     }
 }
 
-bindings::export!(Component);
+// bindings::export!(Component);

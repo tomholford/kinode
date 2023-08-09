@@ -187,7 +187,7 @@ impl WasiView for ProcessWasi {
 impl MicrokernelProcessImports for ProcessWasi {
     async fn yield_results(
         &mut self,
-        results: Result<Vec<(WitProtomessage, String)>, WitErrorContent>,
+        results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
     ) -> Result<()> {
         let _ = send_process_results_to_loop(
             results,
@@ -201,7 +201,7 @@ impl MicrokernelProcessImports for ProcessWasi {
         Ok(())
     }
 
-    async fn await_next_message(&mut self) -> Result<Result<(WitMessage, String), WitError>> {
+    async fn await_next_message(&mut self) -> Result<Result<(WitMessage, String), WitUqbarError>> {
         let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
@@ -216,7 +216,7 @@ impl MicrokernelProcessImports for ProcessWasi {
         &mut self,
         target: WitProcessNode,
         payload: WitPayload,
-    ) -> Result<Result<WitMessage, WitError>> {
+    ) -> Result<Result<WitMessage, WitUqbarError>> {
         let protomessage = WitProtomessage {
             protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                 is_expecting_response: true,
@@ -292,22 +292,22 @@ fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
     }
 }
 
-fn de_wit_error_content(wit: &WitErrorContent) -> DeWitErrorContent {
-    DeWitErrorContent {
+fn de_wit_error_content(wit: &WitUqbarErrorContent) -> UqbarErrorContent {
+    UqbarErrorContent {
         kind: wit.kind.clone(),
         message: wit.message.clone(),
     }
 }
 
-fn en_wit_error_content(dewit: &DeWitErrorContent) -> WitErrorContent {
-    WitErrorContent {
+fn en_wit_error_content(dewit: &UqbarErrorContent) -> WitUqbarErrorContent {
+    WitUqbarErrorContent {
         kind: dewit.kind.clone(),
         message: dewit.message.clone(),
     }
 }
 
-fn de_wit_error(wit: &WitError) -> DeWitError {
-    DeWitError {
+fn de_wit_error(wit: &WitUqbarError) -> UqbarError {
+    UqbarError {
         source: ProcessNode {
             node: wit.source.node.clone(),
             process: wit.source.process.clone(),
@@ -317,8 +317,8 @@ fn de_wit_error(wit: &WitError) -> DeWitError {
     }
 }
 
-fn en_wit_error(dewit: &DeWitError) -> WitError {
-    WitError {
+fn en_wit_error(dewit: &UqbarError) -> WitUqbarError {
+    WitUqbarError {
         source: WitProcessNode {
             node: dewit.source.node.clone(),
             process: dewit.source.process.clone(),
@@ -334,7 +334,7 @@ async fn get_and_send_specific_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<Result<WitMessage, WitError>>) {
+) -> (WrappedMessage, Result<Result<WitMessage, WitUqbarError>>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -415,7 +415,7 @@ async fn get_and_send_loop_message_to_process(
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<Result<(WitMessage, String), WitError>>) {
+) -> (WrappedMessage, Result<Result<(WitMessage, String), WitUqbarError>>) {
     //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
@@ -440,7 +440,7 @@ async fn send_loop_message_to_process(
     wrapped_message: WrappedMessage,
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String), WitError>) {
+) -> (WrappedMessage, Result<(WitMessage, String), WitUqbarError>) {
     // print_stack_to_terminal(
     //     format!(
     //         "{}: got message_stack",
@@ -658,7 +658,7 @@ fn make_wrapped_message(
 }
 
 async fn send_process_results_to_loop(
-    results: Result<Vec<(WitProtomessage, String)>, WitErrorContent>,
+    results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
     source: ProcessNode,
     send_to_loop: MessageSender,
     prompting_message: &Option<WrappedMessage>,
@@ -687,7 +687,7 @@ async fn send_process_results_to_loop(
             id,
             target,
             rsvp: None,
-            message: Err(DeWitError{
+            message: Err(UqbarError{
                 source,
                 timestamp: get_current_unix_time().unwrap(),
                 content: de_wit_error_content(&e),

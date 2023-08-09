@@ -67,18 +67,18 @@ pub struct WrappedMessage {
     pub id: u64,
     pub target: ProcessNode,
     pub rsvp: Rsvp,
-    pub message: Result<Message, DeWitError>,
+    pub message: Result<Message, UqbarError>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeWitError {
+pub struct UqbarError {
     pub source: ProcessNode,
     pub timestamp: u64,
-    pub content: DeWitErrorContent,
+    pub content: UqbarErrorContent,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeWitErrorContent {
+pub struct UqbarErrorContent {
     pub kind: String,
     pub message: String,
 }

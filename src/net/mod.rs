@@ -396,7 +396,7 @@ async fn message_to_peer(
 
 async fn handle_incoming_message(
     our: &Identity,
-    message: Result<Message, DeWitError>,
+    message: Result<Message, UqbarError>,
     peers: Peers,
     print_tx: PrintSender,
 ) {

@@ -1,3 +1,5 @@
+cargo_component_bindings::generate!();
+
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use bindings::component::microkernel_process::types::WitPayload;
@@ -142,5 +144,3 @@ impl bindings::MicrokernelProcess for Component {
         }
     }
 }
-
-bindings::export!(Component);

@@ -673,5 +673,3 @@ impl bindings::MicrokernelProcess for Component {
         }
     }
 }
-
-// bindings::export!(Component);

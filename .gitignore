@@ -4,6 +4,7 @@
 *.swp
 /home
 blockchain.json
+boot_sequence.bin
 /file-transfer/target
 /file-transfer-one-off/target
 /hi-lus-lus/target
@@ -16,4 +17,3 @@ blockchain.json
 /apps-home/target
 /http-proxy/target
 /boot_sequence/target
-/boot_sequence/boot_sequence.bin

@@ -42,7 +42,7 @@ Replace `file-transfer` with the desired component.
 
 Boot takes 3 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the third argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run home http://147.135.114.167:8083/blockchain.json
+cargo run boot_sequence.bin home http://147.135.114.167:8083/blockchain.json
 ```
 
 If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
@@ -99,13 +99,13 @@ cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one
 cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/dolph/
 
 # Terminal A: add hi++ apps to process_manager
-cargo r home/tuna tuna
+cargo r boot_sequence.bin home/tuna tuna
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}
 
 # Terminal B: While A is still running add hi++ to process_manager
-cargo r home/dolph dolph
+cargo r boot_sequence.bin home/dolph dolph
 !message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 !message dolph process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
 !message dolph process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}

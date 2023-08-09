@@ -163,5 +163,5 @@ pub async fn pill(our: String) -> Vec<BinSerializableWrappedMessage> {
 async fn main() {
     let boot_sequence = pill("tuna".to_string()).await;
     let serialized = bincode::serialize(&boot_sequence).unwrap();
-    fs::write("./boot_sequence.bin", serialized).await;
+    fs::write("../boot_sequence.bin", serialized).await;
 }

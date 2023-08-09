@@ -163,28 +163,5 @@ pub async fn pill(our: String) -> Vec<BinSerializableWrappedMessage> {
 async fn main() {
     let boot_sequence = pill("tuna".to_string()).await;
     let serialized = bincode::serialize(&boot_sequence).unwrap();
-    // let deserialized = bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&serialized).unwrap();
-    // for bin_message in deserialized {
-    //     let wrapped_message = WrappedMessage {
-    //         id: bin_message.id,
-    //         rsvp: bin_message.rsvp,
-    //         message: Message {
-    //             message_type: bin_message.message.message_type,
-    //             wire: bin_message.message.wire,
-    //             payload: Payload {
-    //                 json: match bin_message.message.payload.json {
-    //                     Some(js) => Some(
-    //                         match serde_json::from_slice(&js) {
-    //                             Ok(j) => j,
-    //                             Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
-    //                         }),
-    //                     None => None,
-    //                 },
-    //                 bytes: bin_message.message.payload.bytes,
-    //             },
-    //         }
-    //     };
-    //     println!("{:?}", wrapped_message.id);
-    // }
     fs::write("./boot_sequence.bin", serialized).await;
 }

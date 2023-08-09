@@ -28,7 +28,6 @@ mod register;
 mod terminal;
 mod types;
 mod ws;
-mod pill; // TODO needs to be a binary
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -75,14 +74,23 @@ async fn main() {
 
     // DEMO ONLY: remove all CLI arguments
     let args: Vec<String> = env::args().collect();
-    let home_directory_path = &args[1];
+    let boot_sequence_path = &args[1];
+    let boot_sequence = match fs::read(boot_sequence_path).await {
+        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
+            Ok(bs) => bs,
+            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+        },
+        Err(e) => panic!("failed to read boot sequence: {:?}", e),
+    };
+
+    let home_directory_path = &args[2];
     // let home_directory_path = "home";
     // create home directory if it does not already exist
     if let Err(e) = fs::create_dir_all(home_directory_path).await {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let blockchain_url = &args[2];
+    let blockchain_url = &args[3];
     // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
 
     // kernel receives system messages via this channel, all other modules send messages
@@ -358,7 +366,7 @@ async fn main() {
             fs_message_sender,
             http_server_sender,
             http_client_message_sender,
-            pill::pill(our.clone()).await,
+            boot_sequence,
         )
     );
     let ws_handle = tokio::spawn(

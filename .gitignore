@@ -14,4 +14,5 @@ blockchain.json
 /terminal/target
 /register-login/target
 /apps-home/target
-
+/boot_sequence/target
+/boot_sequence/boot_sequence.bin

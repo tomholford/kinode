@@ -1016,7 +1016,7 @@ pub async fn kernel(
     send_to_fs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
-    pill: Vec<WrappedMessage>,
+    boot_sequence: Vec<BinSerializableWrappedMessage>,
 ) {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1040,8 +1040,30 @@ pub async fn kernel(
         ).await
     );
 
-    for message in pill {
-        send_to_loop.send(message).await.unwrap();
+    // TODO maybe this should be in main instead of here?
+    for bin_message in boot_sequence {
+        // convert BinSerializableWrappedMessage to WrappedMessage
+        let wrapped_message = WrappedMessage {
+            id: bin_message.id,
+            rsvp: bin_message.rsvp,
+            message: Message {
+                message_type: bin_message.message.message_type,
+                wire: bin_message.message.wire,
+                payload: Payload {
+                    json: match bin_message.message.payload.json {
+                        Some(js) => Some(
+                            match serde_json::from_slice(&js) {
+                                Ok(j) => j,
+                                Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
+                            }),
+                        None => None,
+                    },
+                    bytes: bin_message.message.payload.bytes,
+                },
+            }
+        };
+        // send to loop
+        send_to_loop.send(wrapped_message).await.unwrap();
     }
 
     let _ = event_loop_handle.await;

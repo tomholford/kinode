@@ -69,10 +69,23 @@ pub struct Payload {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializablePayload {
+    pub json: Option<Vec<u8>>,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WrappedMessage {
     pub id: u64,
     pub rsvp: Rsvp,
     pub message: Message,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableWrappedMessage {
+    pub id: u64,
+    pub rsvp: Rsvp,
+    pub message: BinSerializableMessage,
 }
 
 //  kernel sets in case, e.g.,
@@ -85,6 +98,13 @@ pub struct Message {
     pub message_type: MessageType,
     pub wire: Wire,
     pub payload: Payload,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableMessage {
+    pub message_type: MessageType,
+    pub wire: Wire,
+    pub payload: BinSerializablePayload,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

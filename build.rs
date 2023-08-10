@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io;
+use std::process::Command;
 
 fn run_command(cmd: &mut Command) -> io::Result<()> {
     let status = cmd.status()?;
@@ -20,37 +20,30 @@ fn main() {
     println!("cargo:rerun-if-changed=apps-home/src");
     println!("cargo:rerun-if-changed=sequencer/src");
     let pwd = std::env::current_dir().unwrap();
-    run_command(
-        Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/process-manager/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-        Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/terminal/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-        Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/http-bindings/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-        Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/http-proxy/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-        Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/file-transfer/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-      Command::new("cargo")
-            .args(&["component", "build", &format!("--manifest-path={}/apps-home/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-    ).unwrap();
-    run_command(
-        Command::new("cargo")
-              .args(&["component", "build", &format!("--manifest-path={}/sequencer/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
-      ).unwrap();
+    const APPS: [&str; 7] = [
+        "process-manager",
+        "terminal",
+        "http-bindings",
+        "http-proxy",
+        "file-transfer",
+        "apps-home",
+        "sequencer",
+    ];
+    for name in APPS {
+        run_command(Command::new("cargo").args(&[
+            "component",
+            "build",
+            "--release",
+            &format!("--manifest-path={}/{}/Cargo.toml", pwd.display(), name),
+            "--target",
+            "wasm32-unknown-unknown",
+        ]))
+        .unwrap();
+    }
     run_command(
         Command::new("cargo")
             .current_dir("boot_sequence") // Change to boot_sequence directory
-            .arg("run")
-    ).unwrap();
+            .arg("run"),
+    )
+    .unwrap();
 }

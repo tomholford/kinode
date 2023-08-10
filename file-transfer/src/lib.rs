@@ -254,66 +254,6 @@ fn handle_networking_error(
     // }
 }
 
-// fn handle_fs_error(
-//     error: FileSystemError,
-//     our_name: &str,
-//     process_name: &str,
-//     key: FileTransferKey,
-//     downloads: &mut Downloads,
-//     _uploads: &mut Uploads,
-// ) {
-//     match error {
-//         // //  bad input from user
-//         // FileSystemError::BadUri { uri, bad_part_name, bad_part, } => {
-//         // },
-//         // FileSystemError::BadJson { json, error, } => {
-//         // },
-//         // FileSystemError::BadBytes { action, } => {
-//         // },
-//         // FileSystemError::IllegalAccess { process_name, attempted_dir, sandbox_dir, } => {
-//         // },
-//         FileSystemError::AlreadyOpen { path, mode, } => {
-//             match mode {
-//                 FileSystemMode::Append => {
-//                     print_to_terminal(1, "AlreadyOpen: Append");
-// 
-//                     let downloading = downloads.get(&key).unwrap();
-// 
-//                     yield_get_piece(
-//                         ProcessNode {
-//                             node: key.server.clone(),
-//                             process: process_name.into(),
-//                         },
-//                         key.uri_string.clone(),
-//                         downloading.metadata.chunk_size,
-//                         downloading.received_pieces.len() as u32,
-//                     );
-//                 },
-//                 FileSystemMode::Read => print_to_terminal(1, "AlreadyOpen: Read"),
-//                 _ => {},
-//             }
-//         },
-//         // FileSystemError::NotCurrentlyOpen { path, mode, } => {
-//         // },
-//         // //  path or underlying fs problems
-//         // FileSystemError::BadPathJoin { base_path, addend, } => {
-//         // },
-//         // FileSystemError::CouldNotMakeDir { path, error, } => {
-//         // },
-//         // FileSystemError::ReadFailed {path, error, } => {
-//         // },
-//         // FileSystemError::WriteFailed { path, error, } => {
-//         // },
-//         // FileSystemError::OpenFailed { path, mode, error, } => {
-//         // },
-//         // FileSystemError::FsError { what, path, error, } => {
-//         // },
-//         _ => {
-//             bail(format!("FileSystemError: {}", error), our_name, process_name, key);
-//         }
-//     }
-// }
-
 fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
     WitProcessNode {
         node: dewit.node.clone(),
@@ -710,15 +650,19 @@ fn handle_next_message(
         let key = FileTransferKey {
             requester: our_name.into(),
             server: body["target_node"].as_str().unwrap_or("").to_string(),
-            uri_string: body["uri_string"].as_str().unwrap_or("").to_string(),
+            uri_string: format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
         };
 
         downloads.remove(&key);
 
-        yield_close(
+        yield_cancel(
             &our_name,
-            format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
-            FileSystemMode::Append,
+            &process_name,
+            key,
+            true,
+            "Cancellation from FE".into(),
+            // format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+            // FileSystemMode::Append,
             "",
         );
 
@@ -876,7 +820,7 @@ fn handle_next_message(
                         //  TODO: reason can leak information about server's machine
                         //        (e.g., full path of file that DNE);
                         //        figure out how to avoid that
-                        print_to_terminal(1, format!(
+                        print_to_terminal(0, format!(
                             "file_transfer: Cancel received for {:?} with reason: {}",
                             key,
                             reason,
@@ -1386,7 +1330,9 @@ fn handle_next_message(
                                     let parsed_context: FileTransferContext = match serde_json::from_str(&context) {
                                         Ok(pc) => pc,
                                         Err(e) => {
-                                            return Err(anyhow!("file_transfer: CloseAppend missing context to clean up"));
+                                            return Err(anyhow!(
+                                                "file_transfer: CloseAppend missing context to clean up: {}", context)
+                                            );
                                         },
                                     };
 
@@ -1688,7 +1634,7 @@ fn handle_next_message(
                                 return Err(anyhow!(error_message));
                             };
 
-                            let downloading = downloads.get_mut(&key).unwrap();
+                            let downloading = downloads.get_mut(&key).ok_or(anyhow!("FilePiece: Got piece but not downloading {:?}", key))?;
                             if downloading.received_pieces.len() != file_piece.piece_number as usize {
                                 let error_message = "got out-of-order file piece; please retry download";
                                 bail(

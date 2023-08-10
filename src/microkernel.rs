@@ -68,18 +68,13 @@ enum KernelResponse {
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessMetadata {
     our: ProcessNode,
-    // our_name: String,
-    // process_name: String,
     wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
-    // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
 }
 
 impl Clone for ProcessMetadata {
     fn clone(&self) -> ProcessMetadata {
         ProcessMetadata {
             our: self.our.clone(),
-            // our_name: self.our_name.clone(),
-            // process_name: self.process_name.clone(),
             wasm_bytes_uri: self.wasm_bytes_uri.clone(),
         }
     }
@@ -228,8 +223,6 @@ impl MicrokernelProcessImports for ProcessWasi {
         let ids = send_process_results_to_loop(
             Ok(vec![(protomessage, "".into())]),
             self.process.metadata.our.clone(),
-            // self.process.metadata.our_name.clone(),
-            // self.process.metadata.process_name.clone(),
             self.process.send_to_loop.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
@@ -387,31 +380,6 @@ async fn get_and_send_specific_loop_message_to_process(
             }
         }
 
-           // & ((Err(_) == wrapped_message.message)
-           //    | ((Ok(_) == wrapped_message.message)
-           //       & !(("ws" == wrapped_message.message.source.process)
-           //           & (Some(serde_json::Value::String("Success".into())) == wrapped_message.message.payload.json)
-           //          )
-           //      )
-           //   ) {
-           //  let message = send_loop_message_to_process(
-           //      wrapped_message,
-           //      send_to_terminal,
-           //      contexts,
-           //  ).await;
-           //  return (
-           //      message.0,
-           //      match message.1 {
-           //          Ok(r) => {
-           //              match r {
-           //                  Ok(r) => Ok(r.0),
-           //                  Err(e) => Err(e),
-           //              }
-           //          },
-           //          Err(e) => Err(e),
-           //      },
-           //  );
-
         message_queue.push_back(wrapped_message);
     }
 }
@@ -447,15 +415,6 @@ async fn send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<(WitMessage, String), WitUqbarError>) {
-    // print_stack_to_terminal(
-    //     format!(
-    //         "{}: got message_stack",
-    //         self.metadata.process_name,
-    //     ).as_str(),
-    //     &next_message_stack,
-    //     self.send_to_terminal.clone(),
-    // ).await;
-
     match wrapped_message.message {
         Ok(ref message) => {
             let wit_message = convert_message_to_wit_message(message).await;
@@ -470,18 +429,6 @@ async fn send_loop_message_to_process(
                         let context = get_context(&message_id, send_to_terminal, contexts)
                             .await;
                         Ok((wit_message, context))
-                        // match contexts.get(&message_id) {
-                        //     Some(ref context) => {
-                        //         Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
-                        //     },
-                        //     None => {
-                        //         send_to_terminal
-                        //             .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
-                        //             .await
-                        //             .unwrap();
-                        //         Ok((wit_message, "".to_string()))
-                        //     },
-                        // }
                     },
                 },
             )
@@ -741,41 +688,6 @@ async fn send_process_results_to_loop(
                         type_with_target.is_expecting_response,
                         &prompting_message,
                     );
-                    //     if type_with_target.is_expecting_response {
-                    //         (rand::random(), None)
-                    //     } else {
-                    //         //  rsvp is set if there was a Request expecting Response
-                    //         //   followed by Request(s) not expecting Response;
-                    //         //   could also be None if entire chain of Requests are
-                    //         //   not expecting Response
-                    //         match prompting_message {
-                    //             Some(ref prompting_message) => {
-                    //                 match prompting_message.message.message_type {
-                    //                     MessageType::Request(prompting_message_is_expecting_response) => {
-                    //                         if prompting_message_is_expecting_response {
-                    //                             (
-                    //                                 prompting_message.id.clone(), //  TODO: need to reference count?
-                    //                                 Some(ProcessNode {
-                    //                                     node: prompting_message.message.wire.source_ship.clone(),
-                    //                                     process: prompting_message.message.wire.source_app.clone(),
-                    //                                 }),
-                    //                             )
-                    //                         } else {
-                    //                             (
-                    //                                 prompting_message.id.clone(),  //  TODO: need to reference count?
-                    //                                 prompting_message.rsvp.clone(),
-                    //                             )
-                    //                         }
-                    //                     },
-                    //                     MessageType::Response => {
-                    //                         (rand::random(), None)
-                    //                         // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
-                    //                     },
-                    //                 }
-                    //             },
-                    //             None => (rand::random(), None),
-                    //         }
-                    //     };
                     (
                         id,
                         rsvp,
@@ -797,65 +709,6 @@ async fn send_process_results_to_loop(
                         Some(r) => r,
                         None => continue,
                     };
-                        // match prompting_message.message.message_type {
-                        //     MessageType::Request(is_expecting_response) => {
-                        //         if is_expecting_response {
-                        //             (
-                        //                 prompting_message.id.clone(),
-                        //                 prompting_message.message.wire.source_ship.clone(),
-                        //                 prompting_message.message.wire.source_app.clone(),
-                        //             )
-                        //         } else {
-                        //             let Some(rsvp) = prompting_message.rsvp.clone() else {
-                        //                 println!("no rsvp set for response (prompting)");
-                        //                 continue;
-                        //             };
-
-                        //             (
-                        //                 prompting_message.id.clone(),
-                        //                 rsvp.node.clone(),
-                        //                 rsvp.process.clone(),
-                        //             )
-                        //         }
-                        //     },
-                        //     MessageType::Response => {
-                        //         let Some(context) = contexts.get(&prompting_message.id) else {
-                        //             println!("couldn't find context to route response");
-                        //             continue;
-                        //         };
-                        //         println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
-                        //         let Some(ref ultimate) = context.ultimate else {
-                        //             println!("couldn't find ultimate cause to route response");
-                        //             continue;
-                        //         };
-
-                        //         match ultimate.message_type {
-                        //             MessageType::Request(is_expecting_response) => {
-                        //                 if is_expecting_response {
-                        //                     (
-                        //                         ultimate.id.clone(),
-                        //                         ultimate.process_node.node.clone(),
-                        //                         ultimate.process_node.process.clone(),
-                        //                     )
-                        //                 } else {
-                        //                     let Some(rsvp) = ultimate.rsvp.clone() else {
-                        //                         println!("no rsvp set for response (ultimate)");
-                        //                         continue;
-                        //                     };
-                        //                     (
-                        //                         ultimate.id.clone(),
-                        //                         rsvp.node.clone(),
-                        //                         rsvp.process.clone(),
-                        //                     )
-                        //                 }
-                        //             },
-                        //             MessageType::Response => {
-                        //                 println!("ultimate as response unexpected case");
-                        //                 continue;
-                        //             },
-                        //         }
-                        //     },
-                        // };
                     (
                         id,
                         None,
@@ -873,32 +726,6 @@ async fn send_process_results_to_loop(
             message_type,
             payload,
         );
-        // let payload = Payload {
-        //     json: match payload.json {
-        //         Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
-        //         None => None,
-        //     },
-        //     bytes: payload.bytes.clone(),
-        // };
-        // let wrapped_message = WrappedMessage {
-        //     id: id.clone(),
-        //     rsvp,
-        //     message: Message {
-        //         message_type,
-        //         wire: Wire {
-        //             source_ship: source_ship.clone(),
-        //             source_app: source_app.clone(),
-        //             target_ship,
-        //             target_app,
-        //         },
-        //         payload,
-        //     }
-        // };
-
-        // println!("contexts before modification");
-        // for (key, val) in contexts.iter() {
-        //     println!("{}: {:?}", key, val);
-        // }
 
         //  modify contexts if necessary
         //   note that this could be rolled into the `match` making Message above;
@@ -1013,11 +840,6 @@ async fn send_process_results_to_loop(
                 contexts.remove(&wrapped_message.id);
             },
         }
-
-        // println!("contexts after modification");
-        // for (key, val) in contexts.iter() {
-        //     println!("{}: {:?}", key, val);
-        // }
 
         send_to_loop
             .send(wrapped_message)
@@ -1145,22 +967,6 @@ async fn make_process_loop(
                             },
                         },
                     }),
-                    // message: Message {
-                    //     message_type: MessageType::Request(false),
-                    //     wire: Wire {
-                    //         source_ship: our_name.clone(),
-                    //         source_app: "kernel".into(),
-                    //         target_ship: our_name.clone(),
-                    //         target_app: "process_manager".into(),
-                    //     },
-                    //     payload: Payload {
-                    //         json: Some(serde_json::json!({
-                    //             "type": "Stop",
-                    //             "process_name": process_name,
-                    //         })),
-                    //         bytes: None,
-                    //     },
-                    // },
                 })
                 .await
                 .unwrap();
@@ -1182,11 +988,16 @@ async fn handle_kernel_request(
         panic!("fubar");  //  TODO
     };
     let Some(value) = message.content.payload.json else {
-        // print_stack_to_terminal(
-        //     "kernel: got kernel command with no json source, stack",
-        //     &message_stack,
-        //     send_to_terminal.clone(),
-        // ).await;
+        send_to_terminal
+            .send(Printout{
+                verbosity: 0,
+                content: format!(
+                    "kernel: got kernel command with no json payload. Got: {}",
+                    message,
+                ),
+            })
+            .await
+            .unwrap();
         return;
     };
     let kernel_request: KernelRequest =
@@ -1195,11 +1006,15 @@ async fn handle_kernel_request(
     match kernel_request {
         KernelRequest::StartProcess(cmd) => {
             let Some(wasm_bytes) = message.content.payload.bytes else {
-                // print_stack_to_terminal(
-                //     "kernel: StartProcess requires bytes; stack",
-                //     &message_stack,
-                //     send_to_terminal.clone(),
-                // ).await;
+                send_to_terminal
+                    .send(Printout{
+                        verbosity: 0,
+                        content: format!(
+                            "kernel: StartProcess requires bytes",
+                        ),
+                    })
+                    .await
+                    .unwrap();
                 return;
             };
             let (send_to_process, recv_in_process) =
@@ -1251,27 +1066,6 @@ async fn handle_kernel_request(
                     },
                 })
             };
-            // let start_completed_message = WrappedMessage {
-            //     id: wrapped_message.id,
-            //     rsvp: None,
-            //     message: Message {
-            //         message_type: MessageType::Response,
-            //         wire: Wire {
-            //             source_ship: our_name.clone(),
-            //             source_app: "kernel".to_string(),
-            //             target_ship: our_name.clone(),
-            //             target_app: "process_manager".to_string(),
-            //         },
-            //         payload: Payload {
-            //             json: Some(
-            //                 serde_json::to_value(
-            //                     KernelResponse::StartProcess(metadata)
-            //                 ).unwrap()
-            //             ),
-            //             bytes: None,
-            //         },
-            //     }
-            // };
             if let Some(send_to_process_manager) = senders.get("process_manager") {
                 send_to_process_manager
                     .send(start_completed_message)
@@ -1402,11 +1196,6 @@ async fn make_event_loop(
                                 content: format!("event loop: got message: {}", wrapped_message)
                             }
                         ).await.unwrap();
-                        // print_stack_to_terminal(
-                        //     "event loop: got message stack",
-                        //     &message_stack,
-                        //     send_to_terminal.clone(),
-                        // ).await;
                         if our_name != wrapped_message.target.node {
                             match send_to_net.send(wrapped_message).await {
                                 Ok(()) => {

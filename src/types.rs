@@ -177,8 +177,9 @@ impl std::fmt::Display for WrappedMessage {
         };
         write!(
             f,
-            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
+            "WrappedMessage {{ id: {}, target: {}, rsvp: {}, message: {} }}",
             self.id,
+            self.target,
             rsvp,
             message,
         )

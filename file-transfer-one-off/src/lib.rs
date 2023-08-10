@@ -30,35 +30,6 @@ pub enum NetworkingError {
     NetworkingBug,
 }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum FileSystemError {
-    //  bad input from user
-    #[error("Malformed URI: {uri}. Problem with {bad_part_name}: {:?}.", bad_part)]
-    BadUri { uri: String, bad_part_name: String,  bad_part: Option<String>, },
-    #[error("JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.", json)]
-    BadJson { json: Option<serde_json::Value>, error: String, },
-    #[error("Bytes payload required for {action}.")]
-    BadBytes { action: String },
-    #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
-    IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
-    #[error("Already have {path} opened with mode {:?}.", mode)]
-    AlreadyOpen { path: String, mode: FileSystemMode, },
-    #[error("Don't have {path} opened with mode {:?}.", mode)]
-    NotCurrentlyOpen { path: String, mode: FileSystemMode, },
-    //  path or underlying fs problems
-    #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
-    BadPathJoin { base_path: String, addend: String, },
-    #[error("Failed to create dir at {path}: {error}.")]
-    CouldNotMakeDir { path: String, error: String, },
-    #[error("Failed to read {path}: {error}.")]
-    ReadFailed { path: String, error: String, },
-    #[error("Failed to write {path}: {error}.")]
-    WriteFailed { path: String, error: String, },
-    #[error("Failed to open {path} for {:?}: {error}.", mode)]
-    OpenFailed { path: String, mode: FileSystemMode, error: String, },
-    #[error("Filesystem error while {what} on {path}: {error}.")]
-    FsError { what: String, path: String, error: String, },
-}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {
     pub uri_string: String,
@@ -94,7 +65,6 @@ pub enum FileSystemResponse {
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
-    Error(FileSystemError),
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {
@@ -232,19 +202,6 @@ fn handle_networking_error(
     key: FileTransferKey,
 ) {
     bail(format!("NetworkingError: {}", error), our_name, process_name, key);
-}
-
-fn handle_fs_error(
-    error: FileSystemError,
-    our_name: &str,
-    process_name: &str,
-    key: FileTransferKey,
-) {
-    match error {
-        _ => {
-            bail(format!("FileSystemError: {}", error), our_name, process_name, key);
-        }
-    }
 }
 
 fn handle_next_message(
@@ -603,16 +560,6 @@ fn handle_next_message(
 
             if "filesystem" == message.source.process {
                 match process_lib::parse_message_json(message.content.payload.json)? {
-                    FileSystemResponse::Error(error) => {
-                        let context: FileTransferContext = serde_json::from_str(&context)?;
-
-                        handle_fs_error(
-                            error,
-                            &our_name,
-                            &process_name,
-                            context.key,
-                        );
-                    },
                     _ => {
                         panic!("file_transfer: unexpected filesystem Response");
                     },
@@ -661,13 +608,7 @@ impl bindings::MicrokernelProcess for Component {
                 },
                 Err(e) => {
                     //  TODO: should bail / Cancel
-                    print_to_terminal(0, 
-                        format!(
-                            "{}: error: {:?}",
-                            process_name,
-                            e,
-                        ).as_str()
-                    );
+                    print_to_terminal(0, format!("{}: error: {:?}", process_name, e).as_str());
                 },
             };
         }

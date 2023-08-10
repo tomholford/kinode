@@ -40,10 +40,11 @@ Replace `file-transfer` with the desired component.
 
 ### Boot
 
-Boot takes 3 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the third argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
+Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the third argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run boot_sequence.bin home http://147.135.114.167:8083/blockchain.json
+cargo run home http://147.135.114.167:8083/blockchain.json
 ```
+There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
 
 If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
 

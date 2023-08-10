@@ -73,24 +73,53 @@ async fn main() {
 
     // DEMO ONLY: remove all CLI arguments
     let args: Vec<String> = env::args().collect();
-    let boot_sequence_path = &args[1];
-    let boot_sequence = match fs::read(boot_sequence_path).await {
-        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
-            Ok(bs) => bs,
-            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
-        },
-        Err(e) => panic!("failed to read boot sequence: {:?}", e),
-    };
-
-    let home_directory_path = &args[2];
+    let home_directory_path = &args[1];
     // let home_directory_path = "home";
     // create home directory if it does not already exist
     if let Err(e) = fs::create_dir_all(home_directory_path).await {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let blockchain_url = &args[3];
+    let blockchain_url = &args[2];
     // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
+    let mut boot_sequence_path = "boot_sequence.bin";
+    for i in 3..args.len() - 1 {
+        if args[i] == "--bs" {
+            boot_sequence_path = &args[i + 1];
+            break;
+        }
+    }
+    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
+        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
+            Ok(bs) => bs,
+            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+        },
+        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
+    };
+
+    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
+    let mut boot_sequence: Vec<WrappedMessage> = Vec::new();
+    for bin_message in boot_sequence_bin {
+        boot_sequence.push(WrappedMessage {
+            id: bin_message.id,
+            rsvp: bin_message.rsvp,
+            message: Message {
+                message_type: bin_message.message.message_type,
+                wire: bin_message.message.wire,
+                payload: Payload {
+                    json: match bin_message.message.payload.json {
+                        Some(js) => Some(
+                            match serde_json::from_slice(&js) {
+                                Ok(j) => j,
+                                Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
+                            }),
+                        None => None,
+                    },
+                    bytes: bin_message.message.payload.bytes,
+                },
+            }
+        });
+    }
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =

@@ -68,6 +68,8 @@ pub struct Payload {
     pub bytes: Option<Vec<u8>>,
 }
 
+// TODO this is a hack to get around the fact that serde_json::Value
+//      is not serializable using bincode.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSerializablePayload {
     pub json: Option<Vec<u8>>,

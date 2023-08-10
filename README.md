@@ -15,9 +15,9 @@ git clone git@github.com:uqbar-dao/operationOJ.git
 
 rustup target add wasm32-unknown-unknown
 cargo install cargo-wasi
-cargo install --git https://github.com/bytecodealliance/cargo-component --rev 84ad1dc
+cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
 
-# Build the runtime, along with 3 booted-at-startup WASM modules: process-manager, terminal, and http-bindings
+# Build the runtime, along with a number of booted-at-startup WASM modules including process-manager, terminal, and http-bindings
 cargo build
 
 # Create the home directory for your node
@@ -54,7 +54,7 @@ You will be prompted to navigate to `localhost:8000/register`. This should appea
 
 Now that the node has started, look to the example usage section below to see what kind of commands are available.
 
-### Terminal syntax
+## Terminal syntax
 
 - CTRL+C or CTRL+D to shutdown node
 - CTRL+V to toggle verbose mode, which is on by default
@@ -135,7 +135,7 @@ cargo r process_manager.wasm home/dolph dolph
 !message dolph process_manager {"type": "Restart", "process_name": "file_transfer"}
 ```
 
-### Using `http-server` with an app
+## Using `http-server` with an app
 
 After booting poast using the commands above, run
 Make sure to boot both the http-bindings app and poast
@@ -148,3 +148,45 @@ Then try making a GET request in browser to `http://127.0.0.1:8080/poast` or mak
 curl -X POST -H "Content-Type: application/json" -d '{"foo":"bar"}' http://127.0.0.1:8080/poast
 ```
 And both should return responses.
+
+## Bumping deps
+
+From time to time we will need to bump deps: `cargo component`[1], wit-bindgen[2], and so on.
+Some part of this will be highly manual since these libs are moving very fast and we should expect many breaking changes.
+Others are standard.
+Here, we document the semi-standard parts.
+
+### cargo component
+
+First take a look at [1].
+Significant breaking changes occur frequently as of this writing, and so even the "standard" commands below are subject to change.
+E.g., `cargo component new` has a new `--reactor` option as of this writing.
+In addition, components now generate bindings with a different macro command.
+These things need to be discovered by reading the README and comparing that to how we currently do things.
+
+1. Go to https://github.com/bytecodealliance/cargo-component/commits/main
+2. Find latest commit hash
+3. Run
+   ```
+   cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
+   ```
+   replacing d14cef6 with the most recent commit hash.
+   You may also need to change arguments past the `--rev`; e.g. the `cargo-component` part is new as of this writing.
+4. Update the README to reflect the new commit hash.
+
+### Components
+
+1. Run `cargo update` in the component directory.
+2. Find any changes to Cargo.toml by going to some temporary directory and running
+   ```
+   cargo component new --reactor mytest
+   ```
+   and comparing the Cargo.toml produced to the one in existing component directories.
+
+## References
+
+[1] https://github.com/bytecodealliance/cargo-component
+[2] https://github.com/bytecodealliance/wit-bindgen
+
+[1]: https://github.com/bytecodealliance/cargo-component
+[2]: https://github.com/bytecodealliance/wit-bindgen

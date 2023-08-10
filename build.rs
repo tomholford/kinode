@@ -48,4 +48,9 @@ fn main() {
         Command::new("cargo")
               .args(&["component", "build", &format!("--manifest-path={}/sequencer/Cargo.toml", pwd.display()), "--target", "wasm32-unknown-unknown"])
       ).unwrap();
+    run_command(
+        Command::new("cargo")
+            .current_dir("boot_sequence") // Change to boot_sequence directory
+            .arg("run")
+    ).unwrap();
 }

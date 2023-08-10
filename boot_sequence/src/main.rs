@@ -27,17 +27,17 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
 
     for process in &processes_to_start {
-        let process_wasm_path = format!("apps/{process}.wasm");
+        let process_wasm_path = format!("{process}.wasm");
         // will fail if symlink already exists, which is good
         let _ = run_command(
             Command::new("ln")
                 .args([
                     "-s",
-                    &format!("../../{process}/target/wasm32-unknown-unknown/release/{process}.wasm"),
+                    &format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm"),
                     &process_wasm_path,
                 ])
         );
-        let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&format!("{process_wasm_path}"));
+        let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
         let start_process_message = BinSerializableWrappedMessage {
             id: rand::random(),
             //  target assigned by runtime

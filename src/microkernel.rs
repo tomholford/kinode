@@ -6,7 +6,6 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-use tokio::fs;
 use serde::{Serialize, Deserialize};
 
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
@@ -26,59 +25,6 @@ bindgen!({
     async: true,
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum ProcessManagerCommand {
-    Start(ProcessStart),
-    Stop(ProcessManagerStop),
-    Restart(ProcessManagerRestart),
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessStart {
-    process_name: String,
-    wasm_bytes_uri: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessManagerStop {
-    process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessManagerRestart {
-    process_name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum KernelRequest {
-    StartProcess(ProcessStart),
-    StopProcess(KernelStopProcess),
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct KernelStopProcess {
-    process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum KernelResponse {
-    StartProcess(ProcessMetadata),
-    StopProcess(KernelStopProcess),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessMetadata {
-    our: ProcessNode,
-    wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
-}
-
-impl Clone for ProcessMetadata {
-    fn clone(&self) -> ProcessMetadata {
-        ProcessMetadata {
-            our: self.our.clone(),
-            wasm_bytes_uri: self.wasm_bytes_uri.clone(),
-        }
-    }
-}
 
 struct Process {
     metadata: ProcessMetadata,
@@ -142,19 +88,6 @@ impl ProcessContext {
         }
     }
 }
-
-// impl std::error::Error for WitError {
-// }
-// impl std::fmt::Display for WitError {
-//     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-//         write!(
-//             f,
-//             "WitError {{ foo: {}, bar: {} }}",
-//             self.foo,
-//             self.bar,
-//         )
-//     }
-// }
 
 //  live in event loop
 type Senders = HashMap<String, MessageSender>;
@@ -1269,7 +1202,6 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: Identity,
-    // process_manager_wasm_path: String,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -1300,75 +1232,6 @@ pub async fn kernel(
             engine,
         ).await
     );
-
-    let our_kernel = ProcessNode {
-        node: our.name.clone(),
-        process: "kernel".into(),
-    };
-
-    // always start process_manager, terminal, http_bindings, apps_home on boot
-    let processes = vec![
-        "process_manager",
-        "terminal",
-        "http_bindings",
-        "apps_home",
-        "http_proxy",
-    ];
-    for process in &processes {
-        let mut process_wasm_path = process.to_string();
-        process_wasm_path.push_str(".wasm");
-        let process_wasm_bytes = fs::read(&process_wasm_path).await.unwrap();
-        let start_process_manager_message = WrappedMessage {
-            id: rand::random(),
-            target: our_kernel.clone(),
-            rsvp: None,
-            message: Ok(Message {
-                source: our_kernel.clone(),
-                content: MessageContent {
-                    message_type: MessageType::Request(false),
-                    payload: Payload {
-                        json: Some(serde_json::to_value(
-                            KernelRequest::StartProcess(
-                                ProcessStart{
-                                    process_name: (*process).into(),
-                                    wasm_bytes_uri: process_wasm_path,
-                                }
-                            )
-                        ).unwrap()),
-                        bytes: Some(process_wasm_bytes),
-                    },
-                },
-            })
-        };
-        send_to_loop.send(start_process_manager_message).await.unwrap();
-    }
-
-    // DEMO ONLY: start file_transfer app at boot
-    if let Ok(ft_bytes) = fs::read("file_transfer.wasm").await {
-        let start_apps_ft = WrappedMessage {
-            id: rand::random(),
-            target: our_kernel.clone(),
-            rsvp: None,
-            message: Ok(Message {
-                source: our_kernel.clone(),
-                content: MessageContent {
-                    message_type: MessageType::Request(false),
-                    payload: Payload {
-                        json: Some(serde_json::to_value(
-                            KernelRequest::StartProcess(
-                                ProcessStart{
-                                    process_name: "file_transfer".into(),
-                                    wasm_bytes_uri: "file_transfer.wasm".into(),
-                                }
-                            )
-                        ).unwrap()),
-                        bytes: Some(ft_bytes),
-                    },
-                },
-            })
-        };
-        send_to_loop.send(start_apps_ft).await.unwrap();
-    }
 
     let _ = event_loop_handle.await;
 }

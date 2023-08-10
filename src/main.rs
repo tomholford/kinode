@@ -73,7 +73,6 @@ async fn main() {
 
     // DEMO ONLY: remove all CLI arguments
     let args: Vec<String> = env::args().collect();
-    // let process_manager_wasm_path = "process_manager.wasm";
     let home_directory_path = &args[1];
     // let home_directory_path = "home";
     // create home directory if it does not already exist
@@ -334,6 +333,55 @@ async fn main() {
         .await
         .unwrap();
 
+    let mut boot_sequence_path = "boot_sequence.bin";
+    for i in 3..args.len() - 1 {
+        if args[i] == "--bs" {
+            boot_sequence_path = &args[i + 1];
+            break;
+        }
+    }
+    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
+        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
+            Ok(bs) => bs,
+            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+        },
+        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
+    };
+
+    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
+    for bin_message in boot_sequence_bin {
+        kernel_message_sender.send(
+            WrappedMessage {
+                id: bin_message.id,
+                target: ProcessNode {
+                    node: our.name.clone(),
+                    process: "kernel".into(),
+                },
+                rsvp: None,
+                message: Ok(Message {
+                    source: ProcessNode {
+                        node: our.name.clone(),
+                        process: "kernel".into(),
+                    },
+                    content: MessageContent {
+                        message_type: bin_message.message.content.message_type,
+                        payload: Payload {
+                            json: match bin_message.message.content.payload.json {
+                                Some(js) => Some(
+                                    match serde_json::from_slice(&js) {
+                                        Ok(j) => j,
+                                        Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
+                                    }),
+                                None => None,
+                            },
+                            bytes: bin_message.message.content.payload.bytes,
+                        },
+                    },
+                }),
+            }
+        ).await.unwrap();
+    }
+
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
@@ -350,7 +398,6 @@ async fn main() {
     let kernel_handle = tokio::spawn(
         microkernel::kernel(
             our.clone(),
-            // process_manager_wasm_path.into(),
             kernel_message_sender.clone(),
             print_sender.clone(),
             kernel_message_receiver,

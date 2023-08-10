@@ -48,14 +48,6 @@ pub struct ProcessNode {
     pub process: String,
 }
 
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct Wire {
-//     pub source_ship: String,
-//     pub source_app:  String,
-//     pub target_ship: String,
-//     pub target_app:  String,
-// }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
@@ -100,6 +92,34 @@ pub struct Message {
 pub struct MessageContent {
     pub message_type: MessageType,
     pub payload: Payload,
+}
+
+// TODO this is a hack to get around the fact that serde_json::Value
+//      is not serializable using bincode.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializablePayload {
+    pub json: Option<Vec<u8>>,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableWrappedMessage {
+    pub id: u64,
+    //  target assigned by runtime
+    //  rsvp assigned by runtime (as None)
+    pub message: BinSerializableMessage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableMessage {
+    //  source assigned by runtime
+    pub content: BinSerializableMessageContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableMessageContent {
+    pub message_type: MessageType,
+    pub payload: BinSerializablePayload,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -199,6 +219,57 @@ pub enum DebugCommand {
 pub struct Printout {
     pub verbosity: u8,
     pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProcessManagerCommand {
+    Start(ProcessStart),
+    Stop(ProcessManagerStop),
+    Restart(ProcessManagerRestart),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessStart {
+    pub process_name: String,
+    pub wasm_bytes_uri: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessManagerStop {
+    pub process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessManagerRestart {
+    pub process_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum KernelRequest {
+    StartProcess(ProcessStart),
+    StopProcess(KernelStopProcess),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KernelStopProcess {
+    pub process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum KernelResponse {
+    StartProcess(ProcessMetadata),
+    StopProcess(KernelStopProcess),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessMetadata {
+    pub our: ProcessNode,
+    pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+}
+impl Clone for ProcessMetadata {
+    fn clone(&self) -> ProcessMetadata {
+        ProcessMetadata {
+            our: self.our.clone(),
+            wasm_bytes_uri: self.wasm_bytes_uri.clone(),
+        }
+    }
 }
 
 impl FileSystemError {

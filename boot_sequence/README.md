@@ -1,0 +1,2 @@
+# Boot Sequence
+This repo creates a binary file `boot_sequence.bin` to startup a node with a default set of apps. The kernel accepts a list of `BinSerializableWrappedMessage`s on boot. To add a new app to the boot sequence, you can copy the rest of the code in [main.rs](./src/main.rs) which is pretty straightforward.

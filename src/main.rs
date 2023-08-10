@@ -1,7 +1,6 @@
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes256Gcm,
-    Key,
+    Aes256Gcm, Key,
 };
 use lazy_static::__Deref;
 use reqwest;
@@ -23,10 +22,10 @@ mod filesystem;
 mod http_client;
 mod http_server;
 mod microkernel;
+mod net;
 mod register;
 mod terminal;
 mod types;
-mod net;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -108,16 +107,15 @@ async fn main() {
                 wire: bin_message.message.wire,
                 payload: Payload {
                     json: match bin_message.message.payload.json {
-                        Some(js) => Some(
-                            match serde_json::from_slice(&js) {
-                                Ok(j) => j,
-                                Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
-                            }),
+                        Some(js) => Some(match serde_json::from_slice(&js) {
+                            Ok(j) => j,
+                            Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
+                        }),
                         None => None,
                     },
                     bytes: bin_message.message.payload.bytes,
                 },
-            }
+            },
         });
     }
 
@@ -192,14 +190,12 @@ async fn main() {
     let registration_port = find_open_port(8000).await.unwrap();
     let http_server_port = find_open_port(8080).await.unwrap();
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
-    let keyfile = fs::read(format!("{}/network.keys", home_directory_path)).await;
+    let keyfile = fs::read(format!("{}/.network.keys", home_directory_path)).await;
 
     let (our, networking_keypair): (Identity, signature::Ed25519KeyPair) = if keyfile.is_ok() {
         // LOGIN flow
-        // get username from disk
-        let username = fs::read_to_string(format!("{}/.user", home_directory_path))
-            .await
-            .unwrap();
+        // get username and keyfile from disk
+        let (username, key) = bincode::deserialize::<(String, Vec<u8>)>(&keyfile.unwrap()).unwrap();
 
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
@@ -221,7 +217,7 @@ async fn main() {
         let networking_keypair = tokio::select! {
             _ = register::login(tx,
                                 kill_rx,
-                                keyfile.unwrap(),
+                                key,
                                 registration_port,
                                 http_server_port,
                                 &username)
@@ -282,7 +278,7 @@ async fn main() {
             &mut disk_key,
         );
         println!(
-            "saving encrypted networking keys to {}/network.keys",
+            "saving encrypted networking keys to {}/.network.keys",
             home_directory_path
         );
         let key = Key::<Aes256Gcm>::from_slice(&disk_key);
@@ -292,8 +288,12 @@ async fn main() {
             .encrypt(&nonce, serialized_networking_keypair.as_ref())
             .unwrap();
         fs::write(
-            format!("{}/network.keys", home_directory_path),
-            [nonce.deref().to_vec(), ciphertext].concat(),
+            format!("{}/.network.keys", home_directory_path),
+            bincode::serialize(&(
+                registration.username.clone(),
+                [nonce.deref().to_vec(), ciphertext].concat(),
+            ))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -366,11 +366,6 @@ async fn main() {
         })
         .await;
 
-    // at boot, always save username to disk for login
-    fs::write(format!("{}/.user", home_directory_path), our.name.clone())
-        .await
-        .unwrap();
-
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
@@ -384,64 +379,52 @@ async fn main() {
      *  if any of these modules fail, the program exits with an error.
      */
 
-    let kernel_handle = tokio::spawn(
-        microkernel::kernel(
-            our.clone(),
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            kernel_message_receiver,
-            kernel_debug_message_receiver,
-            net_message_sender.clone(),
-            fs_message_sender,
-            http_server_sender,
-            http_client_message_sender,
-            boot_sequence,
-        )
-    );
-    let net_handle = tokio::spawn(
-        net::networking(
-            our.clone(),
-            our_ip,
-            networking_keypair,
-            pki.clone(),
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            net_message_receiver,
-        )
-    );
-    let indexing_handle = tokio::spawn(
-        indexing(
-            blockchain_url.clone(),
-            pki.clone(),
-            print_sender.clone(),
-        )
-    );
-    let fs_handle = tokio::spawn(
-        filesystem::fs_sender(
-            our.name.clone(),
-            home_directory_path.into(),
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-            fs_message_receiver
-        )
-    );
-    let http_server_handle = tokio::spawn(
-        http_server::http_server(
-            our.name.clone(),
-            http_server_port,
-            http_server_receiver,
-            kernel_message_sender.clone(),
-            print_sender.clone(),
-        )
-    );
-    let http_client_handle = tokio::spawn(
-        http_client::http_client(
-            our.name.clone(),
-            kernel_message_sender.clone(),
-            http_client_message_receiver,
-            print_sender.clone(),
-        )
-    );
+    let kernel_handle = tokio::spawn(microkernel::kernel(
+        our.clone(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        kernel_message_receiver,
+        kernel_debug_message_receiver,
+        net_message_sender.clone(),
+        fs_message_sender,
+        http_server_sender,
+        http_client_message_sender,
+        boot_sequence,
+    ));
+    let net_handle = tokio::spawn(net::networking(
+        our.clone(),
+        our_ip,
+        networking_keypair,
+        pki.clone(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        net_message_receiver,
+    ));
+    let indexing_handle = tokio::spawn(indexing(
+        blockchain_url.clone(),
+        pki.clone(),
+        print_sender.clone(),
+    ));
+    let fs_handle = tokio::spawn(filesystem::fs_sender(
+        our.name.clone(),
+        home_directory_path.into(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        fs_message_receiver,
+    ));
+    let http_server_handle = tokio::spawn(http_server::http_server(
+        our.name.clone(),
+        http_server_port,
+        http_server_receiver,
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+    ));
+    let http_client_handle = tokio::spawn(http_client::http_client(
+        our.name.clone(),
+        kernel_message_sender.clone(),
+        http_client_message_receiver,
+        print_sender.clone(),
+    ));
     let quit = tokio::select! {
         //  TODO: spin terminal::terminal out into its own task;
         //        get error due to it not being `Send`

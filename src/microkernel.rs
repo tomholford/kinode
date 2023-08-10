@@ -6,7 +6,6 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-use serde::{Serialize, Deserialize};
 
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
 
@@ -575,8 +574,6 @@ async fn send_process_results_to_loop(
 ) -> Vec<u64> {
     let Ok(results) = results else {
         //  error case
-        //  TODO: factor out the Response routing, since we want
-        //        to route Error in the same way
         let Err(e) = results else { panic!("") };
 
         let Some(ref prompting_message) = prompting_message else {
@@ -584,12 +581,10 @@ async fn send_process_results_to_loop(
             return vec![];  //  TODO: how to handle error on error routing case?
         };
 
-        let (id, target) = match handle_response_case(
-            &prompting_message,
-            contexts,
-        ) {
-            Some(r) => r,
-            None => return vec![],  //  TODO: how to handle error on error routing case?
+        let id = prompting_message.id.clone();
+        let target = match prompting_message.message {
+            Ok(ref m) => m.source.clone(),
+            Err(ref e) => e.source.clone(),
         };
 
         let wrapped_message = WrappedMessage {
@@ -1198,7 +1193,6 @@ async fn make_event_loop(
         }
     )
 }
-
 
 pub async fn kernel(
     our: Identity,

@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, fs};
 use std::process::Command;
 
 fn run_command(cmd: &mut Command) -> io::Result<()> {
@@ -28,13 +28,13 @@ fn main() {
         println!("cargo:rerun-if-changed=modules/{}/src", name);
     }
     let pwd = std::env::current_dir().unwrap();
+    let wit_file = fs::read_to_string("wit/process.wit").unwrap();
     for name in APPS {
-        // symlink the wit file
-        let _ = run_command(Command::new("ln").args(&[
-            "-s",
-            &format!("{}/wit/process.wit", pwd.display()),
-            &format!("{}/modules/{}/wit", pwd.display(), name),
-        ]));
+        // copy in the wit file
+        fs::write(
+            format!("{}/modules/{}/wit", pwd.display(), name),
+            wit_file.clone(),
+        ).unwrap();
         // build the component
         run_command(Command::new("cargo").args(&[
             "component",

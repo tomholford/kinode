@@ -250,16 +250,6 @@ async fn main() {
         let ciphertext: Vec<u8> = cipher
             .encrypt(&nonce, serialized_networking_keypair.as_ref())
             .unwrap();
-        fs::write(
-            format!("{}/.network.keys", home_directory_path),
-            bincode::serialize(&(
-                registration.username.clone(),
-                [nonce.deref().to_vec(), ciphertext].concat(),
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
@@ -312,6 +302,16 @@ async fn main() {
         }
         println!("\"posting\" \"transaction\" to \"blockchain\"...");
         std::thread::sleep(std::time::Duration::from_secs(5));
+        fs::write(
+            format!("{}/.network.keys", home_directory_path),
+            bincode::serialize(&(
+                registration.username.clone(),
+                [nonce.deref().to_vec(), ciphertext].concat(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
         println!("registration complete!");
         (our, networking_keypair)
     };

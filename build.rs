@@ -12,24 +12,18 @@ fn run_command(cmd: &mut Command) -> io::Result<()> {
 
 fn main() {
     // Tell Cargo that if the given file changes, to rerun this build script.
-    println!("cargo:rerun-if-changed=process-manager/src");
-    println!("cargo:rerun-if-changed=terminal/src");
-    println!("cargo:rerun-if-changed=http-bindings/src");
-    println!("cargo:rerun-if-changed=http-proxy/src");
-    println!("cargo:rerun-if-changed=file-transfer/src");
-    println!("cargo:rerun-if-changed=apps-home/src");
-    println!("cargo:rerun-if-changed=sequencer/src");
-    let pwd = std::env::current_dir().unwrap();
     const APPS: [&str; 7] = [
-        "process-manager",
+        "process_manager",
         "terminal",
-        "http-bindings",
-        "http-proxy",
-        "file-transfer",
-        "apps-home",
+        "http_bindings",
+        "http_proxy",
+        "file_transfer",
+        "apps_home",
         "sequencer",
     ];
+    let pwd = std::env::current_dir().unwrap();
     for name in APPS {
+        println!("cargo:rerun-if-changed={}/src", name);
         run_command(Command::new("cargo").args(&[
             "component",
             "build",

@@ -1,6 +1,17 @@
 mod types;
 use crate::types::*;
 use tokio::fs;
+use std::io;
+use std::process::Command;
+
+fn run_command(cmd: &mut Command) -> io::Result<()> {
+    let status = cmd.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "Command failed"))
+    }
+}
 
 pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  add new processes_to_start here, and symlink in src/
@@ -16,10 +27,17 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
 
     for process in &processes_to_start {
-        let mut process_wasm_path = "./src/".to_string();
-        process_wasm_path.push_str(process);
-        process_wasm_path.push_str(".wasm");
-        let process_wasm_bytes = fs::read(&process_wasm_path).await.unwrap();
+        let process_wasm_path = format!("apps/{process}.wasm");
+        // will fail if symlink already exists, which is good
+        let _ = run_command(
+            Command::new("ln")
+                .args([
+                    "-s",
+                    &format!("../../{process}/target/wasm32-unknown-unknown/release/{process}.wasm"),
+                    &process_wasm_path,
+                ])
+        );
+        let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&format!("{process_wasm_path}"));
         let start_process_message = BinSerializableWrappedMessage {
             id: rand::random(),
             //  target assigned by runtime

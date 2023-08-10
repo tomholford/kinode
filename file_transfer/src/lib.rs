@@ -1062,7 +1062,7 @@ fn handle_next_message(
             },
             WitMessageType::Response => {
                 print_to_terminal(1, "Response");
-    
+
                 if "filesystem" == message.source.process {
                     let response: FileSystemResponse = serde_json::from_str(payload_json_string).unwrap();
                     match response {
@@ -1128,7 +1128,7 @@ fn handle_next_message(
                                     key: context.key,
                                     additional: FileTransferAdditionalContext::Empty,
                                 }).unwrap();
-    
+
                                 bindings::yield_results(Ok(vec![
                                     (
                                         bindings::WitProtomessage {
@@ -1426,7 +1426,7 @@ fn handle_next_message(
                             }
 
                             uploading.number_sent_pieces = piece_number.clone() + 1;
-    
+
                             bindings::yield_results(Ok(vec![
                                 (
                                     bindings::WitProtomessage {
@@ -1511,7 +1511,7 @@ fn handle_next_message(
                                 return Err(anyhow!(error_message));
                             };
                             let uploading = uploads.get(&parsed_context.key).unwrap();
-    
+
                             bindings::yield_results(Ok(vec![
                                 (
                                     bindings::WitProtomessage {
@@ -1622,7 +1622,7 @@ fn handle_next_message(
                                 server: message.source.node.clone(),
                                 uri_string: file_piece.uri_string.clone(),
                             };
-    
+
                             let Some(bytes) = message.content.payload.bytes.clone() else {
                                 let error_message = "FilePiece must be sent bytes";
                                 bail(
@@ -1732,7 +1732,7 @@ fn handle_next_message(
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        print_to_terminal(0, "file_transfer: begin");
+        print_to_terminal(1, "file_transfer: begin");
         // HTTP bindings
         bindings::yield_results(Ok(
             vec![(
@@ -1870,10 +1870,10 @@ impl bindings::MicrokernelProcess for Component {
                                         match mode {
                                             FileSystemMode::Append => {
                                                 print_to_terminal(1, "AlreadyOpen: Append");
-                    
+
                                                 let downloading = downloads.get(&context.key)
                                                     .unwrap();
-                    
+
                                                 yield_get_piece(
                                                     ProcessNode {
                                                         node: context.key.server.clone(),
@@ -1892,7 +1892,7 @@ impl bindings::MicrokernelProcess for Component {
                                     },
                                     _ => {
                                         print_to_terminal(
-                                            0, 
+                                            0,
                                             format!("{}: error: {:?}", process_name, e)
                                                 .as_str()
                                         )
@@ -1900,14 +1900,14 @@ impl bindings::MicrokernelProcess for Component {
                                 }
                             } else {
                                 print_to_terminal(
-                                    0, 
+                                    0,
                                     format!("{}: error: {:?}", process_name, e).as_str()
                                 )
                             }
                         },
                         None => {
                             print_to_terminal(
-                                0, 
+                                0,
                                 format!("{}: error: {:?}", process_name, e).as_str()
                             )
                         },

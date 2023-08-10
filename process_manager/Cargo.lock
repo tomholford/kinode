@@ -139,7 +139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "process-manager"
+name = "process_manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",

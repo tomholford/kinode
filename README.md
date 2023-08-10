@@ -1,7 +1,5 @@
 # operationOJ
 
-# demo-0.1 branch
-
 ## Setup
 
 ### Building components

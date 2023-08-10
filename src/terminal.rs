@@ -545,20 +545,24 @@ pub async fn terminal(
                                     let _err = event_loop.send(
                                         WrappedMessage {
                                             id: rand::random(),
+                                            target: ProcessNode {
+                                                node: our.name.clone(),
+                                                process: "terminal".into(),
+                                            },
                                             rsvp: None,
-                                            message: Message {
-                                                message_type: MessageType::Request(false),
-                                                wire: Wire {
-                                                    source_ship: our.name.clone(),
-                                                    source_app: "terminal".into(),
-                                                    target_ship: our.name.clone(),
-                                                    target_app: "terminal".into(),
+                                            message: Ok(Message {
+                                                source: ProcessNode {
+                                                    node: our.name.clone(),
+                                                    process: "terminal".into(),
                                                 },
-                                                payload: Payload {
-                                                    json: None,
-                                                    bytes: bincode::serialize(&command).ok(),
+                                                content: MessageContent {
+                                                    message_type: MessageType::Request(false),
+                                                    payload: Payload {
+                                                        json: None,
+                                                        bytes: bincode::serialize(&command).ok(),
+                                                    },
                                                 },
-                                            }
+                                            })
                                         }
                                     ).await;
                                 },

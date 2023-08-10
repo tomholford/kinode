@@ -43,29 +43,55 @@ pub struct IdentityTransaction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AppNode {
-    pub server: String,
-    pub app: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessNode {
     pub node: String,
     pub process: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Wire {
-    pub source_ship: String,
-    pub source_app:  String,
-    pub target_ship: String,
-    pub target_app:  String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
     pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WrappedMessage {
+    pub id: u64,
+    pub target: ProcessNode,
+    pub rsvp: Rsvp,
+    pub message: Result<Message, UqbarError>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UqbarError {
+    pub source: ProcessNode,
+    pub timestamp: u64,
+    pub content: UqbarErrorContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UqbarErrorContent {
+    pub kind: String,
+    pub message: serde_json::Value,
+    pub context: serde_json::Value,
+}
+
+//  kernel sets in case, e.g.,
+//   A requests response from B does not request response from C
+//   -> kernel sets `Some(A) = Rsvp` for B's request to C
+pub type Rsvp = Option<ProcessNode>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Message {
+    // pub wire: Wire,
+    pub source: ProcessNode,
+    pub content: MessageContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageContent {
+    pub message_type: MessageType,
+    pub payload: Payload,
 }
 
 // TODO this is a hack to get around the fact that serde_json::Value
@@ -77,35 +103,22 @@ pub struct BinSerializablePayload {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WrappedMessage {
-    pub id: u64,
-    pub rsvp: Rsvp,
-    pub message: Message,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSerializableWrappedMessage {
     pub id: u64,
-    pub rsvp: Rsvp,
+    //  target assigned by runtime
+    //  rsvp assigned by runtime (as None)
     pub message: BinSerializableMessage,
-}
-
-//  kernel sets in case, e.g.,
-//   A requests response from B does not request response from C
-//   -> kernel sets `Some(A) = Rsvp` for B's request to C
-pub type Rsvp = Option<ProcessNode>;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Message {
-    pub message_type: MessageType,
-    pub wire: Wire,
-    pub payload: Payload,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSerializableMessage {
+    //  source assigned by runtime
+    pub content: BinSerializableMessageContent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinSerializableMessageContent {
     pub message_type: MessageType,
-    pub wire: Wire,
     pub payload: BinSerializablePayload,
 }
 
@@ -128,7 +141,7 @@ impl std::fmt::Display for ProcessNode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "ProcessNode {{ node: {}, process: {} }}",
+            "{{ node: {}, process: {} }}",
             self.node,
             self.process,
         )
@@ -154,9 +167,19 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Message {{ message_type: {:?}, wire: {:?}, payload: {} }}",
+            "Message {{ source: {:?}, content: {} }}",
+            self.source,
+            self.content,
+        )
+    }
+}
+
+impl std::fmt::Display for MessageContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "MessageContent {{ message_type: {:?}, payload: {} }}",
             self.message_type,
-            self.wire,
             self.payload,
         )
     }
@@ -168,12 +191,17 @@ impl std::fmt::Display for WrappedMessage {
             Some(ref rsvp) => format!("{}", rsvp),
             None => "None".into(),
         };
+        let message = match self.message {
+            Ok(ref m) => format!("{}", m),
+            Err(ref e) => format!("{:?}", e),
+        };
         write!(
             f,
-            "WrappedMessage {{ id: {}, rsvp: {}, message: {} }}",
+            "WrappedMessage {{ id: {}, target: {}, rsvp: {}, message: {} }}",
             self.id,
+            self.target,
             rsvp,
-            self.message,
+            message,
         )
     }
 }
@@ -193,6 +221,75 @@ pub struct Printout {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProcessManagerCommand {
+    Start(ProcessStart),
+    Stop(ProcessManagerStop),
+    Restart(ProcessManagerRestart),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessStart {
+    pub process_name: String,
+    pub wasm_bytes_uri: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessManagerStop {
+    pub process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessManagerRestart {
+    pub process_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum KernelRequest {
+    StartProcess(ProcessStart),
+    StopProcess(KernelStopProcess),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KernelStopProcess {
+    pub process_name: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum KernelResponse {
+    StartProcess(ProcessMetadata),
+    StopProcess(KernelStopProcess),
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessMetadata {
+    pub our: ProcessNode,
+    pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+}
+impl Clone for ProcessMetadata {
+    fn clone(&self) -> ProcessMetadata {
+        ProcessMetadata {
+            our: self.our.clone(),
+            wasm_bytes_uri: self.wasm_bytes_uri.clone(),
+        }
+    }
+}
+
+impl FileSystemError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            FileSystemError::BadUri { .. } => "BadUri",
+            FileSystemError::BadJson { .. } =>  "BadJson",
+            FileSystemError::BadBytes { .. } => "BadBytes",
+            FileSystemError::IllegalAccess { .. } => "IllegalAccess",
+            FileSystemError::AlreadyOpen { .. } => "AlreadyOpen",
+            FileSystemError::NotCurrentlyOpen { .. } => "NotCurrentlyOpen",
+            FileSystemError::BadPathJoin { .. } => "BadPathJoin",
+            FileSystemError::CouldNotMakeDir { .. } => "CouldNotMakeDir",
+            FileSystemError::ReadFailed { .. } => "ReadFailed",
+            FileSystemError::WriteFailed { .. } => "WriteFailed",
+            FileSystemError::OpenFailed { .. } => "OpenFailed",
+            FileSystemError::FsError { .. } => "FsError",
+        }
+    }
+}
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum FileSystemError {
     //  bad input from user
@@ -257,7 +354,6 @@ pub enum FileSystemResponse {
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
-    Error(FileSystemError),
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {

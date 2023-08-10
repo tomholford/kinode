@@ -1,9 +1,11 @@
-use bindings::component::microkernel_process::types;
+//  TODO: rewrite lib, given new bindgen behavior
 
-pub fn make_response<'a, T>(
-    payload: &'a types::WitPayload,
+use super::bindings::component::microkernel_process::types;
+
+pub fn make_response<T>(
+    payload: types::WitPayload,
     context: Option<T>,  //  ?
-) -> anyhow::Result<(types::WitProtomessage<'a>, String)>
+) -> anyhow::Result<(types::WitProtomessage, String)>
 where
     T: serde::Serialize
 {
@@ -19,13 +21,13 @@ where
     ))
 }
 
-pub fn make_request<'a, T>(
+pub fn make_request<T>(
     is_expecting_response: bool,
-    target_node: &'a str,
-    target_process: &'a str,
-    payload: &'a types::WitPayload,
+    node: &str,
+    process: &str,
+    payload: types::WitPayload,
     context: Option<T>,
-) -> anyhow::Result<(types::WitProtomessage<'a>, String)>
+) -> anyhow::Result<(types::WitProtomessage, String)>
 where
     T: serde::Serialize
 {
@@ -34,8 +36,10 @@ where
             protomessage_type: types::WitProtomessageType::Request(
                 types::WitRequestTypeWithTarget {
                     is_expecting_response,
-                    target_ship: target_node,
-                    target_app: target_process,
+                    target: types::WitProcessNode {
+                        node: node.into(),
+                        process: process.into(),
+                    }
                 },
             ),
             payload,
@@ -74,15 +78,15 @@ where
     Ok(parsed)
 }
 
-pub fn yield_results(results: Vec<(types::WitProtomessage, String)>) {
-    let strings = results.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>();
-
-    let mut formatted_results = vec![];
-    for (i, result) in results.into_iter().enumerate() {
-        formatted_results.push((result.0, strings[i].as_str()));
-    }
-    bindings::yield_results(formatted_results.as_slice())
-}
+// pub fn yield_results(results: Vec<(types::WitProtomessage, String)>) {
+//     let strings = results.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>();
+// 
+//     let mut formatted_results = vec![];
+//     for (i, result) in results.into_iter().enumerate() {
+//         formatted_results.push((result.0, strings[i].as_str()));
+//     }
+//     bindings::yield_results(formatted_results.as_slice())
+// }
 
 pub fn yield_one_request<T, U>(
     is_expecting_response: bool,
@@ -101,10 +105,10 @@ where
         is_expecting_response,
         target_node,
         target_process,
-        &payload,
+        payload,
         context,
     )?;
-    yield_results(vec![request]);
+    super::bindings::yield_results(Ok(vec![request].as_slice()));
 
     Ok(())
 }
@@ -119,15 +123,15 @@ where
      U: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    let request = make_response(&payload, context)?;
-    yield_results(vec![request]);
+    let response = make_response(payload, context)?;
+    super::bindings::yield_results(Ok(vec![response].as_slice()));
 
     Ok(())
 }
 
 pub fn yield_and_await_response<T>(
-    target_node: &str,
-    target_process: &str,
+    target_node: String,
+    target_process: String,
     json_struct: Option<T>,
     bytes: Option<Vec<u8>>,
 ) -> anyhow::Result<types::WitMessage>
@@ -135,11 +139,14 @@ where
      T: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    Ok(bindings::yield_and_await_response(
-        types::WitProcessNode {
+    match super::bindings::yield_and_await_response(
+        &types::WitProcessNode {
             node: target_node,
             process: target_process,
         },
         &payload,
-    ))
+    ) {
+        Ok(r) => Ok(r),
+        Err(e) => Err(anyhow::anyhow!("{}", e)),
+    }
 }

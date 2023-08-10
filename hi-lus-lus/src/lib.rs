@@ -1,3 +1,6 @@
+cargo_component_bindings::generate!();
+
+use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
@@ -18,8 +21,8 @@ impl bindings::MicrokernelProcess for Component {
         };
 
         loop {
-            let (message, _) = bindings::await_next_message();
-            let Some(message_from_loop_string) = message.payload.json else {
+            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
+            let Some(message_from_loop_string) = message.content.payload.json else {
                 panic!("foo")
             };
             let message_from_loop: serde_json::Value =
@@ -48,27 +51,29 @@ impl bindings::MicrokernelProcess for Component {
                         "target": target,
                         "contents": contents,
                     });
-                    let response = bindings::component::microkernel_process::types::WitPayload {
+                    let payload = bindings::component::microkernel_process::types::WitPayload {
                         json: Some(payload.to_string()),
                         bytes: None,
                     };
-                    bindings::yield_results(
+                    bindings::yield_results(Ok(
                         vec![
                             (
                                 bindings::WitProtomessage {
                                     protomessage_type: WitProtomessageType::Request(
                                         WitRequestTypeWithTarget {
                                             is_expecting_response: false,
-                                            target_ship: target,
-                                            target_app: "hi_lus_lus",
+                                            target: WitProcessNode {
+                                                node: target.into(),
+                                                process: "hi_lus_lus".into(),
+                                            },
                                         }
                                     ),
-                                    payload: &response,
+                                    payload,
                                 },
-                                "",
+                                "".into(),
                             )
                         ].as_slice()
-                    );
+                    ));
                 } else {
                     bindings::print_to_terminal(0,
                         format!(
@@ -88,5 +93,3 @@ impl bindings::MicrokernelProcess for Component {
         }
     }
 }
-
-bindings::export!(Component);

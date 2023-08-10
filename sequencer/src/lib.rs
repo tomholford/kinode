@@ -1,4 +1,7 @@
+cargo_component_bindings::generate!();
+
 use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use bindings::WitProtomessage;
@@ -114,11 +117,11 @@ fn parse_transaction(tx: IdentityTransaction) -> Option<Identity> {
 }
 
 fn failure(http_head: serde_json::Value) {
-    bindings::yield_results(
+    bindings::yield_results(Ok(
         vec![(
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Response,
-                payload: &WitPayload {
+                payload: WitPayload {
                     json: Some(
                         serde_json::json!({
                             "action": "response",
@@ -133,10 +136,10 @@ fn failure(http_head: serde_json::Value) {
                     bytes: Some("bad transaction".as_bytes().to_vec()),
                 },
             },
-            "",
+            "".into(),
         )]
         .as_slice(),
-    );
+    ));
 }
 
 impl bindings::MicrokernelProcess for Component {
@@ -145,15 +148,17 @@ impl bindings::MicrokernelProcess for Component {
         bindings::print_to_terminal(1, "sequencer: initialized");
 
         // get blockchain.json from home directory
-        bindings::yield_results(
+        bindings::yield_results(Ok(
             vec![(
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                         is_expecting_response: true,
-                        target_ship: &our_name,
-                        target_app: "filesystem",
+                        target: WitProcessNode {
+                            node: our_name.clone(),
+                            process: "filesystem".into(),
+                        },
                     }),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(
                             serde_json::to_string(&FileSystemRequest {
                                 uri_string: "fs://blockchain.json".into(),
@@ -164,30 +169,32 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None,
                     },
                 },
-                "",
+                "".into(),
             )]
             .as_slice(),
-        );
+        ));
 
-        let (fs_response, _) = bindings::await_next_message();
+        let (fs_response, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
 
         bindings::print_to_terminal(1, "sequencer: got blockchain.json");
 
-        let mut pki: OnchainPKI = match fs_response.payload.bytes {
+        let mut pki: OnchainPKI = match fs_response.content.payload.bytes {
             Some(b) => serde_json::from_str::<OnchainPKI>(&String::from_utf8(b).unwrap()).unwrap(),
             None => HashMap::<String, Identity>::new(),
         };
 
         // bind to blockchain.json path
-        bindings::yield_results(
+        bindings::yield_results(Ok(
             vec![(
                 bindings::WitProtomessage {
                     protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
                         is_expecting_response: true, // NOT ACTUALLY THOUGH
-                        target_ship: &our_name,
-                        target_app: "http_bindings",
+                        target: WitProcessNode {
+                            node: our_name.clone(),
+                            process: "http_bindings".into(),
+                        }
                     }),
-                    payload: &WitPayload {
+                    payload: WitPayload {
                         json: Some(
                             serde_json::json!({
                                 "action": "bind-app",
@@ -199,21 +206,21 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None,
                     },
                 },
-                "",
+                "".into(),
             )]
             .as_slice(),
-        );
+        ));
 
         loop {
-            let (message, _) = bindings::await_next_message();
-            let stringy = message.payload.json.unwrap_or_default();
+            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
+            let stringy = message.content.payload.json.unwrap_or_default();
             let http_head: serde_json::Value = serde_json::from_str(&stringy).unwrap_or_default();
             if http_head["method"] == "GET" {
-                bindings::yield_results(
+                bindings::yield_results(Ok(
                     vec![(
                         bindings::WitProtomessage {
                             protomessage_type: WitProtomessageType::Response,
-                            payload: &WitPayload {
+                            payload: WitPayload {
                                 json: Some(
                                     serde_json::json!({
                                         "action": "response",
@@ -233,10 +240,10 @@ impl bindings::MicrokernelProcess for Component {
                                 ),
                             },
                         },
-                        "",
+                        "".into(),
                     )]
                     .as_slice(),
-                );
+                ));
                 continue;
             }
             if http_head["method"] != "POST" {
@@ -244,7 +251,7 @@ impl bindings::MicrokernelProcess for Component {
                 continue;
             }
             let http_body: IdentityTransaction = match bincode::deserialize::<IdentityTransaction>(
-                &message.payload.bytes.unwrap_or_default(),
+                &message.content.payload.bytes.unwrap_or_default(),
             ) {
                 Ok(i) => i,
                 Err(e) => {
@@ -264,11 +271,11 @@ impl bindings::MicrokernelProcess for Component {
                 }
             };
             pki.insert(new_identity.name.clone(), new_identity);
-            bindings::yield_results(
+            bindings::yield_results(Ok(
                 vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        payload: WitPayload {
                             json: Some(
                                 serde_json::json!({
                                     "action": "response",
@@ -288,12 +295,10 @@ impl bindings::MicrokernelProcess for Component {
                             ),
                         },
                     },
-                    "",
+                    "".into(),
                 )]
                 .as_slice(),
-            );
+            ));
         }
     }
 }
-
-bindings::export!(Component);

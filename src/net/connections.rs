@@ -27,7 +27,7 @@ pub async fn build_routed_connection(
         // and use that connection to first send a handshake,
         // then receive one, then create a peer-task and send the message
         //
-        let target = initial_message.0.message.wire.target_ship.clone();
+        let target = initial_message.0.target.node.clone();
         let router_socket_tx = router_peer.sender.clone();
         drop(peers_write);
         // 1. generate a handshake

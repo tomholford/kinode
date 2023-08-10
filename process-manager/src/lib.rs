@@ -1,7 +1,9 @@
+cargo_component_bindings::generate!();
+
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 use bindings::print_to_terminal;
-use bindings::component::microkernel_process::types::WitMessage;
+// use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitMessageType;
 
 mod process_lib;
@@ -69,10 +71,17 @@ enum KernelResponse {
     StopProcess(KernelStopProcess),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessNode {
+    pub node: String,
+    pub process: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ProcessMetadata {
-    our_name: String,
-    process_name: String,
+    our: ProcessNode,
+    // our_name: String,
+    // process_name: String,
     wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
 }
@@ -101,16 +110,16 @@ fn send_stop_to_loop(
 }
 
 fn handle_message(
-    message: WitMessage,
-    context: String,
     metadatas: &mut ProcessMetadatas,
     our_name: &str,
     process_name: &str,
     reserved_process_names: &HashSet<String>,
 ) -> anyhow::Result<()> {
-    match message.message_type {
+    let (message, context) = bindings::await_next_message()?;
+    //  TODO: validate source?
+    match message.content.message_type {
         WitMessageType::Request(_is_expecting_response) => {
-            match process_lib::parse_message_json(message.payload.json)? {
+            match process_lib::parse_message_json(message.content.payload.json)? {
                 ProcessManagerCommand::Start(start) => {
                     print_to_terminal(1, "process manager: start");
                     if reserved_process_names.contains(&start.process_name) {
@@ -123,7 +132,7 @@ fn handle_message(
 
                     process_lib::yield_one_request(
                         true,
-                        our_name,
+                        &our_name,
                         "filesystem",
                         Some(FileSystemRequest {
                             uri_string: start.wasm_bytes_uri.clone(),
@@ -163,9 +172,9 @@ fn handle_message(
         },
         WitMessageType::Response => {
             match (
-                message.wire.source_ship,
-                message.wire.source_app.as_str(),
-                message.payload.bytes,
+                message.source.node,
+                message.source.process.as_str(),
+                message.content.payload.bytes,
             ) {
                 (
                     our_name,
@@ -191,10 +200,10 @@ fn handle_message(
                     "kernel",
                     None,
                 ) => {
-                    match process_lib::parse_message_json(message.payload.json)? {
+                    match process_lib::parse_message_json(message.content.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
                             metadatas.insert(
-                                metadata.process_name.clone(),
+                                metadata.our.process.clone(),
                                 metadata,
                             );
                             //  TODO: response?
@@ -209,7 +218,7 @@ fn handle_message(
                                 &our_name,
                                 process_name,
                                 Some(ProcessManagerCommand::Start(ProcessStart {
-                                    process_name: removed.process_name,
+                                    process_name: removed.our.process,
                                     wasm_bytes_uri: removed.wasm_bytes_uri,
                                 })),
                                 None,
@@ -242,11 +251,7 @@ impl bindings::MicrokernelProcess for Component {
             .collect();
         let mut metadatas: ProcessMetadatas = HashMap::new();
         loop {
-            let (message, context) = bindings::await_next_message();
-            //  TODO: validate source/target?
             match handle_message(
-                message,
-                context,
                 &mut metadatas,
                 &our_name,
                 &process_name,
@@ -264,5 +269,3 @@ impl bindings::MicrokernelProcess for Component {
         }
     }
 }
-
-bindings::export!(Component);

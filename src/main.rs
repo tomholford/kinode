@@ -82,44 +82,6 @@ async fn main() {
     // read PKI from HTTP endpoint served by RPC
     let blockchain_url = &args[2];
     // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
-    let mut boot_sequence_path = "boot_sequence.bin";
-    for i in 3..args.len() - 1 {
-        if args[i] == "--bs" {
-            boot_sequence_path = &args[i + 1];
-            break;
-        }
-    }
-    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
-        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
-            Ok(bs) => bs,
-            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
-        },
-        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
-    };
-
-    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
-    let mut boot_sequence: Vec<WrappedMessage> = Vec::new();
-    for bin_message in boot_sequence_bin {
-        boot_sequence.push(WrappedMessage {
-            id: bin_message.id,
-            rsvp: bin_message.rsvp,
-            message: Message {
-                message_type: bin_message.message.message_type,
-                wire: bin_message.message.wire,
-                payload: Payload {
-                    json: match bin_message.message.payload.json {
-                        Some(js) => Some(
-                            match serde_json::from_slice(&js) {
-                                Ok(j) => j,
-                                Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
-                            }),
-                        None => None,
-                    },
-                    bytes: bin_message.message.payload.bytes,
-                },
-            }
-        });
-    }
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -371,6 +333,55 @@ async fn main() {
         .await
         .unwrap();
 
+    let mut boot_sequence_path = "boot_sequence.bin";
+    for i in 3..args.len() - 1 {
+        if args[i] == "--bs" {
+            boot_sequence_path = &args[i + 1];
+            break;
+        }
+    }
+    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
+        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
+            Ok(bs) => bs,
+            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+        },
+        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
+    };
+
+    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
+    for bin_message in boot_sequence_bin {
+        kernel_message_sender.send(
+            WrappedMessage {
+                id: bin_message.id,
+                target: ProcessNode {
+                    node: our.name.clone(),
+                    process: "kernel".into(),
+                },
+                rsvp: None,
+                message: Ok(Message {
+                    source: ProcessNode {
+                        node: our.name.clone(),
+                        process: "kernel".into(),
+                    },
+                    content: MessageContent {
+                        message_type: bin_message.message.content.message_type,
+                        payload: Payload {
+                            json: match bin_message.message.content.payload.json {
+                                Some(js) => Some(
+                                    match serde_json::from_slice(&js) {
+                                        Ok(j) => j,
+                                        Err(e) => panic!("{:?}", format!("failed to deserialize json: {}", e)),
+                                    }),
+                                None => None,
+                            },
+                            bytes: bin_message.message.content.payload.bytes,
+                        },
+                    },
+                }),
+            }
+        ).await.unwrap();
+    }
+
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
@@ -395,7 +406,6 @@ async fn main() {
             fs_message_sender,
             http_server_sender,
             http_client_message_sender,
-            boot_sequence,
         )
     );
     let net_handle = tokio::spawn(

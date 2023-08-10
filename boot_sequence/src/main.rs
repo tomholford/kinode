@@ -1,167 +1,64 @@
 mod types;
 use crate::types::*;
 use tokio::fs;
-use serde::{Serialize, Deserialize};
 
-// TODO these should be in types.rs and shared across libraries
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum KernelRequest {
-    StartProcess(ProcessStart),
-    StopProcess(KernelStopProcess),
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct KernelStopProcess {
-    process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessStart {
-    process_name: String,
-    wasm_bytes_uri: String,
-}
-//
-// DONE
+pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
+    //  add new processes_to_start here, and symlink in src/
+    let processes_to_start = vec![
+        "process_manager",
+        "terminal",
+        "http_bindings",
+        "apps_home",
+        "http_proxy",
+        "file_transfer",
+    ];
 
-pub async fn pill(our: String) -> Vec<BinSerializableWrappedMessage> {
-    // always start process manager on boot
-    let process_manager_wasm_bytes = fs::read("./src/process_manager.wasm").await.unwrap();
-    let terminal_wasm_bytes        = fs::read("./src/terminal.wasm").await.unwrap();
-    let http_bindings_bytes        = fs::read("./src/http_bindings.wasm").await.unwrap();
-    let apps_home_bytes            = fs::read("./src/apps_home.wasm").await.unwrap();
-    let ft_bytes                   = fs::read("./src/file_transfer.wasm").await.unwrap();
+    let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
 
-    vec![
-        // start process manager
-        BinSerializableWrappedMessage {
+    for process in &processes_to_start {
+        let mut process_wasm_path = "./src/".to_string();
+        process_wasm_path.push_str(process);
+        process_wasm_path.push_str(".wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path).await.unwrap();
+        let start_process_message = BinSerializableWrappedMessage {
             id: rand::random(),
-            rsvp: None,
+            //  target assigned by runtime
+            //  rsvp assigned by runtime (as None)
             message: BinSerializableMessage {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.clone(),
-                    target_app: "kernel".to_string(),
+                //  source assigned by runtime
+                content: BinSerializableMessageContent {
+                    message_type: MessageType::Request(false),
+                    payload: BinSerializablePayload {
+                        json: Some(serde_json::to_vec(
+                            &KernelRequest::StartProcess(
+                                ProcessStart{
+                                    process_name: (*process).into(),
+                                    wasm_bytes_uri: process_wasm_path,
+                                }
+                            )
+                        ).unwrap()),
+                        bytes: Some(process_wasm_bytes),
+                    },
                 },
-                payload: BinSerializablePayload {
-                    json: Some(serde_json::to_vec(
-                        &KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "process_manager".to_string(),
-                                wasm_bytes_uri: "process_manager.wasm".to_string(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(process_manager_wasm_bytes),
-                },
-            },
-        },
-        // start terminal
-        BinSerializableWrappedMessage {
-            id: rand::random(),
-            rsvp: None,
-            message: BinSerializableMessage {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.clone(),
-                    target_app: "kernel".to_string(),
-                },
-                payload: BinSerializablePayload {
-                    json: Some(serde_json::to_vec(
-                        &KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "terminal".into(),
-                                wasm_bytes_uri: "terminal.wasm".into(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(terminal_wasm_bytes),
-                },
-            },
-        },
-        // start http_bindings
-        BinSerializableWrappedMessage {
-            id: rand::random(),
-            rsvp: None,
-            message: BinSerializableMessage {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.clone(),
-                    target_app: "kernel".to_string(),
-                },
-                payload: BinSerializablePayload {
-                    json: Some(serde_json::to_vec(
-                        &KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "http_bindings".into(),
-                                wasm_bytes_uri: "http_bindings.wasm".into(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(http_bindings_bytes),
-                },
-            },
-        },
-        // start apps_home
-        BinSerializableWrappedMessage {
-            id: rand::random(),
-            rsvp: None,
-            message: BinSerializableMessage {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.clone(),
-                    target_app: "kernel".to_string(),
-                },
-                payload: BinSerializablePayload {
-                    json: Some(serde_json::to_vec(
-                        &KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "apps_home".into(),
-                                wasm_bytes_uri: "apps_home.wasm".into(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(apps_home_bytes),
-                },
-            },
-        },
-        // start file transfer
-        BinSerializableWrappedMessage {
-            id: rand::random(),
-            rsvp: None,
-            message: BinSerializableMessage {
-                message_type: MessageType::Request(false),
-                wire: Wire {
-                    source_ship: our.clone(),
-                    source_app: "kernel".to_string(),
-                    target_ship: our.clone(),
-                    target_app: "kernel".to_string(),
-                },
-                payload: BinSerializablePayload {
-                    json: Some(serde_json::to_vec(
-                        &KernelRequest::StartProcess(
-                            ProcessStart{
-                                process_name: "file_transfer".into(),
-                                wasm_bytes_uri: "file_transfer.wasm".into(),
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: Some(ft_bytes),
-                },
-            },
-        }
-    ]
+            }
+        };
+        boot_sequence.push(start_process_message);
+    }
+
+    //  add new initialization Messages here
+    //  e.g.
+    //
+    //  ```
+    //  let foo = BinSerializableWrappedMessage { .. };
+    //  boot_sequence.push(foo);
+    //  ```
+
+    boot_sequence
 }
 
 #[tokio::main]
 async fn main() {
-    let boot_sequence = pill("tuna".to_string()).await;
+    let boot_sequence = pill().await;
     let serialized = bincode::serialize(&boot_sequence).unwrap();
-    fs::write("../boot_sequence.bin", serialized).await;
+    let _ = fs::write("../boot_sequence.bin", serialized).await;
 }

@@ -1,7 +1,10 @@
-use bindings::component::microkernel_process::types::WitProtomessageType;
+cargo_component_bindings::generate!();
+
 use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitProcessNode;
+use bindings::component::microkernel_process::types::WitProtomessageType;
+use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use std::collections::HashMap;
 // use std::time::{SystemTime, UNIX_EPOCH};
 // use jsonwebtoken::{decode, Validation, Algorithm, DecodingKey};
@@ -40,8 +43,8 @@ impl bindings::MicrokernelProcess for Component {
         let mut bindings: HashMap<String, String> = HashMap::new();
 
         loop {
-            let (message, _) = bindings::await_next_message();
-            let Some(message_json_text) = message.payload.json else {
+            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
+            let Some(message_json_text) = message.content.payload.json else {
                 panic!("foo")
             };
             let message_json: serde_json::Value = match serde_json::from_str(&message_json_text) {
@@ -52,7 +55,7 @@ impl bindings::MicrokernelProcess for Component {
                 },
             };
 
-            match message.message_type {
+            match message.content.message_type {
                 WitMessageType::Request(_) => {
                     let action = &message_json["action"];
                     // Safely unwrap the path as a string
@@ -161,16 +164,18 @@ impl bindings::MicrokernelProcess for Component {
                         match bindings.get(registered_path) {
                             Some(app) => {
                                 bindings::print_to_terminal(1, &("http_bindings: properly unwrapped path ".to_string() + registered_path));
-                                bindings::yield_results(vec![(
+                                bindings::yield_results(Ok(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Request(
                                             WitRequestTypeWithTarget {
                                                 is_expecting_response: false,
-                                                target_ship: our.as_str(),
-                                                target_app: app,
+                                                target: WitProcessNode {
+                                                    node: our.clone(),
+                                                    process: app.into(),
+                                                },
                                             }
                                         ),
-                                        payload: &WitPayload {
+                                        payload: WitPayload {
                                             json: Some(serde_json::json!({
                                                 "path": registered_path,
                                                 "raw_path": path,
@@ -180,18 +185,18 @@ impl bindings::MicrokernelProcess for Component {
                                                 "url_params": url_params,
                                                 "id": message_json["id"],
                                             }).to_string()),
-                                            bytes: message.payload.bytes,
+                                            bytes: message.content.payload.bytes,
                                         },
                                     },
-                                    "",
-                                )].as_slice());
+                                    "".into(),
+                                )].as_slice()));
                             },
                             None => {
                                 bindings::print_to_terminal(1, "http_bindings: no app found at this path");
-                                bindings::yield_results(vec![(
+                                bindings::yield_results(Ok(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Response,
-                                        payload: &WitPayload {
+                                        payload: WitPayload {
                                             json: Some(serde_json::json!({
                                                 "id": message_json["id"],
                                                 "status": 404,
@@ -201,8 +206,8 @@ impl bindings::MicrokernelProcess for Component {
                                             bytes: Some("404 Not Found".as_bytes().to_vec()),
                                         },
                                     },
-                                    "",
-                                )].as_slice());
+                                    "".into(),
+                                )].as_slice()));
                             },
                         }
                     } else {
@@ -219,5 +224,3 @@ impl bindings::MicrokernelProcess for Component {
         }
     }
 }
-
-bindings::export!(Component);

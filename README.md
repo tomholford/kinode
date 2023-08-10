@@ -186,6 +186,7 @@ These things need to be discovered by reading the README and comparing that to h
 ## References
 
 [1] https://github.com/bytecodealliance/cargo-component
+
 [2] https://github.com/bytecodealliance/wit-bindgen
 
 [1]: https://github.com/bytecodealliance/cargo-component

@@ -50,6 +50,7 @@ interface types {
     record wit-uqbar-error-content {
         kind: string,
         message: string,
+        context: string,
     }
 }
 

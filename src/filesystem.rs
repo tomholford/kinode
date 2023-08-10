@@ -188,6 +188,14 @@ fn compute_truncated_hash_bytes(file_contents: &Vec<u8>) -> u64 {
     )
 }
 
+//  TODO: factor our with microkernel
+fn get_current_unix_time() -> anyhow::Result<u64> {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(t) => Ok(t.as_secs()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn make_error_message(
     our_name: String,
     id: u64,
@@ -201,17 +209,17 @@ fn make_error_message(
             process: source_process,
         },
         rsvp: None,
-        message: Ok(Message {
+        message: Err(UqbarError {
             source: ProcessNode {
                 node: our_name,
                 process: "filesystem".into(),
             },
-            content: MessageContent {
-                message_type: MessageType::Response,
-                payload: Payload {
-                    json: Some(serde_json::to_value(FileSystemResponse::Error(error)).unwrap()),
-                    bytes: None,
-                },
+            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
+            content: UqbarErrorContent {
+                kind: error.kind().into(),
+                // message: format!("{}", error),
+                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
+                context: serde_json::to_value("").unwrap(),
             },
         }),
     }

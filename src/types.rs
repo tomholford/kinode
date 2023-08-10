@@ -80,7 +80,8 @@ pub struct UqbarError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UqbarErrorContent {
     pub kind: String,
-    pub message: String,
+    pub message: serde_json::Value,
+    pub context: serde_json::Value,
 }
 
 //  kernel sets in case, e.g.,
@@ -120,7 +121,7 @@ impl std::fmt::Display for ProcessNode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "ProcessNode {{ node: {}, process: {} }}",
+            "{{ node: {}, process: {} }}",
             self.node,
             self.process,
         )
@@ -199,6 +200,24 @@ pub struct Printout {
     pub content: String,
 }
 
+impl FileSystemError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            FileSystemError::BadUri { .. } => "BadUri",
+            FileSystemError::BadJson { .. } =>  "BadJson",
+            FileSystemError::BadBytes { .. } => "BadBytes",
+            FileSystemError::IllegalAccess { .. } => "IllegalAccess",
+            FileSystemError::AlreadyOpen { .. } => "AlreadyOpen",
+            FileSystemError::NotCurrentlyOpen { .. } => "NotCurrentlyOpen",
+            FileSystemError::BadPathJoin { .. } => "BadPathJoin",
+            FileSystemError::CouldNotMakeDir { .. } => "CouldNotMakeDir",
+            FileSystemError::ReadFailed { .. } => "ReadFailed",
+            FileSystemError::WriteFailed { .. } => "WriteFailed",
+            FileSystemError::OpenFailed { .. } => "OpenFailed",
+            FileSystemError::FsError { .. } => "FsError",
+        }
+    }
+}
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum FileSystemError {
     //  bad input from user
@@ -263,7 +282,6 @@ pub enum FileSystemResponse {
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
-    Error(FileSystemError),
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {

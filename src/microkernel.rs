@@ -295,14 +295,20 @@ fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
 fn de_wit_error_content(wit: &WitUqbarErrorContent) -> UqbarErrorContent {
     UqbarErrorContent {
         kind: wit.kind.clone(),
-        message: wit.message.clone(),
+        message: serde_json::from_str(&wit.message).unwrap(),  //  TODO: handle error?
+        context: serde_json::from_str(&wit.context).unwrap(),  //  TODO: handle error?
     }
 }
 
-fn en_wit_error_content(dewit: &UqbarErrorContent) -> WitUqbarErrorContent {
+fn en_wit_error_content(dewit: &UqbarErrorContent, context: String) -> WitUqbarErrorContent {
     WitUqbarErrorContent {
         kind: dewit.kind.clone(),
-        message: dewit.message.clone(),
+        message: dewit.message.to_string(),
+        context: if "" == context {
+            dewit.context.to_string()
+        } else {
+            context
+        }
     }
 }
 
@@ -317,14 +323,14 @@ fn de_wit_error(wit: &WitUqbarError) -> UqbarError {
     }
 }
 
-fn en_wit_error(dewit: &UqbarError) -> WitUqbarError {
+fn en_wit_error(dewit: &UqbarError, context: String) -> WitUqbarError {
     WitUqbarError {
         source: WitProcessNode {
             node: dewit.source.node.clone(),
             process: dewit.source.process.clone(),
         },
         timestamp: dewit.timestamp.clone(),
-        content: en_wit_error_content(&dewit.content),
+        content: en_wit_error_content(&dewit.content, context),
     }
 }
 
@@ -461,28 +467,51 @@ async fn send_loop_message_to_process(
                 match message_type {
                     MessageType::Request(_) => Ok((wit_message, "".to_string())),
                     MessageType::Response => {
-                        match contexts.get(&message_id) {
-                            Some(ref context) => {
-                                Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
-                            },
-                            None => {
-                                send_to_terminal
-                                    .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
-                                    .await
-                                    .unwrap();
-                                Ok((wit_message, "".to_string()))
-                            },
-                        }
+                        let context = get_context(&message_id, send_to_terminal, contexts)
+                            .await;
+                        Ok((wit_message, context))
+                        // match contexts.get(&message_id) {
+                        //     Some(ref context) => {
+                        //         Ok((wit_message, serde_json::to_string(&context.context).unwrap()))
+                        //     },
+                        //     None => {
+                        //         send_to_terminal
+                        //             .send(Printout { verbosity: 1, content: "awm: couldn't find context for Response".into() })
+                        //             .await
+                        //             .unwrap();
+                        //         Ok((wit_message, "".to_string()))
+                        //     },
+                        // }
                     },
                 },
             )
         },
         Err(ref e) => {
+            let context = get_context(&wrapped_message.id, send_to_terminal, contexts).await;
             let e = e.clone();
             (
                 wrapped_message,
-                Err(en_wit_error(&e)),
+                Err(en_wit_error(&e, context)),
             )
+        },
+    }
+}
+
+async fn get_context(
+    message_id: &u64,
+    send_to_terminal: &mut PrintSender,
+    contexts: &HashMap<u64, ProcessContext>,
+) -> String {
+    match contexts.get(&message_id) {
+        Some(ref context) => {
+            serde_json::to_string(&context.context).unwrap()
+        },
+        None => {
+            send_to_terminal
+                .send(Printout { verbosity: 1, content: "couldn't find context for Response".into() })
+                .await
+                .unwrap();
+            "".into()
         },
     }
 }
@@ -882,32 +911,68 @@ async fn send_process_results_to_loop(
                 //  add context, as appropriate
                 match prompting_message {
                     Some(ref prompting_message) => {
-                        let Ok(ref prompting_message_message) = prompting_message.message else {
-                            panic!("foobar");
-                        };
-                        match prompting_message_message.content.message_type {
-                            MessageType::Request(_prompting_message_is_expecting_response) => {
-                                //  case: prompting_message_is_expecting_response
-                                //   ultimate stored for source
-                                //  case: !prompting_message_is_expecting_response
-                                //   ultimate stored for rsvp
-                                contexts.insert(
-                                    wrapped_message.id,
-                                    ProcessContext::new(
-                                        &wrapped_message,
-                                        Some(&prompting_message),
-                                        new_context,
-                                    )
-                                );
+                        match prompting_message.message {
+                            Ok(ref prompting_message_message) => {
+                                match prompting_message_message.content.message_type {
+                                    MessageType::Request(_) => {
+                                        //  case: prompting_message_is_expecting_response
+                                        //   ultimate stored for source
+                                        //  case: !prompting_message_is_expecting_response
+                                        //   ultimate stored for rsvp
+                                        contexts.insert(
+                                            wrapped_message.id,
+                                            ProcessContext::new(
+                                                &wrapped_message,
+                                                Some(&prompting_message),
+                                                new_context,
+                                            )
+                                        );
+                                    },
+                                    MessageType::Response => {
+                                        //  TODO: factor out with Eer case below
+                                        match contexts.get(&prompting_message.id) {
+                                            Some(context) => {
+                                                //  ultimate is the ultimate of the prompt of Response
+                                                contexts.insert(
+                                                    wrapped_message.id,
+                                                    ProcessContext {
+                                                        proximate: CauseMetadata::new(
+                                                            &wrapped_message
+                                                        ),
+                                                        ultimate: context.ultimate.clone(),
+                                                        context: match new_context {
+                                                            Some(new_context) => new_context,
+                                                            None => serde_json::Value::Null,
+                                                        },
+                                                    },
+                                                );
+                                            },
+                                            None => {
+                                                //  should this even be allowed?
+                                                contexts.insert(
+                                                    wrapped_message.id,
+                                                    ProcessContext::new(
+                                                        &wrapped_message,
+                                                        Some(&prompting_message),
+                                                        new_context,
+                                                    )
+                                                );
+                                            },
+                                        }
+                                    },
+                                }
                             },
-                            MessageType::Response => {
+                            Err(_) => {
+                                //  TODO: factor out with Response case above
                                 match contexts.get(&prompting_message.id) {
                                     Some(context) => {
                                         //  ultimate is the ultimate of the prompt of Response
                                         contexts.insert(
                                             wrapped_message.id,
                                             ProcessContext {
-                                                proximate: CauseMetadata::new(&wrapped_message),
+                                                proximate: CauseMetadata::new(
+                                                    &wrapped_message
+                                                ),
                                                 ultimate: context.ultimate.clone(),
                                                 context: match new_context {
                                                     Some(new_context) => new_context,

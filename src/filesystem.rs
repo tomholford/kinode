@@ -369,6 +369,12 @@ async fn handle_request(
             error: "missing payload".into(),
         })
     };
+    let MessageType::Request(is_expecting_response) = content.message_type else {
+        return Err(FileSystemError::BadJson {
+            json: content.payload.json,
+            error: "not a Request".into(),
+        })
+    };
 
     let request: FileSystemRequest = match serde_json::from_value(value) {
         Ok(r) => r,
@@ -810,26 +816,28 @@ async fn handle_request(
         },
     };
 
-    let response = WrappedMessage {
-        id,
-        target: ProcessNode {
-            node: our_name.clone(),
-            process: source.process.clone(),
-        },
-        rsvp,
-        message: Ok(Message {
-            source: ProcessNode {
+    if is_expecting_response {
+        let response = WrappedMessage {
+            id,
+            target: ProcessNode {
                 node: our_name.clone(),
-                process: "filesystem".into(),
+                process: source.process.clone(),
             },
-            content: MessageContent {
-                message_type: MessageType::Response,
-                payload: response_payload,
-            },
-        }),
-    };
+            rsvp,
+            message: Ok(Message {
+                source: ProcessNode {
+                    node: our_name.clone(),
+                    process: "filesystem".into(),
+                },
+                content: MessageContent {
+                    message_type: MessageType::Response,
+                    payload: response_payload,
+                },
+            }),
+        };
 
-    let _ = send_to_loop.send(response).await;
+        let _ = send_to_loop.send(response).await;
+    }
 
     Ok(())
 }

@@ -250,20 +250,11 @@ pub enum KernelResponse {
     StartProcess(ProcessMetadata),
     StopProcess { process_name: String },
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
     pub our: ProcessNode,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     pub send_on_panic: SendOnPanic,
-}
-impl Clone for ProcessMetadata {
-    fn clone(&self) -> ProcessMetadata {
-        ProcessMetadata {
-            our: self.our.clone(),
-            wasm_bytes_uri: self.wasm_bytes_uri.clone(),
-            send_on_panic: self.send_on_panic.clone(),
-        }
-    }
 }
 
 impl FileSystemError {

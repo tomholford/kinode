@@ -74,7 +74,7 @@ pub struct ProcessNode {
     pub process: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
     pub our: ProcessNode,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
@@ -113,12 +113,8 @@ fn handle_message(
 ) -> anyhow::Result<()> {
     let (message, context) = bindings::await_next_message()?;
     if our_name != message.source.node {
-        print_to_terminal(
-            0,
-            format!("process_manager: rejecting Message from {:?}", message.source).as_str(),
-        );
+        return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
     }
-    //  TODO: validate source?
     match message.content.message_type {
         WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
@@ -200,9 +196,13 @@ fn handle_message(
                         KernelResponse::StartProcess(metadata) => {
                             metadatas.insert(
                                 metadata.our.process.clone(),
-                                metadata,
+                                metadata.clone(),
                             );
-                            //  TODO: response?
+                            process_lib::yield_one_response(
+                                Some(KernelResponse::StartProcess(metadata)),
+                                None,
+                                None::<FileSystemReadContext>,
+                            )?;
                         },
                         KernelResponse::StopProcess { process_name } => {
                             let removed = metadatas

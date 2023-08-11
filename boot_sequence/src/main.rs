@@ -1,61 +1,37 @@
 mod types;
 use crate::types::*;
+use serde::{Serialize, Deserialize};
 use tokio::fs;
 
-pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
-    //  add new processes_to_start here
-    let mut processes_to_start = vec![
-        "process_manager",
-        "terminal",
-        "http_bindings",
-        "apps_home",
-        "http_proxy",
-        "file_transfer",
-    ];
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum SequentializeRequest {
+    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    RunQueue,
+}
 
-    let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
-
-    //  copy wasm bytes into home dir
-    for process in &processes_to_start {
-        let uri_string = format!("fs://{}.wasm", process);
-        let process_wasm_path =
-            format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
-        let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
-        let save_process_message = BinSerializableWrappedMessage {
-            id: rand::random(),
-            //  target node assigned by runtime to "our"
-            target_process: "filesystem".into(),
-            //  rsvp assigned by runtime (as None)
-            message: BinSerializableMessage {
-                //  source assigned by runtime
-                content: BinSerializableMessageContent {
-                    message_type: MessageType::Request(false),
-                    payload: BinSerializablePayload {
-                        json: Some(serde_json::to_vec(
-                            &FileSystemRequest {
-                                uri_string,
-                                action: FileSystemAction::Write,
-                            }
-                        ).unwrap()),
-                        bytes: Some(process_wasm_bytes),
-                        // bytes: None,  //  TODO
-                    },
-                },
-            }
-        };
-        boot_sequence.push(save_process_message);
+fn make_sequentialize_bswm(payload: BinSerializablePayload) -> BinSerializableWrappedMessage {
+    BinSerializableWrappedMessage {
+        id: rand::random(),
+        //  target node assigned by runtime to "our"
+        target_process: "sequentialize".into(),
+        //  rsvp assigned by runtime (as None)
+        message: BinSerializableMessage {
+            //  source assigned by runtime
+            content: BinSerializableMessageContent {
+                message_type: MessageType::Request(false),
+                payload,
+            },
+        }
     }
+}
 
-    //  TODO: race condition?
-
-    //  start process_manager by messaging kernel directly
-    let _ = processes_to_start.remove(0);
-    let process = "process_manager";
+async fn start_process_via_kernel(process: &str) -> BinSerializableWrappedMessage {
     let wasm_bytes_uri = format!("fs://{}.wasm", process);
     let process_wasm_path =
         format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
     let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
-    let start_process_message = BinSerializableWrappedMessage {
+    BinSerializableWrappedMessage {
         id: rand::random(),
         //  target node assigned by runtime to "our"
         target_process: "kernel".into(),
@@ -76,35 +52,80 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
                 },
             },
         }
-    };
-    boot_sequence.push(start_process_message);
+    }
+}
+
+async fn save_bytes(process: &str) -> BinSerializableWrappedMessage {
+    let uri_string = format!("fs://{}.wasm", process);
+    let process_wasm_path =
+        format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
+    let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
+    make_sequentialize_bswm(BinSerializablePayload {
+        json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
+            target_node: None,
+            target_process: "filesystem".into(),
+            json: Some(serde_json::to_string(&FileSystemRequest {
+                uri_string,
+                action: FileSystemAction::Write,
+            }).unwrap()),
+        }).unwrap()),
+        bytes: Some(process_wasm_bytes),
+    })
+}
+
+fn start_process_via_pm(process: &str) -> BinSerializableWrappedMessage {
+    let wasm_bytes_uri = format!("fs://sequentialize/{}.wasm", process);  //  TODO: how to get wasm files to top-level?
+    // let wasm_bytes_uri = format!("fs://{}.wasm", process);
+    make_sequentialize_bswm(BinSerializablePayload {
+        json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
+            target_node: None,
+            target_process: "process_manager".into(),
+            json: Some(serde_json::to_string(&ProcessManagerCommand::Start {
+                process_name: (*process).into(),
+                wasm_bytes_uri,
+                send_on_panic: SendOnPanic::Restart,
+            }).unwrap()),
+        }).unwrap()),
+        bytes: None,
+    })
+}
+
+fn run_sequentialize_queue() -> BinSerializableWrappedMessage {
+    make_sequentialize_bswm(BinSerializablePayload {
+        json: Some(serde_json::to_vec(&SequentializeRequest::RunQueue).unwrap()),
+        bytes: None,
+    })
+}
+
+
+pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
+    //  add new processes_to_start here
+    let mut processes_to_start = vec![
+        "process_manager",
+        "sequentialize",
+        "terminal",
+        "http_bindings",
+        "apps_home",
+        "http_proxy",
+        "file_transfer",
+    ];
+
+    let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
+
+    //  start by messaging kernel directly
+    boot_sequence.push(start_process_via_kernel("process_manager").await);
+    boot_sequence.push(start_process_via_kernel("sequentialize").await);
+
+    //  copy wasm bytes into home dir
+    for process in &processes_to_start {
+        boot_sequence.push(save_bytes(process).await);
+    }
+
+    let _ = processes_to_start.drain(0..2);
 
     //  start other processes by messaging process_manager
     for process in &processes_to_start {
-        let wasm_bytes_uri = format!("fs://{}.wasm", process);
-        let start_process_message = BinSerializableWrappedMessage {
-            id: rand::random(),
-            //  target node assigned by runtime to "our"
-            target_process: "process_manager".into(),
-            //  rsvp assigned by runtime (as None)
-            message: BinSerializableMessage {
-                //  source assigned by runtime
-                content: BinSerializableMessageContent {
-                    message_type: MessageType::Request(false),
-                    payload: BinSerializablePayload {
-                        json: Some(serde_json::to_vec(
-                            &ProcessManagerCommand::Start {
-                                process_name: (*process).into(),
-                                wasm_bytes_uri,
-                                send_on_panic: SendOnPanic::Restart,
-                            }
-                        ).unwrap()),
-                        bytes: None,
-                    },
-                },
-            }
-        };
-        boot_sequence.push(start_process_message);
+        boot_sequence.push(start_process_via_pm(process));
     }
 
     //  add new initialization Messages here
@@ -114,6 +135,11 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  let foo = BinSerializableWrappedMessage { .. };
     //  boot_sequence.push(foo);
     //  ```
+
+
+    //  signal sequentialize to run queued messages
+
+    boot_sequence.push(run_sequentialize_queue());
 
     boot_sequence
 }

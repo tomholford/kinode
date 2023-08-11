@@ -12,7 +12,7 @@ fn run_command(cmd: &mut Command) -> io::Result<()> {
 
 fn main() {
     // Tell Cargo that if the given file changes, to rerun this build script.
-    const APPS: [&str; 9] = [
+    const APPS: [&str; 10] = [
         "apps_home",
         "file_transfer",
         "file_transfer_one_off",
@@ -22,6 +22,7 @@ fn main() {
         "process_manager",
         "terminal",
         "sequencer",
+        "sequentialize",
     ];
     for name in APPS {
         // only execute if one of the modules has source code changes

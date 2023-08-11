@@ -369,3 +369,10 @@ pub enum FileSystemEntryType {
 // keygen types
 pub const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
 pub type DiskKey = [u8; CREDENTIAL_LEN];
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SequentializeRequest {
+    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    RunQueue,
+}

@@ -1253,7 +1253,6 @@ async fn make_event_loop(
 
 pub async fn kernel(
     our: Identity,
-    jwt_secret_bytes: Vec<u8>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_in_loop: MessageReceiver,
@@ -1284,34 +1283,6 @@ pub async fn kernel(
             engine,
         ).await
     );
-
-    let our_kernel = ProcessNode {
-        node: our.name.clone(),
-        process: "kernel".into(),
-    };
-
-    // send jwt_secret to http_bindings
-    let set_jwt_secret_message = WrappedMessage {
-        id: rand::random(),
-        target: ProcessNode{
-            node: our.name.clone(),
-            process: "http_bindings".into(),
-        },
-        rsvp: None,
-        message: Ok(Message {
-            source: our_kernel.clone(),
-            content: MessageContent {
-                message_type: MessageType::Request(false),
-                payload: Payload {
-                    json: Some(serde_json::json!({
-                        "action": "set-jwt-secret"
-                    })),
-                    bytes: Some(jwt_secret_bytes.to_vec()),
-                },
-            },
-        })
-    };
-    send_to_loop.send(set_jwt_secret_message).await.unwrap();
 
     let _ = event_loop_handle.await;
 }

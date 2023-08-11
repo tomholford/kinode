@@ -177,13 +177,14 @@ async fn main() {
 
         let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
         let (networking_keypair, jwt_secret_bytes) = tokio::select! {
-            _ = register::login(tx,
-                                kill_rx,
-                                key,
-                                jwt_secret,
-                                http_server_port,
-                                &username)
-                => panic!("login failed"),
+            _ = register::login(
+                tx,
+                kill_rx,
+                key,
+                jwt_secret,
+                http_server_port,
+                &username
+            ) => panic!("login failed"),
             (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
@@ -389,6 +390,61 @@ async fn main() {
             .unwrap();
     }
 
+    let our_kernel = ProcessNode {
+        node: our.name.clone(),
+        process: "kernel".into(),
+    };
+
+    // send jwt_secret to http_bindings
+    let set_jwt_secret_message = WrappedMessage {
+        id: rand::random(),
+        target: ProcessNode {
+            node: our.name.clone(),
+            process: "sequentialize".into(),
+        },
+        rsvp: None,
+        message: Ok(Message {
+            source: our_kernel.clone(),
+            content: MessageContent {
+                message_type: MessageType::Request(false),
+                payload: Payload {
+                    json: Some(serde_json::to_value(&SequentializeRequest::QueueMessage {
+                        target_node: Some(our.name.clone()),
+                        target_process: "http_bindings".into(),
+                        json: Some(serde_json::to_string(
+                            &serde_json::json!({"action": "set-jwt-secret"})
+                        ).unwrap()),
+                    }).unwrap()),
+                    bytes: Some(jwt_secret_bytes.to_vec()),
+                },
+            },
+        }),
+    };
+    kernel_message_sender.send(set_jwt_secret_message).await.unwrap();
+
+    // run sequentialize queue -- from boot sequence
+    let run_sequentialize_queue = WrappedMessage {
+        id: rand::random(),
+        target: ProcessNode {
+            node: our.name.clone(),
+            process: "sequentialize".into(),
+        },
+        rsvp: None,
+        message: Ok(Message {
+            source: our_kernel.clone(),
+            content: MessageContent {
+                message_type: MessageType::Request(false),
+                payload: Payload {
+                    json: Some(
+                        serde_json::to_value(&SequentializeRequest::RunQueue).unwrap()
+                    ),
+                    bytes: None,
+                },
+            },
+        }),
+    };
+    kernel_message_sender.send(run_sequentialize_queue).await.unwrap();
+
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
@@ -404,7 +460,6 @@ async fn main() {
 
     let kernel_handle = tokio::spawn(microkernel::kernel(
         our.clone(),
-        jwt_secret_bytes.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,

@@ -1,14 +1,6 @@
 mod types;
 use crate::types::*;
-use serde::{Serialize, Deserialize};
 use tokio::fs;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
-    RunQueue,
-}
 
 fn make_sequentialize_bswm(payload: BinSerializablePayload) -> BinSerializableWrappedMessage {
     BinSerializableWrappedMessage {
@@ -90,14 +82,6 @@ fn start_process_via_pm(process: &str) -> BinSerializableWrappedMessage {
     })
 }
 
-fn run_sequentialize_queue() -> BinSerializableWrappedMessage {
-    make_sequentialize_bswm(BinSerializablePayload {
-        json: Some(serde_json::to_vec(&SequentializeRequest::RunQueue).unwrap()),
-        bytes: None,
-    })
-}
-
-
 pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  add new processes_to_start here
     let mut processes_to_start = vec![
@@ -136,10 +120,7 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  boot_sequence.push(foo);
     //  ```
 
-
-    //  signal sequentialize to run queued messages
-
-    boot_sequence.push(run_sequentialize_queue());
+    //  it is runtime's responsibility to run the sequentialize queue
 
     boot_sequence
 }

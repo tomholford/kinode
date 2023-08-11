@@ -75,6 +75,10 @@ mkdir home/${SECOND_NODE}/file_transfer_one_off
 cp README.md home/${SECOND_NODE}/file_transfer/
 cp README.md home/${SECOND_NODE}/file_transfer_one_off/
 
+# Optionally add additional processes:
+cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
+cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
+
 # Terminal A: add hi++ apps to process_manager
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
 !message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}

@@ -112,6 +112,12 @@ fn handle_message(
     reserved_process_names: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let (message, context) = bindings::await_next_message()?;
+    if our_name != message.source.node {
+        print_to_terminal(
+            0,
+            format!("process_manager: rejecting Message from {:?}", message.source).as_str(),
+        );
+    }
     //  TODO: validate source?
     match message.content.message_type {
         WitMessageType::Request(_is_expecting_response) => {

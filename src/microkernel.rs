@@ -813,6 +813,7 @@ async fn make_process_loop(
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our_name = metadata.our.node.clone();
     let process_name = metadata.our.process.clone();
+    let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
     let send_on_panic = metadata.send_on_panic.clone();
 
     let component = Component::new(&engine, &wasm_bytes)
@@ -871,36 +872,30 @@ async fn make_process_loop(
                 }
             };
 
+            let our_pm = ProcessNode {
+                node: our_name.clone(),
+                process: "process_manager".into(),
+            };
+            let our_kernel = ProcessNode {
+                node: our_name.clone(),
+                process: "kernel".into(),  //  should this be process_name?
+            };
+
             //  clean up process metadata & channels
             send_to_loop
                 .send(WrappedMessage {
                     id: rand::random(),
-                    target: ProcessNode {
-                        node: our_name.clone(),
-                        process: "process_manager".into(),
-                    },
+                    target: our_pm.clone(),
                     rsvp: None,
                     message: Ok(Message {
-                        source: ProcessNode {
-                            node: our_name.clone(),
-                            process: "kernel".into(),  //  should this be process_name?
-                        },
+                        source: our_kernel.clone(),
                         content: MessageContent {
                             message_type: MessageType::Request(false),
                             payload: Payload {
                                 json: Some(
-                                    match send_on_panic {
-                                        SendOnPanic::Restart => {
-                                            serde_json::to_value(ProcessManagerCommand::Restart {
-                                                process_name: process_name.clone()
-                                            }).unwrap()
-                                        },
-                                        _ => {
-                                            serde_json::to_value(ProcessManagerCommand::Stop {
-                                                process_name: process_name.clone()
-                                            }).unwrap()
-                                        },
-                                    }
+                                    serde_json::to_value(ProcessManagerCommand::Stop {
+                                        process_name: process_name.clone()
+                                    }).unwrap()
                                 ),
                                 bytes: None,
                             },
@@ -909,27 +904,57 @@ async fn make_process_loop(
                 })
                 .await
                 .unwrap();
-            if let SendOnPanic::Requests(requests) = send_on_panic {
-                for request in requests {
+
+            match send_on_panic {
+                SendOnPanic::None => {},
+                SendOnPanic::Restart => {
                     send_to_loop
                         .send(WrappedMessage {
                             id: rand::random(),
-                            target: request.target,
+                            target: our_pm,
                             rsvp: None,
                             message: Ok(Message {
-                                source: ProcessNode {
-                                    node: our_name.clone(),
-                                    process: process_name.clone(),
-                                },
+                                source: our_kernel,
                                 content: MessageContent {
                                     message_type: MessageType::Request(false),
-                                    payload: request.payload,
+                                    payload: Payload {
+                                        json: Some(
+                                            serde_json::to_value(ProcessManagerCommand::Start {
+                                                process_name,
+                                                wasm_bytes_uri,
+                                                send_on_panic,
+                                            }).unwrap()
+                                        ),
+                                        bytes: None,
+                                    },
                                 },
                             }),
                         })
                         .await
                         .unwrap();
-                }
+                },
+                SendOnPanic::Requests(requests) => {
+                    for request in requests {
+                        send_to_loop
+                            .send(WrappedMessage {
+                                id: rand::random(),
+                                target: request.target,
+                                rsvp: None,
+                                message: Ok(Message {
+                                    source: ProcessNode {
+                                        node: our_name.clone(),
+                                        process: process_name.clone(),
+                                    },
+                                    content: MessageContent {
+                                        message_type: MessageType::Request(false),
+                                        payload: request.payload,
+                                    },
+                                }),
+                            })
+                            .await
+                            .unwrap();
+                    }
+                },
             }
             Ok(())
         }

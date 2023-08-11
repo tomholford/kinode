@@ -83,7 +83,6 @@ pub type Rsvp = Option<ProcessNode>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
-    // pub wire: Wire,
     pub source: ProcessNode,
     pub content: MessageContent,
 }
@@ -105,7 +104,8 @@ pub struct BinSerializablePayload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BinSerializableWrappedMessage {
     pub id: u64,
-    //  target assigned by runtime
+    pub target_process: String,
+    //  target node assigned by runtime to "our"
     //  rsvp assigned by runtime (as None)
     pub message: BinSerializableMessage,
 }
@@ -221,53 +221,47 @@ pub struct Printout {
     pub content: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestOnPanic {
+    pub target: ProcessNode,
+    pub payload: Payload,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SendOnPanic {
+    None,
+    Restart,
+    Requests(Vec<RequestOnPanic>),
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
-    Start(ProcessStart),
-    Stop(ProcessManagerStop),
-    Restart(ProcessManagerRestart),
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessStart {
-    pub process_name: String,
-    pub wasm_bytes_uri: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessManagerStop {
-    pub process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProcessManagerRestart {
-    pub process_name: String,
+    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { process_name: String },
+    Restart { process_name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum KernelRequest {
-    StartProcess(ProcessStart),
-    StopProcess(KernelStopProcess),
+    StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    StopProcess { process_name: String },
 }
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KernelStopProcess {
-    pub process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum KernelResponse {
     StartProcess(ProcessMetadata),
-    StopProcess(KernelStopProcess),
+    StopProcess { process_name: String },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
     pub our: ProcessNode,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+    pub send_on_panic: SendOnPanic,
 }
 impl Clone for ProcessMetadata {
     fn clone(&self) -> ProcessMetadata {
         ProcessMetadata {
             our: self.our.clone(),
             wasm_bytes_uri: self.wasm_bytes_uri.clone(),
+            send_on_panic: self.send_on_panic.clone(),
         }
     }
 }

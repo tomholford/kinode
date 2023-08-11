@@ -813,6 +813,7 @@ async fn make_process_loop(
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our_name = metadata.our.node.clone();
     let process_name = metadata.our.process.clone();
+    let send_on_panic = metadata.send_on_panic.clone();
 
     let component = Component::new(&engine, &wasm_bytes)
         .expect("make_process_loop: couldn't read file");
@@ -882,15 +883,25 @@ async fn make_process_loop(
                     message: Ok(Message {
                         source: ProcessNode {
                             node: our_name.clone(),
-                            process: "kernel".into(),
+                            process: "kernel".into(),  //  should this be process_name?
                         },
                         content: MessageContent {
                             message_type: MessageType::Request(false),
                             payload: Payload {
-                                json: Some(serde_json::json!({
-                                    "type": "Stop",
-                                    "process_name": process_name,
-                                })),
+                                json: Some(
+                                    match send_on_panic {
+                                        SendOnPanic::Restart => {
+                                            serde_json::to_value(ProcessManagerCommand::Restart {
+                                                process_name: process_name.clone()
+                                            }).unwrap()
+                                        },
+                                        _ => {
+                                            serde_json::to_value(ProcessManagerCommand::Stop {
+                                                process_name: process_name.clone()
+                                            }).unwrap()
+                                        },
+                                    }
+                                ),
                                 bytes: None,
                             },
                         },
@@ -898,6 +909,28 @@ async fn make_process_loop(
                 })
                 .await
                 .unwrap();
+            if let SendOnPanic::Requests(requests) = send_on_panic {
+                for request in requests {
+                    send_to_loop
+                        .send(WrappedMessage {
+                            id: rand::random(),
+                            target: request.target,
+                            rsvp: None,
+                            message: Ok(Message {
+                                source: ProcessNode {
+                                    node: our_name.clone(),
+                                    process: process_name.clone(),
+                                },
+                                content: MessageContent {
+                                    message_type: MessageType::Request(false),
+                                    payload: request.payload,
+                                },
+                            }),
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
             Ok(())
         }
     )
@@ -932,7 +965,7 @@ async fn handle_kernel_request(
         serde_json::from_value(value)
         .expect("kernel: could not parse to command");
     match kernel_request {
-        KernelRequest::StartProcess(cmd) => {
+        KernelRequest::StartProcess { process_name, wasm_bytes_uri, send_on_panic } => {
             let Some(wasm_bytes) = message.content.payload.bytes else {
                 send_to_terminal
                     .send(Printout{
@@ -947,16 +980,17 @@ async fn handle_kernel_request(
             };
             let (send_to_process, recv_in_process) =
                 mpsc::channel::<WrappedMessage>(PROCESS_CHANNEL_CAPACITY);
-            senders.insert(cmd.process_name.clone(), send_to_process);
+            senders.insert(process_name.clone(), send_to_process);
             let metadata = ProcessMetadata {
                 our: ProcessNode {
                     node: our_name.to_string(),
-                    process: cmd.process_name.clone(),
+                    process: process_name.clone(),
                 },
-                wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
+                wasm_bytes_uri: wasm_bytes_uri.clone(),
+                send_on_panic,
             };
             process_handles.insert(
-                cmd.process_name.clone(),
+                process_name.clone(),
                 tokio::spawn(
                     make_process_loop(
                         metadata.clone(),
@@ -1002,7 +1036,7 @@ async fn handle_kernel_request(
             }
             return;
         },
-        KernelRequest::StopProcess(cmd) => {
+        KernelRequest::StopProcess { process_name } => {
             let MessageType::Request(is_expecting_response) = message.content.message_type else {
                 send_to_terminal
                     .send(Printout {
@@ -1013,8 +1047,8 @@ async fn handle_kernel_request(
                     .unwrap();
                 return;
             };
-            let _ = senders.remove(&cmd.process_name);
-            let process_handle = match process_handles.remove(&cmd.process_name) {
+            let _ = senders.remove(&process_name);
+            let process_handle = match process_handles.remove(&process_name) {
                 Some(ph) => ph,
                 None => {
                     send_to_terminal
@@ -1022,7 +1056,7 @@ async fn handle_kernel_request(
                             verbosity: 0,
                             content: format!(
                                 "kernel: no such process {} to Stop",
-                                cmd.process_name,
+                                process_name,
                             ),
                         })
                         .await
@@ -1035,9 +1069,7 @@ async fn handle_kernel_request(
                 return;
             }
             let json_payload = serde_json::to_value(
-                KernelResponse::StopProcess(KernelStopProcess {
-                    process_name: cmd.process_name.clone(),
-                })
+                KernelResponse::StopProcess { process_name }
             ).unwrap();
 
             let stop_completed_message = WrappedMessage {

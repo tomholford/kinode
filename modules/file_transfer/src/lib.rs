@@ -1415,7 +1415,14 @@ fn handle_next_message(
                                 return Err(anyhow!(error_message));
                             }
 
-                            let uploading = uploads.get_mut(&context.key).unwrap();
+                            let uploading = uploads
+                                .get_mut(&context.key)
+                                .ok_or(
+                                    anyhow!(
+                                        "ReadChunkFromOpen: Got piece but not uploading {:?}",
+                                        context.key,
+                                    )
+                                )?;
 
                             if uploading.number_sent_pieces != piece_number {
                                 print_to_terminal(1, format!(
@@ -1634,7 +1641,13 @@ fn handle_next_message(
                                 return Err(anyhow!(error_message));
                             };
 
-                            let downloading = downloads.get_mut(&key).ok_or(anyhow!("FilePiece: Got piece but not downloading {:?}", key))?;
+                            let downloading = downloads.get_mut(&key)
+                                .ok_or(
+                                    anyhow!(
+                                        "FilePiece: Got piece but not downloading {:?}",
+                                        key,
+                                    )
+                                )?;
                             if downloading.received_pieces.len() != file_piece.piece_number as usize {
                                 let error_message = "got out-of-order file piece; please retry download";
                                 bail(

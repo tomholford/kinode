@@ -10,25 +10,28 @@ mod process_lib;
 
 struct Component;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Payload {
+    json: Option<serde_json::Value>,
+    bytes: Option<Vec<u8>>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestOnPanic {
+    target: ProcessNode,
+    payload: Payload,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SendOnPanic {
+    None,
+    Restart,
+    Requests(Vec<RequestOnPanic>),
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum ProcessManagerCommand {
-    Start(ProcessStart),
-    Stop(ProcessManagerStop),
-    Restart(ProcessManagerRestart),
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessStart {
-    process_name: String,
-    wasm_bytes_uri: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessManagerStop {
-    process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-struct ProcessManagerRestart {
-    process_name: String,
+pub enum ProcessManagerCommand {
+    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { process_name: String },
+    Restart { process_name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,20 +58,14 @@ pub enum FileSystemSeekFrom {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum KernelRequest {
-    StartProcess(ProcessStart),
-    StopProcess(KernelStopProcess),
+pub enum KernelRequest {
+    StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    StopProcess { process_name: String },
 }
 #[derive(Debug, Serialize, Deserialize)]
-struct KernelStopProcess {
-    process_name: String,
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-enum KernelResponse {
+pub enum KernelResponse {
     StartProcess(ProcessMetadata),
-    StopProcess(KernelStopProcess),
+    StopProcess { process_name: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,12 +75,10 @@ pub struct ProcessNode {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ProcessMetadata {
-    our: ProcessNode,
-    // our_name: String,
-    // process_name: String,
-    wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
-    // wasm_bytes: Vec<u8>,     // TODO: for use in faster/cached restarting?
+pub struct ProcessMetadata {
+    pub our: ProcessNode,
+    pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
+    send_on_panic: SendOnPanic,
 }
 
 type ProcessMetadatas = HashMap<String, ProcessMetadata>;
@@ -92,6 +87,7 @@ type ProcessMetadatas = HashMap<String, ProcessMetadata>;
 struct FileSystemReadContext {
     process_name: String,
     wasm_bytes_uri: String,
+    send_on_panic: SendOnPanic,
 }
 
 fn send_stop_to_loop(
@@ -103,7 +99,7 @@ fn send_stop_to_loop(
         is_expecting_response,
         &our_name,
         "kernel",
-        Some(KernelRequest::StopProcess(KernelStopProcess { process_name })),
+        Some(KernelRequest::StopProcess { process_name }),
         None,
         None::<FileSystemReadContext>,
     )
@@ -120,12 +116,12 @@ fn handle_message(
     match message.content.message_type {
         WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
-                ProcessManagerCommand::Start(start) => {
+                ProcessManagerCommand::Start { process_name, wasm_bytes_uri, send_on_panic } => {
                     print_to_terminal(1, "process manager: start");
-                    if reserved_process_names.contains(&start.process_name) {
+                    if reserved_process_names.contains(&process_name) {
                         return Err(anyhow::anyhow!(
                             "cannot add process {} with name amongst {:?}",
-                            &start.process_name,
+                            &process_name,
                             reserved_process_names.iter().collect::<Vec<_>>(),
                         ))
                     }
@@ -135,38 +131,31 @@ fn handle_message(
                         &our_name,
                         "filesystem",
                         Some(FileSystemRequest {
-                            uri_string: start.wasm_bytes_uri.clone(),
+                            uri_string: wasm_bytes_uri.clone(),
                             action: FileSystemAction::Read,
                         }),
                         None,
                         Some(FileSystemReadContext {
-                            process_name: start.process_name,
-                            wasm_bytes_uri: start.wasm_bytes_uri,
+                            process_name,
+                            wasm_bytes_uri,
+                            send_on_panic,
                         }),
                     )?;
                 },
-                ProcessManagerCommand::Stop(stop) => {
+                ProcessManagerCommand::Stop { process_name } => {
                     print_to_terminal(1, "process manager: stop");
                     let _ = metadatas
-                        .remove(&stop.process_name)
+                        .remove(&process_name)
                         .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
-                    send_stop_to_loop(
-                        our_name.into(),
-                        stop.process_name,
-                        false,
-                    )?;
+                    send_stop_to_loop(our_name.into(), process_name, false)?;
 
                     println!("process manager: {:?}\r", metadatas.keys().collect::<Vec<_>>());
                 },
-                ProcessManagerCommand::Restart(restart) => {
+                ProcessManagerCommand::Restart { process_name } => {
                     print_to_terminal(1, "process manager: restart");
 
-                    send_stop_to_loop(
-                        our_name.into(),
-                        restart.process_name,
-                        true,
-                    )?;
+                    send_stop_to_loop(our_name.into(), process_name, true)?;
                 },
             }
         },
@@ -187,10 +176,11 @@ fn handle_message(
                         true,
                         &our_name,
                         "kernel",
-                        Some(KernelRequest::StartProcess(ProcessStart {
+                        Some(KernelRequest::StartProcess {
                             process_name: context.process_name,
                             wasm_bytes_uri: context.wasm_bytes_uri,
-                        })),
+                            send_on_panic: context.send_on_panic,
+                        }),
                         Some(wasm_bytes),
                         None::<FileSystemReadContext>,
                     )?;
@@ -208,19 +198,20 @@ fn handle_message(
                             );
                             //  TODO: response?
                         },
-                        KernelResponse::StopProcess(stop) => {
+                        KernelResponse::StopProcess { process_name } => {
                             let removed = metadatas
-                                .remove(&stop.process_name)
+                                .remove(&process_name)
                                 .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
                             process_lib::yield_one_request(
                                 true,
                                 &our_name,
-                                process_name,
-                                Some(ProcessManagerCommand::Start(ProcessStart {
+                                &process_name,
+                                Some(ProcessManagerCommand::Start {
                                     process_name: removed.our.process,
                                     wasm_bytes_uri: removed.wasm_bytes_uri,
-                                })),
+                                    send_on_panic: removed.send_on_panic,
+                                }),
                                 None,
                                 None::<FileSystemReadContext>,
                             )?;
@@ -244,7 +235,6 @@ impl bindings::MicrokernelProcess for Component {
         let reserved_process_names = vec![
             "filesystem".to_string(),
             our_name.clone(),
-            "terminal".to_string(),
         ];
         let reserved_process_names: HashSet<String> = reserved_process_names
             .into_iter()

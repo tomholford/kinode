@@ -356,7 +356,7 @@ async fn main() {
                 id: bin_message.id,
                 target: ProcessNode {
                     node: our.name.clone(),
-                    process: "kernel".into(),
+                    process: bin_message.target_process,
                 },
                 rsvp: None,
                 message: Ok(Message {

@@ -16,25 +16,12 @@ cargo install cargo-wasi
 cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
 
 # Build the runtime, along with a number of booted-at-startup WASM modules including process-manager, terminal, and http-bindings
-cargo build
+cargo build --release
 
 # Create the home directory for your node
 # If you boot multiple nodes, make sure each has their own home directory.
 mkdir home
 ```
-
-If desired, build additional components and copy them into your node's home directory like so. Available components to build:
-- file-transfer
-- hi-lus-lus
-- poast
-- sequencer
-
-```bash
-cd file-transfer
-cargo component build --target wasm32-unknown-unknown
-cp target/wasm32-unknown-unknown/debug/file-transfer.wasm ../home/file-transfer.wasm
-```
-Replace `file-transfer` with the desired component.
 
 ### Boot
 
@@ -44,7 +31,7 @@ cargo run home http://147.135.114.167:8083/blockchain.json
 ```
 There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
 
-If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
+If you want to set up a blockchain node locally, simply set the second argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
 
 In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up, replacing your_name as necessary:
 `!message <<your_name>> process_manager {"type": "Start", "process_name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm"}`
@@ -85,22 +72,8 @@ mkdir home/${FIRST_NODE}
 mkdir home/${SECOND_NODE}
 mkdir home/${SECOND_NODE}/file_transfer
 mkdir home/${SECOND_NODE}/file_transfer_one_off
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${FIRST_NODE}/
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${SECOND_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${FIRST_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${SECOND_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${FIRST_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${SECOND_NODE}/
 cp README.md home/${SECOND_NODE}/file_transfer/
 cp README.md home/${SECOND_NODE}/file_transfer_one_off/
-
-# For releases:
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${FIRST_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${SECOND_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/${FIRST_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown//file_transfer_one_off.wasm home/${SECOND_NODE}/
 
 # Terminal A: add hi++ apps to process_manager
 !message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}

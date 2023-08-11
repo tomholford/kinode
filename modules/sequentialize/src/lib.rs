@@ -31,18 +31,14 @@ fn handle_message(
     our_name: &str,
     process_name: &str,
 ) -> anyhow::Result<ReturnStatus> {
-    print_to_terminal(0, "s: 0");
     let (message, _context) = await_next_message()?;
-    print_to_terminal(0, "s: 1");
     if our_name != message.source.node {
         return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
     }
-    print_to_terminal(0, format!("s: 2 {:?}", message.content.payload.json).as_str());
     match message.content.message_type {
         types::WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
                 SequentializeRequest::QueueMessage { target_node, target_process, json } => {
-                    print_to_terminal(0, "s: 3");
                     message_queue.push_back(QueueItem{
                         target: types::WitProcessNode {
                             node: match target_node {
@@ -59,7 +55,6 @@ fn handle_message(
                     Ok(ReturnStatus::AcceptNextInput)
                 },
                 SequentializeRequest::RunQueue => {
-                    print_to_terminal(0, "s: 4");
                     for item in message_queue {
                         let _ = yield_and_await_response(&item.target, &item.payload)?;
                     }

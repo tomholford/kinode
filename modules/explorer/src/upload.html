@@ -200,7 +200,7 @@
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json()) // assuming server responds with json
+            .then(response => response.json())
             .then(data => console.log(data))
             .catch(error => console.error('Error:', error));
         }
@@ -218,7 +218,6 @@
         <input type="file" id="fileInput">
         <button onclick="uploadFile()">Upload File</button>
     
-        <!-- Hidden file input to trigger the file system prompt -->
         <!-- <div id="progressContainer" style="width: 100%; background-color: #e0e0e0;">
             <div id="progressBar" style="width: 0%; height: 30px; background-color: #76a21e;"></div>
         </div> -->

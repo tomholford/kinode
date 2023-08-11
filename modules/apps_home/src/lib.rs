@@ -29,7 +29,8 @@ impl bindings::MicrokernelProcess for Component {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
                           "path": "/",
-                          "app": process_name, 
+                          "app": process_name,
+                          "authenticated": true
                       }).to_string()),
                       bytes: None
                   }
@@ -57,7 +58,6 @@ impl bindings::MicrokernelProcess for Component {
                                 "status": 200,
                                 "headers": {
                                     "Content-Type": "text/html",
-                                    "Access-Control-Allow-Origin": "*"
                                 },
                             }).to_string()),
                             bytes: Some(APPS_HOME_PAGE.replace("${our}", &our_name.to_string()).as_bytes().to_vec())

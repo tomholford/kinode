@@ -499,13 +499,11 @@
             body: JSON.stringify(signature)
           })
 
-          const httpServerPort = await registerResult.text()
-
           const interval = setInterval(async () => {
-            const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+            const homepageResult = await fetch('/')
             if (homepageResult.status < 400) {
               clearInterval(interval)
-              window.location.href = `http://localhost:${httpServerPort}/`
+              window.location.replace('/')
             }
           }, 2000);
         } catch (err) {

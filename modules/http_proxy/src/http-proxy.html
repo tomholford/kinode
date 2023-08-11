@@ -138,7 +138,7 @@
         margin-left: -60px;
         opacity: 0;
         transition: opacity 0.3s;
-        font-family: sans-serif;
+        font-family: "Helvetica", sans-serif;
         line-height: 1.5em;
         min-width: 200px;
       }
@@ -230,9 +230,15 @@
       </div>
     </div>
     <script>
+      function genFetchRoute(route) {
+        return window.location.pathname.includes('/proxy/serve/') ?
+          `/proxy/serve/${window.location.pathname.split('/')[3]}/${route}`:
+          route
+      }
+
       async function getProxies() {
         try {
-          const result = await fetch('/proxy/list').then(r => r.json()).catch(() => null)
+          const result = await fetch(genFetchRoute(`/proxy/list`)).then(r => r.json()).catch(() => null)
           if (!result || !result.registrations) return
 
           const proxyList = document.getElementById('proxy-list')
@@ -267,7 +273,7 @@
         try {
           const username = document.querySelector('input[name="username"]').value
           document.querySelector('input[name="username"]').value = ''
-          await fetch('/proxy/register', {
+          await fetch(genFetchRoute(`/proxy/register`), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
@@ -282,7 +288,7 @@
 
       async function removeProxy(username) {
         try {
-          await fetch(`/proxy/register?username=${username}`, {
+          await fetch(genFetchRoute(`/proxy/register?username=${username}`), {
             method: 'DELETE',
           })
           getProxies()

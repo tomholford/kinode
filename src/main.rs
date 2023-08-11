@@ -150,47 +150,46 @@ async fn main() {
     // username, address, networking key, and routing info.
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
-    let registration_port = find_open_port(8000).await.unwrap();
     let http_server_port = find_open_port(8080).await.unwrap();
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
     let keyfile = fs::read(format!("{}/.network.keys", home_directory_path)).await;
 
-    let (our, networking_keypair): (Identity, signature::Ed25519KeyPair) = if keyfile.is_ok() {
+    let (our, networking_keypair, jwt_secret_bytes): (Identity, signature::Ed25519KeyPair, Vec<u8>) = if keyfile.is_ok() {
         // LOGIN flow
-        // get username and keyfile from disk
-        let (username, key) = bincode::deserialize::<(String, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+        // get username, keyfile, and jwt_secret from disk
+        let (username, key, jwt_secret) = bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
 
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/login", registration_port),
+            format!("http://localhost:{}/login", http_server_port),
             format!(
                 "Welcome back, {}. Click here to log in to your node.",
                 username
             ),
         );
-        println!("(http://localhost:{}/login)", registration_port);
+        println!("(http://localhost:{}/login)", http_server_port);
         if our_ip != "localhost" {
             println!(
                 "(if on a remote machine: http://{}:{}/login)",
-                our_ip, registration_port
+                our_ip, http_server_port
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<signature::Ed25519KeyPair>(1);
-        let networking_keypair = tokio::select! {
+        let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
+        let (networking_keypair, jwt_secret_bytes) = tokio::select! {
             _ = register::login(tx,
                                 kill_rx,
                                 key,
-                                registration_port,
+                                jwt_secret,
                                 http_server_port,
                                 &username)
                 => panic!("login failed"),
-            networking_keypair = async {
+            (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("login failed")
-            } => networking_keypair,
+            } => (networking_keypair, jwt_secret_bytes),
         };
 
         // check if Identity for this username has correct networking keys,
@@ -203,32 +202,32 @@ async fn main() {
                 username
             ),
         };
-        (our_identity.clone(), networking_keypair)
+        (our_identity.clone(), networking_keypair, jwt_secret_bytes)
     } else {
         // REGISTER flow
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/register", registration_port),
+            format!("http://localhost:{}/register", http_server_port),
             "Click here to register your node.",
         );
-        println!("(http://localhost:{}/register)", registration_port);
+        println!("(http://localhost:{}/register)", http_server_port);
         if our_ip != "localhost" {
             println!(
                 "(if on a remote machine: http://{}:{}/register)",
-                our_ip, registration_port
+                our_ip, http_server_port
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(Registration, Document, String)>(1);
-        let (registration, serialized_networking_keypair, signature) = tokio::select! {
-            _ = register::register(tx, kill_rx, registration_port, http_server_port, pki.clone())
+        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>, String)>(1);
+        let (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = tokio::select! {
+            _ = register::register(tx, kill_rx, http_server_port, http_server_port, pki.clone())
                 => panic!("registration failed"),
-            (registration, serialized_networking_keypair, signature) = async {
+            (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("registration failed")
-            } => (registration, serialized_networking_keypair, signature),
+            } => (registration, serialized_networking_keypair, jwt_secret_bytes, signature),
         };
 
         println!("generating disk encryption keys...");
@@ -252,6 +251,10 @@ async fn main() {
             .unwrap();
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+
+        let jwtciphertext: Vec<u8> = cipher
+            .encrypt(&nonce, jwt_secret_bytes.as_ref())
+            .unwrap();
 
         // TODO: if IP is localhost, assign a router...
         let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
@@ -307,13 +310,14 @@ async fn main() {
             bincode::serialize(&(
                 registration.username.clone(),
                 [nonce.deref().to_vec(), ciphertext].concat(),
+                [nonce.deref().to_vec(), jwtciphertext].concat(),
             ))
             .unwrap(),
         )
         .await
         .unwrap();
         println!("registration complete!");
-        (our, networking_keypair)
+        (our, networking_keypair, jwt_secret_bytes)
     };
     let _ = kill_tx.send(true);
     let _ = print_sender
@@ -400,6 +404,7 @@ async fn main() {
 
     let kernel_handle = tokio::spawn(microkernel::kernel(
         our.clone(),
+        jwt_secret_bytes.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,

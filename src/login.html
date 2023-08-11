@@ -293,12 +293,11 @@
           });
 
           if (result.status === 200) {
-            const httpServerPort = await result.text()
             const interval = setInterval(async () => {
-              const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+              const homepageResult = await fetch('/')
               if (homepageResult.status < 400) {
                 clearInterval(interval)
-                window.location.replace(`http://localhost:${httpServerPort}`)
+                window.location.replace('/')
               }
             }, 2000);
           } else if (result.status === 405) {
@@ -331,13 +330,11 @@
               body: JSON.stringify(signature)
             })
 
-            const httpServerPort = await loginResult.text()
-
             const interval = setInterval(async () => {
-              const homepageResult = await fetch(`http://localhost:${httpServerPort}/`)
+              const homepageResult = await fetch('/')
               if (homepageResult.status < 400) {
                 clearInterval(interval)
-                window.location.replace(`http://localhost:${httpServerPort}/`)
+                window.location.replace('/')
               }
             }, 2000);
           }
@@ -362,7 +359,7 @@
           document.getElementById('loading').style.display = 'flex'
           document.getElementById('login-form').style.display = 'none'
           const address = await loadWallet()
-          const newPassword = document.querySelector('input[name="new-newP]').value
+          const newPassword = document.querySelector('input[name="new-password]').value
           // const nftContract = document.querySelector('input[name="nft-contract"]').value
           // const nftId = document.querySelector('input[name="nft-id"]').value
           // const uqName = document.querySelector('input[name="uq-name"]').value
@@ -388,9 +385,13 @@
             })
           }
 
-          setTimeout(() => {
-            window.location.href = 'http://localhost:8080/'
-          }, 3000)
+          const interval = setInterval(async () => {
+              const homepageResult = await fetch('/')
+              if (homepageResult.status < 400) {
+                clearInterval(interval)
+                window.location.replace('/')
+              }
+            }, 2000);
         } catch (err) {
           console.error(err)
           window.alert(CONNECTION_ERROR)

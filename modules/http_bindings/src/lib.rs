@@ -6,41 +6,92 @@ use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use std::collections::HashMap;
-// use std::time::{SystemTime, UNIX_EPOCH};
-// use jsonwebtoken::{decode, Validation, Algorithm, DecodingKey};
-// use serde::Deserialize;
-// use regex::Regex;
+use serde::{Serialize, Deserialize};
+use hmac::{Hmac, Mac};
+use jwt::{SignWithKey, VerifyWithKey, Error};
+use sha2::Sha256;
+use url::form_urlencoded;
 
-// #[derive(Debug, Deserialize)]
-// struct JwtClaims {
-//   sub: String,
-//   exp: usize,
-// }
+struct BoundPath {
+    app: String,
+    authenticated: bool,
+}
 
-// fn check_auth_token(our: String, secret: String, token: String) -> bool {
-//   let validation = Validation::new(Algorithm::HS256);
+#[derive(Serialize, Deserialize)]
+struct JwtClaims {
+  username: String,
+  expiration: u64,
+}
 
-//   let token_data = decode::<JwtClaims>(&token, &DecodingKey::from_secret(secret.as_ref()), &validation);
+fn generate_token(our_name: String, secret: Hmac<Sha256>) -> Option<String> {
+    let claims = JwtClaims {
+        username: our_name,
+        expiration: 0,
+    };
+    let token: Option<String> = match claims.sign_with_key(&secret) {
+        Ok(token) => Some(token),
+        Err(_) => None,
+    };
+    token
+}
 
-//   match token_data {
-//       Ok(data) => {
-//           let now = SystemTime::now();
-//           let now_since_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
-//           let now_since_epoch_as_usize = now_since_epoch.as_secs() as usize;
-//           data.claims.sub == our && data.claims.exp > now_since_epoch_as_usize
-//       },
-//       Err(_) => false,
-//   }
-// }
+fn auth_cookie_valid(our_name: String, cookie: &str, secret: Hmac<Sha256>) -> bool {
+    let cookie_parts: Vec<&str> = cookie.split("; ").collect();
+    let mut auth_token = None;
+    for cookie_part in cookie_parts {
+        let cookie_part_parts: Vec<&str> = cookie_part.split("=").collect();
+        if cookie_part_parts.len() == 2 && cookie_part_parts[0] == format!("uqbar-auth_{}", our_name) {
+            auth_token = Some(cookie_part_parts[1].to_string());
+            break;
+        }
+    }
 
+    let auth_token = match auth_token {
+        Some(token) if !token.is_empty() => token,
+        _ => return false,
+    };
+
+    bindings::print_to_terminal(1, format!("http_bindings: auth_token: {}", auth_token).as_str());
+
+    let claims: Result<JwtClaims, Error> = auth_token.verify_with_key(&secret);
+
+    match claims {
+        Ok(data) => {
+            bindings::print_to_terminal(1, format!("http_bindings: our name: {}, token_name {}", our_name, data.username).as_str());
+            data.username == our_name
+        },
+        Err(_) => {
+            bindings::print_to_terminal(1, "http_bindings: failed to verify token");
+            false
+        },
+    }
+}
+
+fn yield_http_response(id: String, status: u16, headers: HashMap<String, String>, payload_bytes: Vec<u8>) {
+    bindings::yield_results(Ok(vec![(
+        bindings::WitProtomessage {
+            protomessage_type: WitProtomessageType::Response,
+            payload: WitPayload {
+                json: Some(serde_json::json!({
+                    "id": id,
+                    "status": status,
+                    "headers": headers,
+                }).to_string()),
+                bytes: Some(payload_bytes),
+            },
+        },
+        "".into(),
+    )].as_slice()));
+}
 
 struct Component;
 
+// TODO: handle auth correctly, generate a secret and store in filesystem if non-existent
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: String, _dap: String) {
+    fn run_process(our_name: String, _process_name: String) {
         bindings::print_to_terminal(1, "http_bindings: start");
-        // TODO needs to be some kind of HttpPath => String
-        let mut bindings: HashMap<String, String> = HashMap::new();
+        let mut path_bindings: HashMap<String, BoundPath> = HashMap::new();
+        let mut jwt_secret: Option<Hmac<Sha256>> = None;
 
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
@@ -68,76 +119,139 @@ impl bindings::MicrokernelProcess for Component {
                         None => "", // or any other default value
                     };
 
-                    if action == "bind-app" && path != "" && app != "" {
-                        bindings.insert(path.to_string(), app.to_string());
+                    if action == "set-jwt-secret" {
+                        let jwt_secret_bytes = message.content.payload.bytes.unwrap_or_default();
+                        
+                        if jwt_secret_bytes.is_empty() {
+                            bindings::print_to_terminal(1, "http_bindings: got empty jwt_secret_bytes");
+                        } else {
+                            bindings::print_to_terminal(1, "http_bindings: generating token secret...");
+                            jwt_secret = match Hmac::new_from_slice(&jwt_secret_bytes) {
+                                Ok(secret) => Some(secret),
+                                Err(_) => {
+                                    bindings::print_to_terminal(1, "http_bindings: failed to generate token secret");
+                                    None
+                                },
+                            };
+                        }
+                    } else if action == "bind-app" && path != "" && app != "" {
+                        path_bindings.insert(path.to_string(), {
+                            BoundPath {
+                                app: app.to_string(),
+                                authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
+                            }
+                        });
                     } else if action == "request" {
                         bindings::print_to_terminal(1, "http_bindings: got request");
 
-                        // // if the request path is "/", starts with "/~" or "/apps", then we need to check the uqbar-auth cookie
-                        // let re = Regex::new(r"^/(~/.+|apps/.+|)$").unwrap();
+                        // Start Login logic
+                        if path == "/login" {
+                            bindings::print_to_terminal(1, "http_bindings: got login request");
 
-                        // if re.is_match(message_json["path"].as_str().unwrap()) {
-                        //     let cookie = message_json["headers"]["Cookie"].as_str().unwrap();
-                        //     let cookie_parts: Vec<&str> = cookie.split("; ").collect();
-                        //     let mut auth_token = None;
-                        //     for cookie_part in cookie_parts {
-                        //         let cookie_part_parts: Vec<&str> = cookie_part.split("=").collect();
-                        //         if cookie_part_parts[0] == "uqbar-auth" {
-                        //             auth_token = Some(cookie_part_parts[1].to_string());
-                        //         }
-                        //     }
+                            if message_json["method"] == "GET" {
+                                bindings::print_to_terminal(1, "http_bindings: got login GET request");
+                                let login_page_content = include_str!("login.html");
+                                let personalized_login_page = login_page_content.replace("${our}", &our_name);
 
-                        //     // Check if the node has UqName registered with network keys
-                        //     // If so, redirect to /login, otherwise redirect to /register
-                        //     // Set the "location" header to the redirect URL and the status to 302
+                                yield_http_response(message_json["id"].to_string(), 200, {
+                                    let mut headers = HashMap::new();
+                                    headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                    headers
+                                }, personalized_login_page.as_bytes().to_vec());
+                            } else if message_json["method"] == "POST" {
+                                bindings::print_to_terminal(1, "http_bindings: got login POST request");
 
-                        //     if auth_token.is_none() {
-                        //         bindings::yield_results(vec![(
-                        //             bindings::WitProtomessage {
-                        //                 protomessage_type: WitProtomessageType::Response,
-                        //                 payload: &WitPayload {
-                        //                     json: Some(serde_json::json!({
-                        //                         "id": message_json["id"],
-                        //                         "status": 401,
-                        //                         "headers": {"Content-Type": "text/plain"},
+                                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+                                let body_json_string = match String::from_utf8(body_bytes) {
+                                    Ok(s) => s,
+                                    Err(_) => String::new()
+                                };
+                                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                                let password = body["password"].as_str().unwrap_or("");
 
-                        //                     }).to_string()),
-                        //                     bytes: Some("Unauthorized".as_bytes().to_vec()),
-                        //                 },
-                        //             },
-                        //             "",
-                        //         )].as_slice());
-                        //         continue;
-                        //     }
-                        //     let auth_token = auth_token.unwrap();
-                        //     // Need to use the secret here
-                        //     if !check_auth_token(our.clone(), _dap.clone(), auth_token) {
-                        //         bindings::yield_results(vec![(
-                        //             bindings::WitProtomessage {
-                        //                 protomessage_type: WitProtomessageType::Response,
-                        //                 payload: &WitPayload {
-                        //                     json: Some(serde_json::json!({
-                        //                         "id": message_json["id"],
-                        //                         "status": 401,
-                        //                         "headers": {"Content-Type": "text/plain"},
+                                if password == "" {
+                                    yield_http_response(message_json["id"].to_string(), 400, HashMap::new(), "Bad Request".as_bytes().to_vec());
+                                } else {
+                                    bindings::print_to_terminal(1, "http_bindings: generating token...");
+                                    // TODO: check the password
 
-                        //                     }).to_string()),
-                        //                     bytes: Some("Unauthorized".as_bytes().to_vec()),
-                        //                 },
-                        //             },
-                        //             "",
-                        //         )].as_slice());
-                        //         continue;
-                        //     }
-                        // }
+                                    match jwt_secret.clone() {
+                                        Some(secret) => {
+                                            match generate_token(our_name.clone(), secret) {
+                                                Some(token) => {
+                                                    // Token was generated successfully; you can use it here.
+                                                    yield_http_response(message_json["id"].to_string(), 200, {
+                                                        let mut headers = HashMap::new();
+                                                        headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our_name, token));
+                                                        headers
+                                                    }, "".as_bytes().to_vec());
+                                                }
+                                                None => {
+                                                    yield_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            yield_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                        },
+                                    }
+                                }
+                            } else if message_json["method"] == "PUT" {
+                                bindings::print_to_terminal(1, "http_bindings: got login PUT request");
+                                
+                                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+                                let body_json_string = match String::from_utf8(body_bytes) {
+                                    Ok(s) => s,
+                                    Err(_) => String::new()
+                                };
+                                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                                // let password = body["password"].as_str().unwrap_or("");
+                                let signature = body["signature"].as_str().unwrap_or("");
 
-                        // let app = bindings.get(message_json["path"].as_str().unwrap()).unwrap();
+                                if signature == "" {
+                                    yield_http_response(message_json["id"].to_string(), 400, HashMap::new(), "Bad Request".as_bytes().to_vec());
+                                } else {
+                                    // TODO: Check signature against our address
+                                    bindings::print_to_terminal(1, "http_bindings: generating secret...");
+                                    // jwt_secret = generate_secret(password);
+                                    bindings::print_to_terminal(1, "http_bindings: generating token...");
+
+                                    match jwt_secret.clone() {
+                                        Some(secret) => {
+                                            match generate_token(our_name.clone(), secret) {
+                                                Some(token) => {
+                                                    // Token was generated successfully; you can use it here.
+                                                    yield_http_response(message_json["id"].to_string(), 200, {
+                                                        let mut headers = HashMap::new();
+                                                        headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our_name, token));
+                                                        headers
+                                                    }, "".as_bytes().to_vec());
+                                                }
+                                                None => {
+                                                    // Failed to generate token; you should probably return an error.
+                                                    yield_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            yield_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                        }
+                                    }
+                                }
+                            } else {
+                                yield_http_response(message_json["id"].to_string(), 404, HashMap::new(), "Not Found".as_bytes().to_vec());
+                            }
+                            continue;
+                        }
+                        // End Login logic
 
                         let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                         let mut registered_path = path;
                         let mut url_params: HashMap<String, String> = HashMap::new();
-
-                        for (key, _value) in &bindings {
+                        
+                        for (key, _value) in &path_bindings {
                             let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                             if key_segments.len() != path_segments.len() && !key.contains("/.*") {
                                 continue;
@@ -161,16 +275,55 @@ impl bindings::MicrokernelProcess for Component {
                             }
                         }
 
-                        match bindings.get(registered_path) {
-                            Some(app) => {
+                        match path_bindings.get(registered_path) {
+                            Some(bound_path) => {
+                                let app = bound_path.app.as_str();
                                 bindings::print_to_terminal(1, &("http_bindings: properly unwrapped path ".to_string() + registered_path));
+
+                                if bound_path.authenticated {
+                                    bindings::print_to_terminal(1, "AUTHENTICATED ROUTE");
+                                    let auth_success = match jwt_secret.clone() {
+                                        Some(secret) => {
+                                            bindings::print_to_terminal(1, "HAVE SECRET");
+                                            auth_cookie_valid(our_name.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
+                                        },
+                                        None => {
+                                            bindings::print_to_terminal(1, "NO SECRET");
+                                            false
+                                        }
+                                    };
+
+                                    if !auth_success {
+                                        bindings::print_to_terminal(1, "http_bindings: path");
+                                        let proxy_path = message_json["proxy_path"].as_str();
+
+                                        let redirect_path: String = match proxy_path {
+                                            Some(pp) => form_urlencoded::byte_serialize(pp.as_bytes()).collect(),
+                                            None => form_urlencoded::byte_serialize(path.as_bytes()).collect()
+                                        };
+
+                                        let location = match proxy_path {
+                                            Some(_) => format!("/proxy/serve/{}/login?redirect={}", &our_name, redirect_path),
+                                            None => format!("/login?redirect={}", redirect_path)
+                                        };
+
+                                        yield_http_response(message_json["id"].to_string(), 302, {
+                                            let mut headers = HashMap::new();
+                                            headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                            headers.insert("Location".to_string(), location);
+                                            headers
+                                        }, "Auth cookie not valid".as_bytes().to_vec());
+                                        continue;
+                                    }
+                                }
+
                                 bindings::yield_results(Ok(vec![(
                                     bindings::WitProtomessage {
                                         protomessage_type: WitProtomessageType::Request(
                                             WitRequestTypeWithTarget {
                                                 is_expecting_response: false,
                                                 target: WitProcessNode {
-                                                    node: our.clone(),
+                                                    node: our_name.clone(),
                                                     process: app.into(),
                                                 },
                                             }
@@ -193,21 +346,7 @@ impl bindings::MicrokernelProcess for Component {
                             },
                             None => {
                                 bindings::print_to_terminal(1, "http_bindings: no app found at this path");
-                                bindings::yield_results(Ok(vec![(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: WitPayload {
-                                            json: Some(serde_json::json!({
-                                                "id": message_json["id"],
-                                                "status": 404,
-                                                "headers": {"Content-Type": "text/plain"},
-
-                                            }).to_string()),
-                                            bytes: Some("404 Not Found".as_bytes().to_vec()),
-                                        },
-                                    },
-                                    "".into(),
-                                )].as_slice()));
+                                yield_http_response(message_json["id"].to_string(), 404, HashMap::new(), "Not Found".as_bytes().to_vec());
                             },
                         }
                     } else {

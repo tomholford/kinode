@@ -27,9 +27,11 @@ mkdir home
 
 Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the second argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run home http://147.135.114.167:8083/blockchain.json
+cargo run --release home http://147.135.114.167:8083/blockchain.json
 ```
 There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
+
+Note that the `--release` flag is optional but should normally be included to enable better performance (while only adding a few seconds to build time).
 
 If you want to set up a blockchain node locally, simply set the second argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
 

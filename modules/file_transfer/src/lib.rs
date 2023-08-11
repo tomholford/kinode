@@ -1763,6 +1763,7 @@ impl bindings::MicrokernelProcess for Component {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/apps/file-transfer",
+                            "authenticated": true,
                             "app": process_name
                         }).to_string()),
                         bytes: None

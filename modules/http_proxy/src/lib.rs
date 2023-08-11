@@ -30,6 +30,7 @@ impl bindings::MicrokernelProcess for Component {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
                           "path": "/apps/proxy",
+                          "authenticated": true,
                           "app": process_name
                       }).to_string()),
                       bytes: None
@@ -257,8 +258,8 @@ impl bindings::MicrokernelProcess for Component {
                     let mut proxied_path = "/".to_string();
 
                     if let Some(pos) = path_parts.iter().position(|&x| x == "serve") {
-                        proxied_path = path_parts[pos+2..].join("/");
-                        bindings::print_to_terminal(1, format!("Path to proxy: /{}", proxied_path).as_str());
+                        proxied_path = format!("/{}", path_parts[pos+2..].join("/"));
+                        bindings::print_to_terminal(1, format!("Path to proxy: {}", proxied_path).as_str());
                     }
 
                     let res = process_lib::yield_and_await_response(
@@ -269,23 +270,60 @@ impl bindings::MicrokernelProcess for Component {
                             "method": message_from_loop["method"],
                             "path": proxied_path,
                             "headers": message_from_loop["headers"],
+                            "proxy_path": raw_path,
                             "query_params": message_from_loop["query_params"],
                         })),
                         message.content.payload.bytes,
                     ).unwrap(); // TODO unwrap
                     bindings::print_to_terminal(1, "FINISHED YIELD AND AWAIT");
-                    bindings::yield_results(Ok(vec![(
-                        bindings::WitProtomessage {
-                            protomessage_type: WitProtomessageType::Response,
-                            payload: WitPayload {
-                                json: res.content.payload.json,
-                                bytes: res.content.payload.bytes,
+                    match res.content.payload.json {
+                        Some(ref json) => {
+                            if json.contains("Offline") {
+                                bindings::yield_results(Ok(vec![(
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Response,
+                                        payload: WitPayload {
+                                            json: Some(serde_json::json!({
+                                                "status": 404,
+                                                "headers": {
+                                                    "Content-Type": "text/html"
+                                                },
+                                            }).to_string()),
+                                            bytes: Some("Node is offline".as_bytes().to_vec()),
+                                        },
+                                    },
+                                    "".into(),
+                                )].as_slice()))
+                            } else {
+                                bindings::yield_results(Ok(vec![(
+                                    bindings::WitProtomessage {
+                                        protomessage_type: WitProtomessageType::Response,
+                                        payload: WitPayload {
+                                            json: res.content.payload.json,
+                                            bytes: res.content.payload.bytes,
+                                        }
+                                    },
+                                    "".into(),
+                                )].as_slice()))
                             }
                         },
-                        "".into(),
-                    )].as_slice()));
+                        None => bindings::yield_results(Ok(vec![(
+                            bindings::WitProtomessage {
+                                protomessage_type: WitProtomessageType::Response,
+                                payload: WitPayload {
+                                    json: Some(serde_json::json!({
+                                        "status": 404,
+                                        "headers": {
+                                            "Content-Type": "text/html"
+                                        },
+                                    }).to_string()),
+                                    bytes: Some("Not Found".as_bytes().to_vec()),
+                                },
+                            },
+                            "".into(),
+                        )].as_slice())),
+                    };
                 }
-
             } else {
                 bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {

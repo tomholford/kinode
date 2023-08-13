@@ -215,8 +215,6 @@
         <h3 id="uq-name">Welcome ${our}!</h3>
         <h4>Your Files:</h4>
         <div id="fileList"></div>
-        <!-- TODO, put a list of files here, update them every time you click Upload and it finishes -->
-
 
         <h4>Upload a File:</h4>
         <input type="file" id="fileInput" multiple />
@@ -239,7 +237,11 @@
                     const aTag = document.createElement('a');
                     aTag.textContent = file;
                     aTag.href = `/apps/explorer/file/${file}`;
-                    fileListDiv.appendChild(aTag);
+                    
+                    const pTag = document.createElement('p');
+                    pTag.appendChild(aTag);
+                    
+                    fileListDiv.appendChild(pTag);
                 }
             } catch (error) {
                 console.error('There was a problem with the fetch operation:', error.message);

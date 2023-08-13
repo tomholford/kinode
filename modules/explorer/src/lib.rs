@@ -322,6 +322,7 @@ fn handle_next_message(
         for file in files {
             let fil: File = extract_file_from_chunk(file).unwrap();
 
+            // TODO check if a file.name is URL safe or not. If not, DONT SAVE IT
             // TODO replace this with a write to AFS instead of the normal FS
             yield_write(&our_name, format!("fs://{}", fil.name), fil.data, "");
             // Real file hash should be returned by the 

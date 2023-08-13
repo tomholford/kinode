@@ -190,8 +190,6 @@ fn yield_read(
 }
 
 fn extract_boundary_from_headers(headers: &serde_json::Value) -> Option<String> {
-    // TODO http-bindings or http-server should format all headers to Pascal case
-    // because an http-server should be case insensitive. 
     let content_type = headers.get("Content-Type")?.as_str()?;
     if let Some(start) = content_type.find("boundary=") {
         let boundary = &content_type[start + "boundary=".len()..];

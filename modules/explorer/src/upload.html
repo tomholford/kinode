@@ -213,7 +213,11 @@
           <h1 style="text-align: center;">Uqbar</h1>
         </div>
         <h3 id="uq-name">Welcome ${our}!</h3>
-  
+        <h4>Files:</h4>
+        <div id="fileList"></div>
+        <!-- TODO, put a list of files here, update them every time you click Upload and it finishes -->
+
+
         <h4>File Upload:</h4>
         <input type="file" id="fileInput" multiple />
         <div id="selectedFiles"></div>
@@ -221,6 +225,30 @@
         <progress id="uploadProgress" value="0" max="100"></progress>
       </div>
     <script>
+        async function fetchAndDisplayFiles() {
+            try {
+                const response = await fetch('/apps/explorer/files');
+                const files = await response.json();
+                const fileListDiv = document.getElementById('fileList');
+
+                // Clear the div before adding new content
+                fileListDiv.innerHTML = '';
+
+                // Iterate over the list of files and add each as a <p> tag
+                for (let file of files) {
+                    const pTag = document.createElement('p');
+                    pTag.textContent = file;
+                    fileListDiv.appendChild(pTag);
+                }
+            } catch (error) {
+                console.error('There was a problem with the fetch operation:', error.message);
+            }
+        }
+
+        // Call the function when the document has finished loading
+        window.addEventListener('DOMContentLoaded', (event) => {
+            fetchAndDisplayFiles();
+        });
         const fileInput = document.getElementById('fileInput');
         const selectedFilesDiv = document.getElementById('selectedFiles');
 
@@ -231,7 +259,7 @@
             }
         });
 
-        function uploadFiles() {
+        async function uploadFiles() {
             const files = fileInput.files;
             if (files.length === 0) {
                 alert('Please select files to upload.');
@@ -244,7 +272,7 @@
             }
 
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/apps/explorer/upload', true);
+            xhr.open('POST', '/apps/explorer', true);
 
             // Update progress bar
             xhr.upload.addEventListener('progress', (event) => {
@@ -257,6 +285,9 @@
             xhr.onreadystatechange = function () {
                 if (xhr.readyState === 4 && xhr.status === 200) {
                     alert('Files uploaded successfully!');
+                    fileInput.value = '';
+                    selectedFilesDiv.innerHTML = '';
+                    fetchAndDisplayFiles();
                 }
             }
 

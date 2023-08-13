@@ -13,9 +13,6 @@ use bindings::component::microkernel_process::types::WitUqbarError;
 
 struct Component;
 
-type FileHash = [u8; 32];
-type HierarchicalFS = HashMap<String, FileHash>; // TODO this should be a trie
-
 // TYPES COPY/PASTE START
 // #[derive(Debug, Serialize, Deserialize)]
 impl FileSystemError {
@@ -127,6 +124,9 @@ pub enum FileSystemEntryType {
     Dir,
 }
 // TYPES COPY/PASTE END
+
+type FileHash = [u8; 32];
+type HierarchicalFS = HashMap<String, FileHash>; // TODO this should be a trie
 
 #[derive(Debug)]
 struct File {
@@ -276,7 +276,7 @@ fn handle_next_message(
     );
 
     let message_from_loop: serde_json::Value = serde_json::from_str(&payload_json_string).unwrap();
-    if message_from_loop["method"] == "GET" && message_from_loop["raw_path"] == "/apps/explorer/upload" {
+    if message_from_loop["method"] == "GET" && message_from_loop["raw_path"] == "/apps/explorer" {
         bindings::yield_results(Ok(vec![(
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Response,
@@ -294,7 +294,7 @@ fn handle_next_message(
             "".into(),
         )].as_slice()));
         return Ok(());
-    } else if message_from_loop["method"] == "POST" && message_from_loop["raw_path"] == "/apps/explorer/upload" {
+    } else if message_from_loop["method"] == "POST" && message_from_loop["raw_path"] == "/apps/explorer" {
         let body_bytes = message.content.payload.bytes.unwrap_or(vec![]); // TODO no unwrap
 
         let boundary = extract_boundary_from_headers(&message_from_loop["headers"].clone()).unwrap();
@@ -302,7 +302,12 @@ fn handle_next_message(
         bindings::print_to_terminal(0, format!("files {:?}", files.len()).as_str());
         for file in files {
             let fil: File = extract_file_from_chunk(file).unwrap();
+
+            // TODO replace this with a write to AFS instead of the normal FS
             yield_write(&our_name, format!("fs://{}", fil.name), fil.data, "");
+            // Real file hash should be returned by the 
+            let dummy_file_hash: FileHash = [0; 32];
+            file_names.insert(fil.name, dummy_file_hash);
         }
 
         // TODO error handling
@@ -318,6 +323,28 @@ fn handle_next_message(
                         },
                     }).to_string()),
                     bytes: Some("success".as_bytes().to_vec())
+                }
+            },
+            "".into(),
+        )].as_slice()));
+        return Ok(());
+    } else if message_from_loop["method"] == "GET" && message_from_loop["raw_path"] == "/apps/explorer/files" {
+        let mut files = vec![];
+        for (name, hash) in file_names.iter() {
+            files.push(name);
+        }
+        bindings::yield_results(Ok(vec![(
+            bindings::WitProtomessage {
+                protomessage_type: WitProtomessageType::Response,
+                payload: WitPayload {
+                    json: Some(serde_json::json!({
+                        "action": "response",
+                        "status": 200,
+                        "headers": {
+                            "Content-Type": "application/json",
+                        },
+                    }).to_string()),
+                    bytes: Some(serde_json::to_vec(&files).unwrap())
                 }
             },
             "".into(),
@@ -347,7 +374,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/apps/explorer/upload",
+                            "path": "/apps/explorer",
                             "app": process_name
                         }).to_string()),
                         bytes: None
@@ -368,7 +395,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/apps/explorer/file/:path",
+                            "path": "/apps/explorer/files",
                             "app": process_name
                         }).to_string()),
                         bytes: None

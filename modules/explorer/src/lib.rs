@@ -173,7 +173,7 @@ fn yield_write(
 fn extract_boundary_from_headers(headers: &serde_json::Value) -> Option<String> {
     // TODO http-bindings or http-server should format all headers to Pascal case
     // because an http-server should be case insensitive. 
-    let content_type = headers.get("content-type")?.as_str()?;
+    let content_type = headers.get("Content-Type")?.as_str()?;
     if let Some(start) = content_type.find("boundary=") {
         let boundary = &content_type[start + "boundary=".len()..];
         return Some(boundary.to_string());
@@ -248,8 +248,8 @@ fn extract_file_from_chunk(chunk: Vec<u8>) -> Option<File> {
                     name = Some(complete_filename);
                 }
             }
-        } else if header.to_lowercase().starts_with("content-type:") {
-            content_type = Some(header["content-type:".len()..].trim().to_string());
+        } else if header.to_lowercase().starts_with("Content-Type:") {
+            content_type = Some(header["Content-Type:".len()..].trim().to_string());
         }
     }
     
@@ -285,7 +285,7 @@ fn handle_next_message(
                         "action": "response",
                         "status": 200,
                         "headers": {
-                            "content-type": "text/html",
+                            "Content-Type": "text/html",
                         },
                     }).to_string()),
                     bytes: Some(UPLOAD_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
@@ -314,7 +314,7 @@ fn handle_next_message(
                         "action": "response",
                         "status": 200,
                         "headers": {
-                            "content-type": "text/html",
+                            "Content-Type": "text/html",
                         },
                     }).to_string()),
                     bytes: Some("success".as_bytes().to_vec())

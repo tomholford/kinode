@@ -124,10 +124,23 @@ async fn handle_message(
 //
 //  helpers
 //
+fn to_pascal_case(s: &str) -> String {
+    s.split('-')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("-")
+}
+
 fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut hashmap = HashMap::new();
     for (key, value) in headers.iter() {
-        let key_str = key.to_string();
+        let key_str = to_pascal_case(&key.to_string());
         let value_str = value.to_str().unwrap_or("").to_string();
         hashmap.insert(key_str, value_str);
     }

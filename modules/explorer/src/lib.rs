@@ -128,6 +128,13 @@ pub enum FileSystemEntryType {
 }
 // TYPES COPY/PASTE END
 
+#[derive(Debug)]
+struct File {
+    name: String,
+    content_type: Option<String>,
+    data: Vec<u8>,
+}
+
 const UPLOAD_PAGE: &str = include_str!("upload.html");
 
 fn yield_write(
@@ -163,6 +170,96 @@ fn yield_write(
     ].as_slice()));
 }
 
+fn extract_boundary_from_headers(headers: &serde_json::Value) -> Option<String> {
+    // TODO http-bindings or http-server should format all headers to Pascal case
+    // because an http-server should be case insensitive. 
+    let content_type = headers.get("content-type")?.as_str()?;
+    if let Some(start) = content_type.find("boundary=") {
+        let boundary = &content_type[start + "boundary=".len()..];
+        return Some(boundary.to_string());
+    }
+    None
+}
+
+fn split_body(body: Vec<u8>, boundary: String) -> Vec<Vec<u8>> {
+    let boundary_bytes = format!("\r\n--{}", boundary).into_bytes();
+
+    let mut chunks = Vec::new();
+    let mut last_index = boundary_bytes.len(); // Start after the first boundary
+
+    for (index, window) in body.windows(boundary_bytes.len()).enumerate() {
+        if window == boundary_bytes.as_slice() {
+            if index > last_index {
+                chunks.push(body[last_index..index].to_vec());
+            }
+            last_index = index + boundary_bytes.len();
+        }
+    }
+
+    if last_index < body.len() {
+        chunks.push(body[last_index..].to_vec());
+    }
+
+    // Remove the last boundary, which typically ends with "--"
+    if let Some(last_chunk) = chunks.last_mut() {
+        if last_chunk.ends_with(b"--\r\n") {
+            last_chunk.truncate(last_chunk.len() - 4);
+        }
+    }
+
+    // Remove any empty chunks or chunks containing only the boundary ending
+    chunks.retain(|chunk| !chunk.is_empty() && chunk != &boundary_bytes);
+
+    chunks
+}
+
+fn extract_file_from_chunk(chunk: Vec<u8>) -> Option<File> {
+    let headers_end = b"\r\n\r\n";
+    let headers_end_pos = chunk.windows(4).position(|window| window == headers_end)?;
+
+    let headers_bytes = &chunk[..headers_end_pos];
+    let data = chunk[headers_end_pos + 4..].to_vec();
+
+    let headers_str = String::from_utf8_lossy(headers_bytes);
+    
+    let mut name = None;
+    let mut content_type = None;
+
+    let mut headers_iter = headers_str.lines().peekable();
+    while headers_iter.peek().is_some() {
+        let header = headers_iter.next()?;
+        if header.contains("filename=") {
+            if let Some(start) = header.find("filename=\"") {
+                let rest = &header[start + "filename=\"".len()..];
+                if let Some(end) = rest.find('"') {
+                    name = Some(rest[..end].to_string());
+                } else {
+                    // Filename spans multiple headers, so we need to look in the subsequent headers
+                    let mut complete_filename = rest.to_string();
+                    while let Some(next_line) = headers_iter.peek() {
+                        if next_line.contains("\"") {
+                            complete_filename.push_str(&next_line[..next_line.find('"')?]);
+                            break;
+                        } else {
+                            complete_filename.push_str(next_line);
+                            headers_iter.next(); // Move to the next header
+                        }
+                    }
+                    name = Some(complete_filename);
+                }
+            }
+        } else if header.to_lowercase().starts_with("content-type:") {
+            content_type = Some(header["content-type:".len()..].trim().to_string());
+        }
+    }
+    
+    Some(File {
+        name: name?,
+        content_type,
+        data
+    })
+}
+
 fn handle_next_message(
     file_names: &mut HierarchicalFS,
     our_name: &str,
@@ -188,7 +285,7 @@ fn handle_next_message(
                         "action": "response",
                         "status": 200,
                         "headers": {
-                            "Content-Type": "text/html",
+                            "content-type": "text/html",
                         },
                     }).to_string()),
                     bytes: Some(UPLOAD_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
@@ -198,12 +295,17 @@ fn handle_next_message(
         )].as_slice()));
         return Ok(());
     } else if message_from_loop["method"] == "POST" && message_from_loop["raw_path"] == "/apps/explorer/upload" {
-        bindings::print_to_terminal(0, "got upload request");
         let body_bytes = message.content.payload.bytes.unwrap_or(vec![]); // TODO no unwrap
-        bindings::print_to_terminal(0, format!("len {:?}", body_bytes.len()).as_str());
-        // TODO I have to decode body_bytes somehow? Bytes aren't exactly correct...
-        // TODO prompt user for file name before saving
-        yield_write(&our_name, "fs://zebra.jpg".to_string(), body_bytes, "");
+
+        let boundary = extract_boundary_from_headers(&message_from_loop["headers"].clone()).unwrap();
+        let files: Vec<Vec<u8>> = split_body(body_bytes, boundary);
+        bindings::print_to_terminal(0, format!("files {:?}", files.len()).as_str());
+        for file in files {
+            let fil: File = extract_file_from_chunk(file).unwrap();
+            yield_write(&our_name, format!("fs://{}", fil.name), fil.data, "");
+        }
+
+        // TODO error handling
         bindings::yield_results(Ok(vec![(
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Response,
@@ -212,7 +314,7 @@ fn handle_next_message(
                         "action": "response",
                         "status": 200,
                         "headers": {
-                            "Content-Type": "text/html",
+                            "content-type": "text/html",
                         },
                     }).to_string()),
                     bytes: Some("success".as_bytes().to_vec())

@@ -213,12 +213,12 @@
           <h1 style="text-align: center;">Uqbar</h1>
         </div>
         <h3 id="uq-name">Welcome ${our}!</h3>
-        <h4>Files:</h4>
+        <h4>Your Files:</h4>
         <div id="fileList"></div>
         <!-- TODO, put a list of files here, update them every time you click Upload and it finishes -->
 
 
-        <h4>File Upload:</h4>
+        <h4>Upload a File:</h4>
         <input type="file" id="fileInput" multiple />
         <div id="selectedFiles"></div>
         <button onclick="uploadFiles()">Upload</button>
@@ -236,9 +236,10 @@
 
                 // Iterate over the list of files and add each as a <p> tag
                 for (let file of files) {
-                    const pTag = document.createElement('p');
-                    pTag.textContent = file;
-                    fileListDiv.appendChild(pTag);
+                    const aTag = document.createElement('a');
+                    aTag.textContent = file;
+                    aTag.href = `/apps/explorer/file/${file}`;
+                    fileListDiv.appendChild(aTag);
                 }
             } catch (error) {
                 console.error('There was a problem with the fetch operation:', error.message);

@@ -6,10 +6,13 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types::WitMessage;
 use bindings::component::microkernel_process::types::WitProcessNode;
 use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use bindings::component::microkernel_process::types::WitUqbarError;
+
+mod process_lib;
 
 struct Component;
 
@@ -137,6 +140,7 @@ struct File {
 
 const UPLOAD_PAGE: &str = include_str!("upload.html");
 
+// TODO swap this out for an AFS call that returns the hash of the file
 fn yield_write(
     our_name: &str,
     uri_string: String,
@@ -168,6 +172,21 @@ fn yield_write(
             context.into(),
         ),
     ].as_slice()));
+}
+
+// TODO swap this out for an AFS read that returns the file bytes
+fn yield_read(
+    our_name: &str,
+    uri_string: String,
+) -> anyhow::Result<WitMessage> {
+    return process_lib::yield_and_await_response(
+        our_name.to_string(), "filesystem".to_string(),
+        Some(&FileSystemRequest {
+            uri_string,
+            action: FileSystemAction::Read,
+        }),
+        None
+    );
 }
 
 fn extract_boundary_from_headers(headers: &serde_json::Value) -> Option<String> {
@@ -350,7 +369,49 @@ fn handle_next_message(
             "".into(),
         )].as_slice()));
         return Ok(());
+    } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/apps/explorer/file/:file" {
+        let file = message_from_loop["url_params"]["file"].as_str().unwrap();
+
+        if let Some(hash) = file_names.get(file) {
+            let file_msg = yield_read(&our_name, format!("fs://{}", file)).unwrap();
+            let file = file_msg.content.payload.bytes.unwrap();
+            bindings::yield_results(Ok(vec![(
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Response,
+                    payload: WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 200,
+                            "headers": {
+                                // "Content-Type": "application/octet-stream",
+                            },
+                        }).to_string()),
+                        bytes: Some(file)
+                    }
+                },
+                "".into(),
+            )].as_slice()));
+        } else {
+            bindings::yield_results(Ok(vec![(
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Response,
+                    payload: WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 404,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some("not found".as_bytes().to_vec())
+                    }
+                },
+                "".into(),
+            )].as_slice()));
+        }
+        return Ok(());
     } else {
+        bindings::print_to_terminal(0, format!("req {:?}", message_from_loop).as_str());
         return Err(anyhow!("unrecognized request"));
     }
 }
@@ -396,6 +457,27 @@ impl bindings::MicrokernelProcess for Component {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/apps/explorer/files",
+                            "app": process_name
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+                "".into(),
+            ), (
+                bindings::WitProtomessage {
+                    protomessage_type: WitProtomessageType::Request(
+                        WitRequestTypeWithTarget {
+                            is_expecting_response: false,
+                            target: WitProcessNode {
+                                node: our_name.clone(),
+                                process: "http_bindings".into(),
+                            },
+                        }
+                    ),
+                    payload: WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/apps/explorer/file/:file",
                             "app": process_name
                         }).to_string()),
                         bytes: None

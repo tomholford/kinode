@@ -182,29 +182,29 @@
         a:visited {
           color: white;
         }
-    </style>
-    <script>
-        function uploadFile() {
-            const fileInput = document.getElementById('fileInput');
-            const file = fileInput.files[0];
 
-            if (!file) {
-                alert('Please select a file');
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            fetch('/apps/explorer/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => console.log(data))
-            .catch(error => console.error('Error:', error));
+        progress {
+            width: 100%;        /* Full width */
+            height: 25px;       /* Height to make it more rectangular */
+            appearance: none;   /* Remove default appearance */
+            -webkit-appearance: none; /* For Safari */
+            border: 1px solid #ccc;
+            border-radius: 0;   /* Remove border-radius to make it rectangular */
+            background-color: #f3f3f3;
         }
-    </script>
+
+        progress::-webkit-progress-bar {
+            background-color: #f3f3f3;
+        }
+
+        progress::-webkit-progress-value {
+            background-color: #4caf50; /* Green color for the progress value */
+        }
+
+        progress::-moz-progress-bar {
+            background-color: #4caf50;
+        }
+    </style>
 </head>
 <body>
     <div id="home-page" class="col">
@@ -215,12 +215,53 @@
         <h3 id="uq-name">Welcome ${our}!</h3>
   
         <h4>File Upload:</h4>
-        <input type="file" id="fileInput">
-        <button onclick="uploadFile()">Upload File</button>
-    
-        <!-- <div id="progressContainer" style="width: 100%; background-color: #e0e0e0;">
-            <div id="progressBar" style="width: 0%; height: 30px; background-color: #76a21e;"></div>
-        </div> -->
+        <input type="file" id="fileInput" multiple />
+        <div id="selectedFiles"></div>
+        <button onclick="uploadFiles()">Upload</button>
+        <progress id="uploadProgress" value="0" max="100"></progress>
       </div>
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const selectedFilesDiv = document.getElementById('selectedFiles');
+
+        fileInput.addEventListener('change', (event) => {
+            selectedFilesDiv.innerHTML = ''; // Clear previous file names
+            for (const file of fileInput.files) {
+                selectedFilesDiv.innerHTML += `<p>${file.name}</p>`;
+            }
+        });
+
+        function uploadFiles() {
+            const files = fileInput.files;
+            if (files.length === 0) {
+                alert('Please select files to upload.');
+                return;
+            }
+
+            const formData = new FormData();
+            for (const file of files) {
+                formData.append('files[]', file);
+            }
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/apps/explorer/upload', true);
+
+            // Update progress bar
+            xhr.upload.addEventListener('progress', (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = (event.loaded / event.total) * 100;
+                    document.getElementById('uploadProgress').value = percentComplete;
+                }
+            });
+
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState === 4 && xhr.status === 200) {
+                    alert('Files uploaded successfully!');
+                }
+            }
+
+            xhr.send(formData);
+        }
+    </script>
 </body>
 </html>

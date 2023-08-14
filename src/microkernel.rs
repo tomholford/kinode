@@ -119,9 +119,8 @@ impl MicrokernelProcessImports for ProcessWasi {
         let _ = send_process_results_to_loop(
             results,
             self.process.metadata.our.clone(),
-            // self.process.metadata.our_name.clone(),
-            // self.process.metadata.process_name.clone(),
             self.process.send_to_loop.clone(),
+            self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
         ).await;
@@ -156,6 +155,7 @@ impl MicrokernelProcessImports for ProcessWasi {
             Ok(vec![(protomessage, "".into())]),
             self.process.metadata.our.clone(),
             self.process.send_to_loop.clone(),
+            self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
         ).await;
@@ -436,9 +436,10 @@ fn handle_request_case(
     }
 }
 
-fn handle_response_case(
+async fn handle_response_case(
     prompting_message: &WrappedMessage,
     contexts: &HashMap<u64, ProcessContext>,
+    send_to_terminal: PrintSender,
 ) -> Option<(u64, ProcessNode)> {
     match prompting_message.message {
         Ok(ref pm_message) => {
@@ -451,7 +452,13 @@ fn handle_response_case(
                         ))
                     } else {
                         let Some(rsvp) = prompting_message.rsvp.clone() else {
-                            println!("no rsvp set for response (prompting)");
+                            send_to_terminal
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: "no rsvp set for response (prompting)".into(),
+                                })
+                                .await
+                                .unwrap();
                             return None;
                         };
 
@@ -463,12 +470,24 @@ fn handle_response_case(
                 },
                 MessageType::Response => {
                     let Some(context) = contexts.get(&prompting_message.id) else {
-                        println!("couldn't find context to route response");
+                        send_to_terminal
+                            .send(Printout {
+                                verbosity: 0,
+                                content: "couldn't find context to route response".into(),
+                            })
+                            .await
+                            .unwrap();
                         return None;
                     };
-                    // println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
                     let Some(ref ultimate) = context.ultimate else {
-                        println!("couldn't find ultimate cause to route response");
+                        send_to_terminal
+                            .send(Printout {
+                                verbosity: 0,
+                                content: "couldn't find ultimate cause to route response"
+                                    .into(),
+                            })
+                            .await
+                            .unwrap();
                         return None;
                     };
 
@@ -481,7 +500,14 @@ fn handle_response_case(
                                 ))
                             } else {
                                 let Some(rsvp) = ultimate.rsvp.clone() else {
-                                    println!("no rsvp set for response (ultimate)");
+                                    send_to_terminal
+                                        .send(Printout {
+                                            verbosity: 1,
+                                            content: "no rsvp set for response (ultimate)"
+                                                .into(),
+                                        })
+                                        .await
+                                        .unwrap();
                                     return None;
                                 };
                                 Some((
@@ -491,7 +517,13 @@ fn handle_response_case(
                             }
                         },
                         MessageType::Response => {
-                            println!("ultimate as response unexpected case");
+                            send_to_terminal
+                                .send(Printout {
+                                    verbosity: 0,
+                                    content: "ultimate as response unexpected case".into(),
+                                })
+                                .await
+                                .unwrap();
                             return None;
                         },
                     }
@@ -500,12 +532,24 @@ fn handle_response_case(
         },
         Err(ref e) => {
             let Some(context) = contexts.get(&prompting_message.id) else {
-                println!("couldn't find context to route response");
+                send_to_terminal
+                    .send(Printout {
+                        verbosity: 0,
+                        content: "couldn't find context to route response (err)".into(),
+                    })
+                    .await
+                    .unwrap();
                 return None;
             };
-            println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
             let Some(ref ultimate) = context.ultimate else {
-                println!("couldn't find ultimate cause to route response");
+                send_to_terminal
+                    .send(Printout {
+                        verbosity: 0,
+                        content: "couldn't find ultimate cause to route response (err)"
+                            .into(),
+                    })
+                    .await
+                    .unwrap();
                 return None;
             };
 
@@ -518,7 +562,13 @@ fn handle_response_case(
                         ))
                     } else {
                         let Some(rsvp) = ultimate.rsvp.clone() else {
-                            println!("no rsvp set for response (ultimate)");
+                        send_to_terminal
+                            .send(Printout {
+                                verbosity: 1,
+                                content: "no rsvp set for response (ultimate) (err)".into(),
+                            })
+                            .await
+                            .unwrap();
                             return None;
                         };
                         Some((
@@ -528,7 +578,13 @@ fn handle_response_case(
                     }
                 },
                 MessageType::Response => {
-                    println!("ultimate as response unexpected case");
+                    send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: "ultimate as response unexpected case (err)".into(),
+                        })
+                        .await
+                        .unwrap();
                     return None;
                 },
             }
@@ -569,6 +625,7 @@ async fn send_process_results_to_loop(
     results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
     source: ProcessNode,
     send_to_loop: MessageSender,
+    send_to_terminal: PrintSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) -> Vec<u64> {
@@ -620,8 +677,6 @@ async fn send_process_results_to_loop(
                         id,
                         rsvp,
                         de_wit_process_node(&type_with_target.target),
-                        // type_with_target.target_ship.clone(),
-                        // type_with_target.target_app.clone(),
                         MessageType::Request(type_with_target.is_expecting_response),
                     )
                 },
@@ -633,9 +688,22 @@ async fn send_process_results_to_loop(
                     let (id, target) = match handle_response_case(
                         &prompting_message,
                         contexts,
-                    ) {
+                        send_to_terminal.clone(),
+                    ).await {
                         Some(r) => r,
-                        None => continue,
+                        None => {
+                            send_to_terminal
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!(
+                                        "dropping Response: {:?}",
+                                        payload.json,
+                                    ),
+                                })
+                                .await
+                                .unwrap();
+                            continue
+                        },
                     };
                     (
                         id,

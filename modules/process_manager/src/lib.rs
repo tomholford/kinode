@@ -32,6 +32,11 @@ pub enum ProcessManagerCommand {
     Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
     Stop { process_name: String },
     Restart { process_name: String },
+    ListRunningProcesses,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ProcessManagerResponse {
+    ListRunningProcesses { processes: Vec<String> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,7 +113,6 @@ fn send_stop_to_loop(
 fn handle_message(
     metadatas: &mut ProcessMetadatas,
     our_name: &str,
-    process_name: &str,
     reserved_process_names: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let (message, context) = bindings::await_next_message()?;
@@ -158,6 +162,17 @@ fn handle_message(
                     print_to_terminal(1, "process manager: restart");
 
                     send_stop_to_loop(our_name.into(), process_name, true)?;
+                },
+                ProcessManagerCommand::ListRunningProcesses => {
+                    process_lib::yield_one_response(
+                        Some(ProcessManagerResponse::ListRunningProcesses {
+                            processes: metadatas.iter()
+                                .map(|(key, _value)| key.clone())
+                                .collect()
+                        }),
+                        None,
+                        None::<FileSystemReadContext>,
+                    )?;
                 },
             }
         },
@@ -250,7 +265,6 @@ impl bindings::MicrokernelProcess for Component {
             match handle_message(
                 &mut metadatas,
                 &our_name,
-                &process_name,
                 &reserved_process_names
             ) {
                 Ok(()) => {},

@@ -46,7 +46,7 @@ async fn handle_message(
 ) {
     let WrappedMessage { ref id, target: _, ref rsvp, message: Ok(Message { ref source, ref content }), }
             = wm else {
-        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
+        panic!("http_client: unexpected Error")  //  TODO: implement error handling
     };
 
     let target = match content.message_type {

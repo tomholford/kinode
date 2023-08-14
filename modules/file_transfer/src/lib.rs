@@ -500,7 +500,7 @@ fn handle_next_message(
         return Ok(());
     } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
         let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
-        let uri_string = String::from("fs://.");
+        let uri_string = String::from("fs://file_transfer");  //  TODO test
 
         if target_node.is_empty() {
             bindings::yield_results(Ok(vec![(

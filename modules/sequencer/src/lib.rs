@@ -161,7 +161,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(
                             serde_json::to_string(&FileSystemRequest {
-                                uri_string: "fs://blockchain.json".into(),
+                                uri_string: "fs://sequencer/blockchain.json".into(),
                                 action: FileSystemAction::Read,
                             })
                             .unwrap(),

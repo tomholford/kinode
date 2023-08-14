@@ -480,7 +480,7 @@ fn handle_next_message(
     );
 
     let message_from_loop: serde_json::Value = serde_json::from_str(&payload_json_string).unwrap();
-    if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/apps/file-transfer" {
+    if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer" {
         bindings::yield_results(Ok(vec![(
             bindings::WitProtomessage {
                 protomessage_type: WitProtomessageType::Response,
@@ -1220,9 +1220,10 @@ fn handle_next_message(
                                                 "".into(),
                                             ),
                                         ].as_slice()));
+                                        return Ok(());
                                     } else {
                                         downloads.remove(&context.key);
-                                        print_to_terminal(1, "file_transfer: file corrupted during transfer, please try again");
+                                        return Err(anyhow::anyhow!("file_transfer: file corrupted during transfer, please try again"))
                                     }
                                 }
 
@@ -1762,7 +1763,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/apps/file-transfer",
+                            "path": "/file-transfer",
                             "authenticated": true,
                             "app": process_name
                         }).to_string()),

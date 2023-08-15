@@ -167,7 +167,7 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Message {{ source: {:?}, content: {} }}",
+            "Message {{ source: {}, content: {} }}",
             self.source,
             self.content,
         )

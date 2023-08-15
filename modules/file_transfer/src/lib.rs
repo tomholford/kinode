@@ -772,7 +772,7 @@ fn handle_next_message(
                                 &our_name,
                                 get_file.uri_string,
                                 FileSystemMode::Append,
-                                context.as_str(),
+                                &context,
                             );
                         }
                     },

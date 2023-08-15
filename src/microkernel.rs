@@ -51,6 +51,7 @@ struct CauseMetadata {
 
 #[derive(Debug)]
 struct ProcessContext {
+    number_outstanding_requests: u32,
     proximate: CauseMetadata,         //  kernel only: for routing responses  TODO: needed?
     ultimate: Option<CauseMetadata>,  //  kernel only: for routing responses
     context: serde_json::Value,       //  input/output from process
@@ -75,11 +76,27 @@ impl ProcessContext {
         context: Option<serde_json::Value>,
     ) -> Self {
         ProcessContext {
+            number_outstanding_requests: 1,
             proximate: CauseMetadata::new(proximate),
             ultimate: match ultimate {
                 Some(ultimate) => Some(CauseMetadata::new(ultimate)),
                 None => None,
             },
+            context: match context {
+                Some(c) => c,
+                None => serde_json::Value::Null,
+            },
+        }
+    }
+    fn new_from_context(
+        proximate: &WrappedMessage,
+        ultimate: &Option<CauseMetadata>,
+        context: Option<serde_json::Value>,
+    ) -> Self {
+        ProcessContext {
+            number_outstanding_requests: 1,
+            proximate: CauseMetadata::new(proximate),
+            ultimate: ultimate.clone(),
             context: match context {
                 Some(c) => c,
                 None => serde_json::Value::Null,
@@ -169,9 +186,9 @@ impl MicrokernelProcessImports for ProcessWasi {
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
             &mut self.process.send_to_terminal,
-            &self.process.contexts,
+            &mut self.process.contexts,
         ).await;
-        self.process.prompting_message = Some(wrapped_message);
+        // self.process.prompting_message = Some(wrapped_message);
         process_input
     }
 
@@ -264,7 +281,7 @@ async fn get_and_send_specific_loop_message_to_process(
     message_queue: &mut VecDeque<WrappedMessage>,
     recv_in_process: &mut MessageReceiver,
     send_to_terminal: &mut PrintSender,
-    contexts: &HashMap<u64, ProcessContext>,
+    contexts: &mut HashMap<u64, ProcessContext>,
 ) -> (WrappedMessage, Result<Result<WitMessage, WitUqbarError>>) {
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
@@ -282,12 +299,12 @@ async fn get_and_send_specific_loop_message_to_process(
                             send_to_terminal,
                             contexts,
                         ).await;
+                        //  clean up context we just used
+                        remove_or_decrement_context(awaited_message_id, contexts);
                         return (
                             message.0,
                             match message.1 {
-                                Ok(r) => {
-                                    Ok(Ok(r.0))
-                                },
+                                Ok(r) => Ok(Ok(r.0)),
                                 Err(e) => Ok(Err(e)),
                             },
                         );
@@ -299,12 +316,12 @@ async fn get_and_send_specific_loop_message_to_process(
                         send_to_terminal,
                         contexts,
                     ).await;
+                    //  clean up context we just used
+                    remove_or_decrement_context(awaited_message_id, contexts);
                     return (
                         message.0,
                         match message.1 {
-                            Ok(r) => {
-                                Ok(Ok(r.0))
-                            },
+                            Ok(r) => Ok(Ok(r.0)),
                             Err(e) => Ok(Err(e)),
                         },
                     );
@@ -425,10 +442,7 @@ fn handle_request_case(
                             )
                         }
                     },
-                    MessageType::Response => {
-                        (rand::random(), None)
-                        // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
-                    },
+                    MessageType::Response => (rand::random(), None),
                 }
             },
             None => (rand::random(), None),
@@ -621,6 +635,65 @@ fn make_wrapped_message(
     }
 }
 
+fn insert_or_increment_context(
+    is_expecting_response: bool,
+    id: u64,
+    context: ProcessContext,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) {
+    if is_expecting_response {
+        match contexts.remove(&id) {
+            Some(mut existing_context) => {
+                existing_context.number_outstanding_requests += 1;
+                println!(
+                    "context for {} inc to {}; {:?}",
+                    id,
+                    existing_context.number_outstanding_requests,
+                    existing_context,
+                );
+                contexts.insert(id, existing_context);
+            },
+            None => {
+                println!(
+                    "context for {} inc to {}; {:?}",
+                    id,
+                    1,
+                    context,
+                );
+                contexts.insert(id, context);
+            }
+        }
+    }
+}
+
+fn remove_or_decrement_context(
+    id: u64,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) {
+    match contexts.remove(&id) {
+        Some(mut context) => {
+            if context.number_outstanding_requests == 1 {
+                //  present is only outstanding -> remove
+                println!(
+                    "context for {} dec to {}",
+                    id,
+                    0,
+                );
+            } else {
+                //  others outstanding -> decrement
+                context.number_outstanding_requests -= 1;
+                println!(
+                    "context for {} dec to {}",
+                    id,
+                    context.number_outstanding_requests,
+                );
+                contexts.insert(id.clone(), context);
+            }
+        },
+        None => {},  //  unexpected case
+    }
+}
+
 async fn send_process_results_to_loop(
     results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
     source: ProcessNode,
@@ -648,7 +721,7 @@ async fn send_process_results_to_loop(
             id,
             target,
             rsvp: None,
-            message: Err(UqbarError{
+            message: Err(UqbarError {
                 source,
                 timestamp: get_current_unix_time().unwrap(),
                 content: de_wit_error_content(&e),
@@ -659,6 +732,9 @@ async fn send_process_results_to_loop(
             .send(wrapped_message)
             .await
             .unwrap();
+
+        //  clean up context we just used
+        remove_or_decrement_context(id, contexts);
 
         return vec![id];
     };
@@ -730,7 +806,7 @@ async fn send_process_results_to_loop(
             panic!("foo");
         };
         match message.content.message_type {
-            MessageType::Request(_) => {
+            MessageType::Request(is_expecting_response) => {
                 //  add context, as appropriate
                 match prompting_message {
                     Some(ref prompting_message) => {
@@ -742,43 +818,44 @@ async fn send_process_results_to_loop(
                                         //   ultimate stored for source
                                         //  case: !prompting_message_is_expecting_response
                                         //   ultimate stored for rsvp
-                                        contexts.insert(
+                                        insert_or_increment_context(
+                                            is_expecting_response,
                                             wrapped_message.id,
                                             ProcessContext::new(
                                                 &wrapped_message,
                                                 Some(&prompting_message),
                                                 new_context,
-                                            )
+                                            ),
+                                            contexts,
                                         );
                                     },
                                     MessageType::Response => {
-                                        //  TODO: factor out with Eer case below
+                                        //  TODO: factor out with Err case below
                                         match contexts.get(&prompting_message.id) {
                                             Some(context) => {
                                                 //  ultimate is the ultimate of the prompt of Response
-                                                contexts.insert(
+                                                insert_or_increment_context(
+                                                    is_expecting_response,
                                                     wrapped_message.id,
-                                                    ProcessContext {
-                                                        proximate: CauseMetadata::new(
-                                                            &wrapped_message
-                                                        ),
-                                                        ultimate: context.ultimate.clone(),
-                                                        context: match new_context {
-                                                            Some(new_context) => new_context,
-                                                            None => serde_json::Value::Null,
-                                                        },
-                                                    },
+                                                    ProcessContext::new_from_context(
+                                                        &wrapped_message,
+                                                        &context.ultimate,
+                                                        new_context,
+                                                    ),
+                                                    contexts
                                                 );
                                             },
                                             None => {
                                                 //  should this even be allowed?
-                                                contexts.insert(
+                                                insert_or_increment_context(
+                                                    is_expecting_response,
                                                     wrapped_message.id,
                                                     ProcessContext::new(
                                                         &wrapped_message,
                                                         Some(&prompting_message),
                                                         new_context,
-                                                    )
+                                                    ),
+                                                    contexts
                                                 );
                                             },
                                         }
@@ -790,18 +867,15 @@ async fn send_process_results_to_loop(
                                 match contexts.get(&prompting_message.id) {
                                     Some(context) => {
                                         //  ultimate is the ultimate of the prompt of Response
-                                        contexts.insert(
+                                        insert_or_increment_context(
+                                            is_expecting_response,
                                             wrapped_message.id,
-                                            ProcessContext {
-                                                proximate: CauseMetadata::new(
-                                                    &wrapped_message
-                                                ),
-                                                ultimate: context.ultimate.clone(),
-                                                context: match new_context {
-                                                    Some(new_context) => new_context,
-                                                    None => serde_json::Value::Null,
-                                                },
-                                            },
+                                            ProcessContext::new_from_context(
+                                                &wrapped_message,
+                                                &context.ultimate,
+                                                new_context,
+                                            ),
+                                            contexts
                                         );
                                     },
                                     None => {
@@ -833,7 +907,7 @@ async fn send_process_results_to_loop(
             },
             MessageType::Response => {
                 //  clean up context we just used
-                contexts.remove(&wrapped_message.id);
+                remove_or_decrement_context(wrapped_message.id.clone(), contexts);
             },
         }
 

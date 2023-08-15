@@ -279,15 +279,28 @@ fn en_wit_error(dewit: &UqbarError, context: String) -> WitUqbarError {
     }
 }
 
-fn clean_contexts(
+async fn clean_contexts(
+    send_to_terminal: &PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) {
     for id in contexts_to_clean.drain(..) {
-        println!("cleaned up context {}", id);
+        send_to_terminal.send(Printout {
+            verbosity: 1,
+            content: format!(
+                "cleaned up context {}",
+                id,
+            ),
+        }).await.unwrap();
         let _ = contexts.remove(&id);
     }
-    println!("contexts now reads: {:?}", contexts);
+    send_to_terminal.send(Printout {
+        verbosity: 1,
+        content: format!(
+            "contexts now reads: {:?}",
+            contexts,
+        ),
+    }).await.unwrap();
 }
 
 async fn get_and_send_specific_loop_message_to_process(
@@ -298,7 +311,7 @@ async fn get_and_send_specific_loop_message_to_process(
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) -> (WrappedMessage, Result<Result<WitMessage, WitUqbarError>>) {
-    clean_contexts(contexts, contexts_to_clean);
+    clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -354,7 +367,7 @@ async fn get_and_send_loop_message_to_process(
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) -> (WrappedMessage, Result<Result<(WitMessage, String), WitUqbarError>>) {
-    clean_contexts(contexts, contexts_to_clean);
+    clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message =
@@ -426,7 +439,7 @@ async fn get_context(
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) -> String {
-    decrement_context(message_id, contexts, contexts_to_clean);
+    decrement_context(message_id, send_to_terminal, contexts, contexts_to_clean).await;
     match contexts.get(&message_id) {
         Some(ref context) => {
             serde_json::to_string(&context.context).unwrap()
@@ -664,39 +677,47 @@ fn make_wrapped_message(
     }
 }
 
-fn insert_or_increment_context(
+async fn insert_or_increment_context(
     is_expecting_response: bool,
     id: u64,
     context: ProcessContext,
+    send_to_terminal: &PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) {
     if is_expecting_response {
         match contexts.remove(&id) {
             Some(mut existing_context) => {
                 existing_context.number_outstanding_requests += 1;
-                println!(
-                    "context for {} inc to {}; {:?}",
-                    id,
-                    existing_context.number_outstanding_requests,
-                    existing_context,
-                );
+                send_to_terminal.send(Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "context for {} inc to {}; {:?}",
+                        id,
+                        existing_context.number_outstanding_requests,
+                        existing_context,
+                    ),
+                }).await.unwrap();
                 contexts.insert(id, existing_context);
             },
             None => {
-                println!(
-                    "context for {} inc to {}; {:?}",
-                    id,
-                    1,
-                    context,
-                );
+                send_to_terminal.send(Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "context for {} inc to {}; {:?}",
+                        id,
+                        1,
+                        context,
+                    ),
+                }).await.unwrap();
                 contexts.insert(id, context);
             }
         }
     }
 }
 
-fn decrement_context(
+async fn decrement_context(
     id: &u64,
+    send_to_terminal: &PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) {
@@ -707,14 +728,23 @@ fn decrement_context(
                 //  remove context upon receiving next message
                 contexts_to_clean.push(id.clone());
             }
-            println!(
-                "context for {} dec to {}",
-                id,
-                context.number_outstanding_requests,
-            );
+            send_to_terminal.send(Printout {
+                verbosity: 1,
+                content: format!(
+                    "context for {} dec to {}",
+                    id,
+                    context.number_outstanding_requests,
+                ),
+            }).await.unwrap();
         },
         None => {
-            println!("decrement_context: {} not found", id);
+            send_to_terminal.send(Printout {
+                verbosity: 1,
+                content: format!(
+                    "decrement_context: {} not found",
+                    id,
+                ),
+            }).await.unwrap();
         },
     }
 }
@@ -851,8 +881,9 @@ async fn send_process_results_to_loop(
                                                 Some(&prompting_message),
                                                 new_context,
                                             ),
+                                            &send_to_terminal,
                                             contexts,
-                                        );
+                                        ).await;
                                     },
                                     MessageType::Response => {
                                         //  TODO: factor out with Err case below
@@ -867,8 +898,9 @@ async fn send_process_results_to_loop(
                                                         &context.ultimate,
                                                         new_context,
                                                     ),
+                                                    &send_to_terminal,
                                                     contexts
-                                                );
+                                                ).await;
                                             },
                                             None => {
                                                 //  should this even be allowed?
@@ -880,8 +912,9 @@ async fn send_process_results_to_loop(
                                                         Some(&prompting_message),
                                                         new_context,
                                                     ),
+                                                    &send_to_terminal,
                                                     contexts
-                                                );
+                                                ).await;
                                             },
                                         }
                                     },
@@ -900,8 +933,9 @@ async fn send_process_results_to_loop(
                                                 &context.ultimate,
                                                 new_context,
                                             ),
+                                            &send_to_terminal,
                                             contexts
-                                        );
+                                        ).await;
                                     },
                                     None => {
                                         //  should this even be allowed?
@@ -913,8 +947,9 @@ async fn send_process_results_to_loop(
                                                 Some(&prompting_message),
                                                 new_context,
                                             ),
+                                            &send_to_terminal,
                                             contexts,
-                                        );
+                                        ).await;
                                     },
                                 }
                             },
@@ -929,8 +964,9 @@ async fn send_process_results_to_loop(
                                 None,
                                 new_context,
                             ),
+                            &send_to_terminal,
                             contexts,
-                        );
+                        ).await;
                     },
                 }
             },

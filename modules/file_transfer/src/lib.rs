@@ -1340,7 +1340,7 @@ fn handle_next_message(
                                     match downloads.remove(&parsed_context.key) {
                                         Some(_) => {
                                             //  done downloading a file successfully
-                                            print_to_terminal(1, format!(
+                                            print_to_terminal(0, format!(
                                                 "file_transfer: successfully downloaded {} from {}",
                                                 parsed_context.key.uri_string,
                                                 parsed_context.key.server,

@@ -314,7 +314,7 @@ fn yield_get_metadata(
                 payload: WitPayload {
                     json: Some(serde_json::to_string(
                         &FileSystemRequest {
-                            uri_string: uri_string,
+                            uri_string,
                             action: FileSystemAction::GetMetadata,
                         }
                     ).unwrap()),
@@ -500,7 +500,7 @@ fn handle_next_message(
         return Ok(());
     } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
         let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
-        let uri_string = String::from("fs://file_transfer");  //  TODO test
+        let uri_string = format!("fs://{}", process_name);
 
         if target_node.is_empty() {
             bindings::yield_results(Ok(vec![(
@@ -521,15 +521,6 @@ fn handle_next_message(
             )].as_slice()));
             return Err(anyhow!("target_node is empty"));
         }
-
-        let context = serde_json::to_string(&FileTransferContext {
-            key: FileTransferKey {
-                requester: our_name.into(),
-                server: target_node.to_string(),
-                uri_string: uri_string.clone(),
-            },
-            additional: FileTransferAdditionalContext::Empty,
-        }).unwrap();
 
         let message = if our_name == target_node {
             bindings::yield_and_await_response(
@@ -617,7 +608,7 @@ fn handle_next_message(
             &our_name,
             &process_name,
             body["target_node"].as_str().unwrap_or("").to_string(),
-            format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+            format!("fs://{}/{}", process_name, body["uri_string"].as_str().unwrap_or("")),
             body["chunk_size"].as_u64().unwrap_or(1024001),
         );
 
@@ -650,7 +641,7 @@ fn handle_next_message(
         let key = FileTransferKey {
             requester: our_name.into(),
             server: body["target_node"].as_str().unwrap_or("").to_string(),
-            uri_string: format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
+            uri_string: format!("fs://{}/{}", process_name, body["uri_string"].as_str().unwrap_or("")),
         };
 
         downloads.remove(&key);
@@ -696,7 +687,7 @@ fn handle_next_message(
         for (key, val) in downloads.iter() {
             // print_to_terminal(format!("record://{}/{}", key.server, key.uri_string).as_str());
             // print_to_terminal(format!("request://{}/{}", target_node, uri_string).as_str());
-            if key.server == target_node && key.uri_string == format!("fs://{}", uri_string) {
+            if key.server == target_node && key.uri_string == format!("fs://{}/{}", process_name, uri_string) {
                 percentage_downloaded = (val.received_pieces.len() as f32 / val.metadata.number_pieces as f32 * 100.0) as u32;
                 have_file = true;
                 break;

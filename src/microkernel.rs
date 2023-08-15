@@ -287,6 +287,7 @@ fn clean_contexts(
         println!("cleaned up context {}", id);
         let _ = contexts.remove(&id);
     }
+    println!("contexts now reads: {:?}", contexts);
 }
 
 async fn get_and_send_specific_loop_message_to_process(
@@ -904,13 +905,15 @@ async fn send_process_results_to_loop(
                                     },
                                     None => {
                                         //  should this even be allowed?
-                                        contexts.insert(
+                                        insert_or_increment_context(
+                                            is_expecting_response,
                                             wrapped_message.id,
                                             ProcessContext::new(
                                                 &wrapped_message,
                                                 Some(&prompting_message),
                                                 new_context,
-                                            )
+                                            ),
+                                            contexts,
                                         );
                                     },
                                 }
@@ -918,13 +921,15 @@ async fn send_process_results_to_loop(
                         }
                     },
                     None => {
-                        contexts.insert(
+                        insert_or_increment_context(
+                            is_expecting_response,
                             wrapped_message.id,
                             ProcessContext::new(
                                 &wrapped_message,
                                 None,
                                 new_context,
-                            )
+                            ),
+                            contexts,
                         );
                     },
                 }

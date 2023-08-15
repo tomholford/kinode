@@ -19,7 +19,7 @@ fn make_sequentialize_bswm(payload: BinSerializablePayload) -> BinSerializableWr
 }
 
 async fn start_process_via_kernel(process: &str) -> BinSerializableWrappedMessage {
-    let wasm_bytes_uri = format!("fs://{}.wasm", process);
+    let wasm_bytes_uri = format!("fs://sequentialize/{}.wasm", process);
     let process_wasm_path =
         format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
     let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
@@ -48,7 +48,7 @@ async fn start_process_via_kernel(process: &str) -> BinSerializableWrappedMessag
 }
 
 async fn save_bytes(process: &str) -> BinSerializableWrappedMessage {
-    let uri_string = format!("fs://{}.wasm", process);
+    let uri_string = format!("fs://sequentialize/{}.wasm", process);
     let process_wasm_path =
         format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
     let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);

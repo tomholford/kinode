@@ -90,15 +90,7 @@ async fn to_absolute_path(
         relative_file_path.push_str(uri.path());
     }
 
-    let base_path =
-        if HAS_FULL_HOME_ACCESS.contains(source_process) {
-            home_directory_path.to_string()
-        } else {
-            join_paths(home_directory_path.into(), source_process.into())?
-            // make_sandbox_dir_path(home_directory_path, source_process)
-        };
-
-    join_paths(base_path, relative_file_path)
+    join_paths(home_directory_path.into(), relative_file_path)
 }
 
 fn join_paths(base_path: String, relative_path: String) -> Result<String, FileSystemError> {
@@ -289,7 +281,6 @@ pub async fn fs_sender(
                             },
                         };
                         if let Err(e) = create_dir_if_dne(&sandbox_dir_path).await {
-                            //  TODO: should the error to the requester be a panic?
                             send_to_loop
                                 .send(
                                     make_error_message(
@@ -302,11 +293,6 @@ pub async fn fs_sender(
                                 .await
                                 .unwrap();
                             continue;
-                            // panic!(
-                            //     "filesystem: failed to create process sandbox directory at path {}: {}",
-                            //     sandbox_dir_path,
-                            //     e,
-                            // );
                         }
                     }
 

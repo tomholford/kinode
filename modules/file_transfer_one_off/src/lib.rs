@@ -458,9 +458,7 @@ fn handle_next_message(
                         "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: file_metadata.uri_string,
-                            action: FileSystemAction::Open(
-                                FileSystemMode::Read
-                            ),
+                            action: FileSystemAction::Open(FileSystemMode::Read),
                         }),
                         None,
                     )?;
@@ -489,9 +487,7 @@ fn handle_next_message(
                         "filesystem".into(),
                         Some(&FileSystemRequest {
                             uri_string: get_piece.uri_string.clone(),
-                            action: FileSystemAction::ReadChunkFromOpen(
-                                get_piece.chunk_size,
-                            ),
+                            action: FileSystemAction::ReadChunkFromOpen(get_piece.chunk_size),
                         }),
                         None,
                     )?;

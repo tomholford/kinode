@@ -293,7 +293,7 @@
         const ourName = document.getElementById('our')?.attributes?.['data-value']?.value
         if (!ourName) return
 
-        const result = await fetch(`${window.location.pathname}/file-transfer/view-files/${ourName}`.replace('//', '/')).then(r => r.json()).catch(() => null)
+        const result = await fetch(`${window.location.pathname}/view-files/${ourName}`.replace('//', '/')).then(r => r.json()).catch(() => null)
         if (!result || !result.ReadDir) return
 
         const files = result.ReadDir
@@ -328,7 +328,7 @@
             return
           }
 
-          const result = await fetch(`${window.location.pathname}/file-transfer/view-files/${targetNode}`.replace('//', '/')).then(r => r.json()).catch(() => null)
+          const result = await fetch(`${window.location.pathname}/view-files/${targetNode}`.replace('//', '/')).then(r => r.json()).catch(() => null)
           console.log('READ DIR RESULT:')
 
           if (!result || !result.ReadDir) {
@@ -366,7 +366,7 @@
         document.getElementById('transfer-progress').style.display = 'flex'
         document.getElementById('remote-file-list').style.display = 'none'
 
-        await fetch(`${window.location.pathname}/file-transfer/get-file`.replace('//', '/'), {
+        await fetch(`${window.location.pathname}/get-file`.replace('//', '/'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -380,7 +380,7 @@
 
         progressInterval = setInterval(async () => {
           try {
-            const result = await fetch(`${window.location.pathname}/file-transfer/status/${currentTarget}/${currentFile}`.replace('//', '/'))
+            const result = await fetch(`${window.location.pathname}/status/${currentTarget}/${currentFile}`.replace('//', '/'))
             const progress = await result.text()
 
             const currentStatus = document.getElementById('transfer-progress-bar-text').innerText
@@ -404,7 +404,7 @@
       async function cancelTransfer() {
         if (!currentFile) return
         try {
-          await fetch(`${window.location.pathname}/file-transfer/cancel-download`.replace('//', '/'), {
+          await fetch(`${window.location.pathname}/cancel-download`.replace('//', '/'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'

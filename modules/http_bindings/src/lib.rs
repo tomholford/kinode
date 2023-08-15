@@ -106,6 +106,8 @@ impl bindings::MicrokernelProcess for Component {
                 },
             };
 
+            bindings::print_to_terminal(1, "http_bindings: GOT MESSAGE");
+            
             match message.content.message_type {
                 WitMessageType::Request(_) => {
                     let action = &message_json["action"];
@@ -135,12 +137,18 @@ impl bindings::MicrokernelProcess for Component {
                             };
                         }
                     } else if action == "bind-app" && path != "" && app != "" {
-                        path_bindings.insert(path.to_string(), {
-                            BoundPath {
-                                app: app.to_string(),
-                                authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
-                            }
-                        });
+                        let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
+                        if app != "apps_home" && (path_segments.is_empty() || path_segments[0] != app.clone().replace("_", "-")) {
+                            bindings::print_to_terminal(1, "http_bindings: first path segment does not match process");
+                            continue;
+                        } else {
+                            path_bindings.insert(path.to_string(), {
+                                BoundPath {
+                                    app: app.to_string(),
+                                    authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
+                                }
+                            });
+                        }
                     } else if action == "request" {
                         bindings::print_to_terminal(1, "http_bindings: got request");
 
@@ -253,7 +261,7 @@ impl bindings::MicrokernelProcess for Component {
                         
                         for (key, _value) in &path_bindings {
                             let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
-                            if key_segments.len() != path_segments.len() && !key.contains("/.*") {
+                            if key_segments.len() != path_segments.len() && (!key.contains("/.*") || (key_segments.len() - 1) > path_segments.len()) {
                                 continue;
                             }
 
@@ -274,6 +282,8 @@ impl bindings::MicrokernelProcess for Component {
                                 break;
                             }
                         }
+
+                        bindings::print_to_terminal(1, &("http_bindings: registered path ".to_string() + registered_path));
 
                         match path_bindings.get(registered_path) {
                             Some(bound_path) => {
@@ -303,7 +313,7 @@ impl bindings::MicrokernelProcess for Component {
                                         };
 
                                         let location = match proxy_path {
-                                            Some(_) => format!("/proxy/serve/{}/login?redirect={}", &our_name, redirect_path),
+                                            Some(_) => format!("/http-proxy/serve/{}/login?redirect={}", &our_name, redirect_path),
                                             None => format!("/login?redirect={}", redirect_path)
                                         };
 

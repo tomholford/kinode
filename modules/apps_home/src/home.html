@@ -195,15 +195,15 @@
       <h3 id="uq-name">Welcome ${our}!</h3>
 
       <h4>Apps:</h4>
-      <a id="file-transfer" href="/apps/file-transfer">File Transfer</a>
-      <a id="proxy" href="/apps/proxy">HTTP Proxy</a>
+      <a id="file-transfer" href="/file-transfer">File Transfer</a>
+      <a id="http-proxy" href="/http-proxy">HTTP Proxy</a>
     </div>
     <script>
       document.addEventListener('DOMContentLoaded', function() {
         const fileTransferLink = document.getElementById('file-transfer')
         fileTransferLink.attributes.href.value = (window.location.pathname + fileTransferLink.attributes.href.value).replace('//', '/')
-        const proxyLink = document.getElementById('proxy')
-        proxyLink.attributes.href.value = (window.location.pathname + proxyLink.attributes.href.value).replace('//', '/')
+        const httpProxyLink = document.getElementById('http-proxy')
+        httpProxyLink.attributes.href.value = (window.location.pathname + httpProxyLink.attributes.href.value).replace('//', '/')
       })
     </script>
   </body>

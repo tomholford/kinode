@@ -6,10 +6,24 @@ use bindings::component::microkernel_process::types::WitProtomessageType;
 use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use std::collections::HashMap;
 use serde_json::json;
-struct Component;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FileSystemAction {
+    Read,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileSystemRequest {
+    pub uri_string: String,
+    pub action: FileSystemAction,
+}
+
 mod process_lib;
 
 const PROXY_HOME_PAGE: &str = include_str!("http-proxy.html");
+
+struct Component;
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
@@ -29,7 +43,7 @@ impl bindings::MicrokernelProcess for Component {
                   payload: WitPayload {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
-                          "path": "/apps/proxy",
+                          "path": "/http-proxy",
                           "authenticated": true,
                           "app": process_name
                       }).to_string()),
@@ -38,6 +52,28 @@ impl bindings::MicrokernelProcess for Component {
               },
               "".into(),
           ), (
+            bindings::WitProtomessage {
+                protomessage_type: WitProtomessageType::Request(
+                    WitRequestTypeWithTarget {
+                        is_expecting_response: false,
+                        target: WitProcessNode {
+                            node: our_name.clone(),
+                            process: "http_bindings".into(),
+                        },
+                    }
+                ),
+                payload: WitPayload {
+                    json: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy/static/.*",
+                        "authenticated": true,
+                        "app": process_name
+                    }).to_string()),
+                    bytes: None
+                }
+            },
+            "".into(),
+        ), (
               bindings::WitProtomessage {
                   protomessage_type: WitProtomessageType::Request(
                       WitRequestTypeWithTarget {
@@ -51,7 +87,7 @@ impl bindings::MicrokernelProcess for Component {
                   payload: WitPayload {
                       json: Some(serde_json::json!({
                           "action": "bind-app",
-                          "path": "/proxy/list",
+                          "path": "/http-proxy/list",
                           "app": process_name
                       }).to_string()),
                       bytes: None
@@ -72,7 +108,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/proxy/register",
+                            "path": "/http-proxy/register",
                             "app": process_name
                         }).to_string()),
                         bytes: None
@@ -93,7 +129,7 @@ impl bindings::MicrokernelProcess for Component {
                     payload: WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
-                            "path": "/proxy/serve/:username/.*",
+                            "path": "/http-proxy/serve/:username/.*",
                             "app": process_name
                         }).to_string()),
                         bytes: None
@@ -114,7 +150,7 @@ impl bindings::MicrokernelProcess for Component {
             bindings::print_to_terminal(1, format!("apps-home: got request: {}", message_from_loop).as_str());
             bindings::print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
 
-            if message_from_loop["path"] == "/apps/proxy" && message_from_loop["method"] == "GET" {
+            if message_from_loop["path"] == "/http-proxy" && message_from_loop["method"] == "GET" {
                 bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
@@ -126,12 +162,12 @@ impl bindings::MicrokernelProcess for Component {
                                     "Content-Type": "text/html",
                                 },
                             }).to_string()),
-                            bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name.to_string()).as_bytes().to_vec())
+                            bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
                         }
                     },
                     "".into(),
                 )].as_slice()));
-            } else if message_from_loop["path"] == "/proxy/list" && message_from_loop["method"] == "GET" {
+            } else if message_from_loop["path"] == "/http-proxy/list" && message_from_loop["method"] == "GET" {
                 bindings::yield_results(Ok(vec![(
                     bindings::WitProtomessage {
                         protomessage_type: WitProtomessageType::Response,
@@ -151,7 +187,7 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     "".into(),
                 )].as_slice()));
-            } else if message_from_loop["path"] == "/proxy/register" && message_from_loop["method"] == "POST" {
+            } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "POST" {
                 let mut status = 204;
                 let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
@@ -185,8 +221,8 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     "".into(),
                 )].as_slice()));
-            } else if message_from_loop["path"] == "/proxy/register" && message_from_loop["method"] == "DELETE" {
-                bindings::print_to_terminal(1, "HERE IN /proxy/register to delete something");
+            } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "DELETE" {
+                bindings::print_to_terminal(1, "HERE IN /http-proxy/register to delete something");
                 let username = message_from_loop["query_params"]["username"].as_str().unwrap_or("");
 
                 let mut status = 204;
@@ -214,7 +250,7 @@ impl bindings::MicrokernelProcess for Component {
                     },
                     "".into(),
                 )].as_slice()));
-            } else if message_from_loop["path"] == "/proxy/serve/:username/.*" {
+            } else if message_from_loop["path"] == "/http-proxy/serve/:username/.*" {
                 let username = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let raw_path = message_from_loop["raw_path"].as_str().unwrap_or("");
                 bindings::print_to_terminal(1, format!("proxy for user: {}", username).as_str());

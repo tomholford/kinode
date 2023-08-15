@@ -90,13 +90,6 @@ async fn to_absolute_path(
         relative_file_path.push_str(uri.path());
     }
 
-    // let base_path =
-    //     if HAS_FULL_HOME_ACCESS.contains(source_process) {
-    //         home_directory_path.to_string()
-    //     } else {
-    //         join_paths(home_directory_path.into(), source_process.into())?
-    //     };
-
     join_paths(home_directory_path.into(), relative_file_path)
 }
 

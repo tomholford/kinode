@@ -11,15 +11,15 @@ interface types {
         response,
     }
 
-    record wit-request-type-with-target {
-        is-expecting-response: bool,
-        target: wit-process-node,
-    }
+    // record wit-request-type-with-target {
+    //     is-expecting-response: bool,
+    //     target: wit-process-node,
+    // }
 
-    variant wit-protomessage-type {
-        request(wit-request-type-with-target),
-        response,
-    }
+    // variant wit-protomessage-type {
+    //     request(wit-request-type-with-target),
+    //     response,
+    // }
 
     record wit-message {
         source: wit-process-node,
@@ -31,9 +31,24 @@ interface types {
         payload: wit-payload,
     }
 
-    record wit-protomessage {
-        protomessage-type: wit-protomessage-type,
+    // record wit-protomessage {
+    //     protomessage-type: wit-protomessage-type,
+    //     payload: wit-payload,
+    // }
+
+    record wit-protorequest {
+        is-expecting-response: bool,
+        target: wit-process-node,
         payload: wit-payload,
+    }
+
+    // record wit-protoresponse {
+    //     payload: wit-payload,
+    // }
+
+    record wit-protoresponse-with-side-effect-protorequest {
+        response: tuple<wit-payload, string>,
+        request: tuple<wit-protorequest, string>,
     }
 
     record wit-process-node {
@@ -58,20 +73,27 @@ world microkernel-process {
     use types.{
         wit-payload,
         wit-message-type,
-        wit-request-type-with-target,
-        wit-protomessage-type,
+        // wit-request-type-with-target,
+        // wit-protomessage-type,
         wit-message,
         wit-message-content,
-        wit-protomessage,
+        // wit-protomessage,
+        wit-protorequest,
+        // wit-protoresponse,
+        wit-protoresponse-with-side-effect-protorequest,
         wit-process-node,
         wit-uqbar-error,
         wit-uqbar-error-content,
     }
 
     import print-to-terminal: func(verbosity: u8, message: string)
-    import yield-results: func(results: result<list<tuple<wit-protomessage, string>>, wit-uqbar-error-content>)
+    // import yield-results: func(results: result<list<tuple<wit-protomessage, string>>, wit-uqbar-error-content>)
+    import send-requests: func(requests: result<tuple<list<wit-protorequest>, string>, wit-uqbar-error-content>)
+    import send-response: func(response: result<tuple<wit-payload, string>, wit-uqbar-error-content>)
+    import send-response-with-side-effect-request: func(results: result<wit-protoresponse-with-side-effect-protorequest, wit-uqbar-error-content>)
     import await-next-message: func() -> result<tuple<wit-message, string>, wit-uqbar-error>
-    import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> result<wit-message, wit-uqbar-error>
+    // import yield-and-await-response: func(target: wit-process-node, payload: wit-payload) -> result<wit-message, wit-uqbar-error>
+    import send-request-and-await-response: func(target: wit-process-node, payload: wit-payload) -> result<wit-message, wit-uqbar-error>
     import get-current-unix-time: func() -> u64
     import get-insecure-uniform-u64: func() -> u64
     export run-process: func(our-name: string, process-name: string)

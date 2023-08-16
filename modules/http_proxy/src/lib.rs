@@ -27,7 +27,7 @@ struct Component;
 
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
-        bindings::print_to_terminal(1, "apps-home: start");
+        bindings::print_to_terminal(1, "http-proxy: start");
         bindings::yield_results(Ok(
           vec![(
               bindings::WitProtomessage {
@@ -147,8 +147,7 @@ impl bindings::MicrokernelProcess for Component {
                 panic!("foo")
             };
             let message_from_loop: serde_json::Value = serde_json::from_str(&message_from_loop_string).unwrap();
-            bindings::print_to_terminal(1, format!("apps-home: got request: {}", message_from_loop).as_str());
-            bindings::print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
+            bindings::print_to_terminal(1, format!("http-proxy: got request: {}", message_from_loop).as_str());
 
             if message_from_loop["path"] == "/http-proxy" && message_from_loop["method"] == "GET" {
                 bindings::yield_results(Ok(vec![(

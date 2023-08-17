@@ -1,16 +1,13 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitPayload;
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use hmac::{Hmac, Mac};
 use jwt::{SignWithKey, VerifyWithKey, Error};
 use sha2::Sha256;
 use url::form_urlencoded;
+
+use bindings::component::microkernel_process::types;
 
 struct BoundPath {
     app: String,
@@ -68,20 +65,17 @@ fn auth_cookie_valid(our_name: String, cookie: &str, secret: Hmac<Sha256>) -> bo
 }
 
 fn yield_http_response(id: String, status: u16, headers: HashMap<String, String>, payload_bytes: Vec<u8>) {
-    bindings::yield_results(Ok(vec![(
-        bindings::WitProtomessage {
-            protomessage_type: WitProtomessageType::Response,
-            payload: WitPayload {
-                json: Some(serde_json::json!({
-                    "id": id,
-                    "status": status,
-                    "headers": headers,
-                }).to_string()),
-                bytes: Some(payload_bytes),
-            },
+    bindings::send_response(Ok((
+        &types::WitPayload {
+            json: Some(serde_json::json!({
+                "id": id,
+                "status": status,
+                "headers": headers,
+            }).to_string()),
+            bytes: Some(payload_bytes),
         },
-        "".into(),
-    )].as_slice()));
+        "",
+    )));
 }
 
 struct Component;
@@ -107,9 +101,9 @@ impl bindings::MicrokernelProcess for Component {
             };
 
             bindings::print_to_terminal(1, "http_bindings: GOT MESSAGE");
-            
+
             match message.content.message_type {
-                WitMessageType::Request(_) => {
+                types::WitMessageType::Request(_) => {
                     let action = &message_json["action"];
                     // Safely unwrap the path as a string
                     let path = match message_json["path"].as_str() {
@@ -123,7 +117,7 @@ impl bindings::MicrokernelProcess for Component {
 
                     if action == "set-jwt-secret" {
                         let jwt_secret_bytes = message.content.payload.bytes.unwrap_or_default();
-                        
+
                         if jwt_secret_bytes.is_empty() {
                             bindings::print_to_terminal(1, "http_bindings: got empty jwt_secret_bytes");
                         } else {
@@ -207,7 +201,7 @@ impl bindings::MicrokernelProcess for Component {
                                 }
                             } else if message_json["method"] == "PUT" {
                                 bindings::print_to_terminal(1, "http_bindings: got login PUT request");
-                                
+
                                 let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
                                 let body_json_string = match String::from_utf8(body_bytes) {
                                     Ok(s) => s,
@@ -258,7 +252,7 @@ impl bindings::MicrokernelProcess for Component {
                         let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                         let mut registered_path = path;
                         let mut url_params: HashMap<String, String> = HashMap::new();
-                        
+
                         for (key, _value) in &path_bindings {
                             let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                             if key_segments.len() != path_segments.len() && (!key.contains("/.*") || (key_segments.len() - 1) > path_segments.len()) {
@@ -327,32 +321,30 @@ impl bindings::MicrokernelProcess for Component {
                                     }
                                 }
 
-                                bindings::yield_results(Ok(vec![(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: false,
-                                                target: WitProcessNode {
-                                                    node: our_name.clone(),
-                                                    process: app.into(),
-                                                },
-                                            }
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::json!({
-                                                "path": registered_path,
-                                                "raw_path": path,
-                                                "method": message_json["method"],
-                                                "headers": message_json["headers"],
-                                                "query_params": message_json["query_params"],
-                                                "url_params": url_params,
-                                                "id": message_json["id"],
-                                            }).to_string()),
-                                            bytes: message.content.payload.bytes,
+                                bindings::send_requests(Ok((
+                                    vec![
+                                        types::WitProtorequest {
+                                            is_expecting_response: false,
+                                            target: types::WitProcessNode {
+                                                node: our_name.clone(),
+                                                process: app.into(),
+                                            },
+                                            payload: types::WitPayload {
+                                                json: Some(serde_json::json!({
+                                                    "path": registered_path,
+                                                    "raw_path": path,
+                                                    "method": message_json["method"],
+                                                    "headers": message_json["headers"],
+                                                    "query_params": message_json["query_params"],
+                                                    "url_params": url_params,
+                                                    "id": message_json["id"],
+                                                }).to_string()),
+                                                bytes: message.content.payload.bytes,
+                                            },
                                         },
-                                    },
+                                    ].as_slice(),
                                     "".into(),
-                                )].as_slice()));
+                                )));
                             },
                             None => {
                                 bindings::print_to_terminal(1, "http_bindings: no app found at this path");
@@ -368,7 +360,7 @@ impl bindings::MicrokernelProcess for Component {
                         );
                     }
                 },
-                WitMessageType::Response => bindings::print_to_terminal(1, "http_bindings: got unexpected response"),
+                types::WitMessageType::Response => bindings::print_to_terminal(1, "http_bindings: got unexpected response"),
             }
         }
     }

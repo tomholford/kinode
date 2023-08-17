@@ -1,8 +1,6 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
-use bindings::component::microkernel_process::types::WitPayload;
+use bindings::component::microkernel_process::types;
 
 struct Component;
 
@@ -13,14 +11,14 @@ impl bindings::MicrokernelProcess for Component {
         bindings::yield_results(
             vec![(
                 bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
+                    protomessage_type: types::WitProtomessageType::Request(
+                        types::WitRequestTypeWithTarget {
                             is_expecting_response: false,
                             target_ship: our.as_str(),
                             target_app: "http_bindings",
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: &types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/poast", // TODO at some point we need URL pattern matching...later...
@@ -32,14 +30,14 @@ impl bindings::MicrokernelProcess for Component {
                 "",
             ), (
                 bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
+                    protomessage_type: types::WitProtomessageType::Request(
+                        types::WitRequestTypeWithTarget {
                             is_expecting_response: false,
                             target_ship: our.as_str(),
                             target_app: "http_bindings",
                         }
                     ),
-                    payload: &WitPayload {
+                    payload: &types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/poast/:banger", // TODO at some point we need URL pattern matching...later...
@@ -63,8 +61,8 @@ impl bindings::MicrokernelProcess for Component {
             if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/poast" {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        protomessage_type: types::WitProtomessageType::Response,
+                        payload: &types::WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 201,
@@ -80,8 +78,8 @@ impl bindings::MicrokernelProcess for Component {
             } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/poast" {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        protomessage_type: types::WitProtomessageType::Response,
+                        payload: &types::WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 201,
@@ -107,8 +105,8 @@ impl bindings::MicrokernelProcess for Component {
                 }
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        protomessage_type: types::WitProtomessageType::Response,
+                        payload: &types::WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 201,
@@ -126,8 +124,8 @@ impl bindings::MicrokernelProcess for Component {
             } else {
                 bindings::yield_results(vec![(
                     bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: &WitPayload {
+                        protomessage_type: types::WitProtomessageType::Response,
+                        payload: &types::WitPayload {
                             json: Some(serde_json::json!({
                                 "action": "response",
                                 "status": 201,

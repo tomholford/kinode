@@ -1,12 +1,10 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types::WitPayload;
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 use std::collections::HashMap;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
+
+use bindings::component::microkernel_process::types;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemAction {
@@ -28,84 +26,62 @@ struct Component;
 impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         bindings::print_to_terminal(1, "http-proxy: start");
-        bindings::yield_results(Ok(
-          vec![(
-              bindings::WitProtomessage {
-                  protomessage_type: WitProtomessageType::Request(
-                      WitRequestTypeWithTarget {
-                          is_expecting_response: false,
-                          target: WitProcessNode {
-                              node: our_name.clone(),
-                              process: "http_bindings".into(),
-                          },
-                      }
-                  ),
-                  payload: WitPayload {
-                      json: Some(serde_json::json!({
-                          "action": "bind-app",
-                          "path": "/http-proxy",
-                          "authenticated": true,
-                          "app": process_name
-                      }).to_string()),
-                      bytes: None
-                  }
-              },
-              "".into(),
-          ), (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: false,
-                        target: WitProcessNode {
-                            node: our_name.clone(),
-                            process: "http_bindings".into(),
-                        },
+        bindings::send_requests(Ok((
+            vec![
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/http-proxy",
+                            "authenticated": true,
+                            "app": process_name
+                        }).to_string()),
+                        bytes: None
                     }
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "bind-app",
-                        "path": "/http-proxy/static/.*",
-                        "authenticated": true,
-                        "app": process_name
-                    }).to_string()),
-                    bytes: None
-                }
-            },
-            "".into(),
-        ), (
-              bindings::WitProtomessage {
-                  protomessage_type: WitProtomessageType::Request(
-                      WitRequestTypeWithTarget {
-                          is_expecting_response: false,
-                          target: WitProcessNode {
-                              node: our_name.clone(),
-                              process: "http_bindings".into(),
-                          },
-                      }
-                  ),
-                  payload: WitPayload {
-                      json: Some(serde_json::json!({
-                          "action": "bind-app",
-                          "path": "/http-proxy/list",
-                          "app": process_name
-                      }).to_string()),
-                      bytes: None
-                  }
-              },
-              "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                },
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/http-proxy/static/.*",
+                            "authenticated": true,
+                            "app": process_name
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "bind-app",
+                            "path": "/http-proxy/list",
+                            "app": process_name
+                        }).to_string()),
+                        bytes: None
+                    }
+                },
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/http-proxy/register",
@@ -114,19 +90,13 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/http-proxy/serve/:username/.*",
@@ -135,9 +105,9 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            )].as_slice()
-        ));
+            ].as_slice(),
+            "".into(),
+        )));
 
         let mut registrations: HashMap<String, String> = HashMap::new();
 
@@ -150,42 +120,36 @@ impl bindings::MicrokernelProcess for Component {
             bindings::print_to_terminal(1, format!("http-proxy: got request: {}", message_from_loop).as_str());
 
             if message_from_loop["path"] == "/http-proxy" && message_from_loop["method"] == "GET" {
-                bindings::yield_results(Ok(vec![(
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: WitPayload {
-                            json: Some(serde_json::json!({
-                                "action": "response",
-                                "status": 200,
-                                "headers": {
-                                    "Content-Type": "text/html",
-                                },
-                            }).to_string()),
-                            bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
-                        }
+                bindings::send_response(Ok((
+                    &types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 200,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
                     },
-                    "".into(),
-                )].as_slice()));
+                    "",
+                )));
             } else if message_from_loop["path"] == "/http-proxy/list" && message_from_loop["method"] == "GET" {
-                bindings::yield_results(Ok(vec![(
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: WitPayload {
-                            json: Some(serde_json::json!({
-                                "action": "response",
-                                "status": 200,
-                                "headers": {
-                                    "Content-Type": "application/json",
-                                },
-                            }).to_string()),
-                            bytes: Some(serde_json::json!({
-                                    "registrations": registrations
-                                }).to_string()
-                            .as_bytes().to_vec())
-                        }
+                bindings::send_response(Ok((
+                    &types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 200,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
+                        }).to_string()),
+                        bytes: Some(serde_json::json!({
+                                "registrations": registrations
+                            }).to_string()
+                        .as_bytes().to_vec())
                     },
-                    "".into(),
-                )].as_slice()));
+                    "",
+                )));
             } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "POST" {
                 let mut status = 204;
                 let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
@@ -204,22 +168,19 @@ impl bindings::MicrokernelProcess for Component {
                     status = 400;
                 }
 
-                bindings::yield_results(Ok(vec![(
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: WitPayload {
-                            json: Some(serde_json::json!({
-                                "action": "response",
-                                "status": status,
-                                "headers": {
-                                    "Content-Type": "text/html",
-                                },
-                            }).to_string()),
-                            bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
-                        }
+                bindings::send_response(Ok((
+                    &types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": status,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
                     },
-                    "".into(),
-                )].as_slice()));
+                    "",
+                )));
             } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "DELETE" {
                 bindings::print_to_terminal(1, "HERE IN /http-proxy/register to delete something");
                 let username = message_from_loop["query_params"]["username"].as_str().unwrap_or("");
@@ -233,61 +194,52 @@ impl bindings::MicrokernelProcess for Component {
                 }
 
                 // TODO when we have an actual webpage, uncomment this as a response
-                bindings::yield_results(Ok(vec![(
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: WitPayload {
-                            json: Some(serde_json::json!({
-                                "action": "response",
-                                "status": status,
-                                "headers": {
-                                    "Content-Type": "text/html",
-                                },
-                            }).to_string()),
-                            bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
-                        }
+                bindings::send_response(Ok((
+                    &types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": status,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
                     },
-                    "".into(),
-                )].as_slice()));
+                    "",
+                )));
             } else if message_from_loop["path"] == "/http-proxy/serve/:username/.*" {
                 let username = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
                 let raw_path = message_from_loop["raw_path"].as_str().unwrap_or("");
                 bindings::print_to_terminal(1, format!("proxy for user: {}", username).as_str());
 
                 if username.is_empty() || raw_path.is_empty() {
-                    bindings::yield_results(Ok(vec![(
-                        bindings::WitProtomessage {
-                            protomessage_type: WitProtomessageType::Response,
-                            payload: WitPayload {
-                                json: Some(serde_json::json!({
-                                    "action": "response",
-                                    "status": 404,
-                                    "headers": {
-                                        "Content-Type": "text/html",
-                                    },
-                                }).to_string()),
-                                bytes: Some("Not Found".to_string().as_bytes().to_vec())
-                            }
+                    bindings::send_response(Ok((
+                        &types::WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 404,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("Not Found".to_string().as_bytes().to_vec())
                         },
-                        "".into(),
-                    )].as_slice()));
+                        "",
+                    )));
                 } else if !registrations.contains_key(username) {
-                    bindings::yield_results(Ok(vec![(
-                        bindings::WitProtomessage {
-                            protomessage_type: WitProtomessageType::Response,
-                            payload: WitPayload {
-                                json: Some(serde_json::json!({
-                                    "action": "response",
-                                    "status": 403,
-                                    "headers": {
-                                        "Content-Type": "text/html",
-                                    },
-                                }).to_string()),
-                                bytes: Some("Not Authorized".to_string().as_bytes().to_vec())
-                            }
+                    bindings::send_response(Ok((
+                        &types::WitPayload {
+                            json: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 403,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            bytes: Some("Not Authorized".to_string().as_bytes().to_vec())
                         },
-                        "".into(),
-                    )].as_slice()));
+                        "",
+                    )));
                 } else {
                     let path_parts: Vec<&str> = raw_path.split('/').collect();
                     let mut proxied_path = "/".to_string();
@@ -297,7 +249,7 @@ impl bindings::MicrokernelProcess for Component {
                         bindings::print_to_terminal(1, format!("Path to proxy: {}", proxied_path).as_str());
                     }
 
-                    let res = process_lib::yield_and_await_response(
+                    let res = process_lib::send_request_and_await_response(
                         username.into(),
                         "http_bindings".into(),
                         Some(json!({
@@ -314,68 +266,56 @@ impl bindings::MicrokernelProcess for Component {
                     match res.content.payload.json {
                         Some(ref json) => {
                             if json.contains("Offline") {
-                                bindings::yield_results(Ok(vec![(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: WitPayload {
-                                            json: Some(serde_json::json!({
-                                                "status": 404,
-                                                "headers": {
-                                                    "Content-Type": "text/html"
-                                                },
-                                            }).to_string()),
-                                            bytes: Some("Node is offline".as_bytes().to_vec()),
-                                        },
+                                bindings::send_response(Ok((
+                                    &types::WitPayload {
+                                        json: Some(serde_json::json!({
+                                            "status": 404,
+                                            "headers": {
+                                                "Content-Type": "text/html"
+                                            },
+                                        }).to_string()),
+                                        bytes: Some("Node is offline".as_bytes().to_vec()),
                                     },
                                     "".into(),
-                                )].as_slice()))
+                                )))
                             } else {
-                                bindings::yield_results(Ok(vec![(
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: WitPayload {
-                                            json: res.content.payload.json,
-                                            bytes: res.content.payload.bytes,
-                                        }
+                                bindings::send_response(Ok((
+                                    &types::WitPayload {
+                                        json: res.content.payload.json,
+                                        bytes: res.content.payload.bytes,
                                     },
                                     "".into(),
-                                )].as_slice()))
+                                )))
                             }
                         },
-                        None => bindings::yield_results(Ok(vec![(
-                            bindings::WitProtomessage {
-                                protomessage_type: WitProtomessageType::Response,
-                                payload: WitPayload {
-                                    json: Some(serde_json::json!({
-                                        "status": 404,
-                                        "headers": {
-                                            "Content-Type": "text/html"
-                                        },
-                                    }).to_string()),
-                                    bytes: Some("Not Found".as_bytes().to_vec()),
-                                },
+                        None => bindings::send_response(Ok((
+                            &types::WitPayload {
+                                json: Some(serde_json::json!({
+                                    "status": 404,
+                                    "headers": {
+                                        "Content-Type": "text/html"
+                                    },
+                                }).to_string()),
+                                bytes: Some("Not Found".as_bytes().to_vec()),
                             },
                             "".into(),
-                        )].as_slice())),
+                        ))),
                     };
                 }
             } else {
-                bindings::yield_results(Ok(vec![(
-                    bindings::WitProtomessage {
-                        protomessage_type: WitProtomessageType::Response,
-                        payload: WitPayload {
-                            json: Some(serde_json::json!({
-                                "action": "response",
-                                "status": 404,
-                                "headers": {
-                                    "Content-Type": "text/html",
-                                },
-                            }).to_string()),
-                            bytes: Some("Not Found".as_bytes().to_vec())
-                        }
+                bindings::send_response(Ok((
+                    &types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 404,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some("Not Found".as_bytes().to_vec())
                     },
                     "".into(),
-                )].as_slice()));
+                )));
             }
         }
     }

@@ -13,10 +13,7 @@ use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
 // use crate::microkernel::component::microkernel_process::types::WitErrorContent;
-use crate::microkernel::component::microkernel_process::types::WitMessageContent;
-use crate::microkernel::component::microkernel_process::types::WitMessageType;
-use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
-use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
+use crate::microkernel::component::microkernel_process::types as wit;
 
 bindgen!({
     path: "wit",
@@ -30,6 +27,7 @@ struct Process {
     recv_in_process: MessageReceiver,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
+    has_already_sent: HasAlreadySent,
     prompting_message: Option<WrappedMessage>,
     contexts: HashMap<u64, ProcessContext>,
     contexts_to_clean: Vec<u64>,  //  remove these upon receiving next message
@@ -40,6 +38,12 @@ struct ProcessWasi {
     process: Process,
     table: Table,
     wasi: WasiCtx,
+}
+
+enum HasAlreadySent {
+    None,
+    Requests,
+    Response,
 }
 
 #[derive(Clone, Debug)]
@@ -130,18 +134,75 @@ impl WasiView for ProcessWasi {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for ProcessWasi {
-    async fn yield_results(
+    async fn send_requests(
         &mut self,
-        results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
+        requests: Result<(Vec<wit::WitProtorequest>, String), wit::WitUqbarErrorContent>,
     ) -> Result<()> {
-        let _ = send_process_results_to_loop(
-            results,
+        match self.process.has_already_sent {
+            HasAlreadySent::Response => {
+                return Err(anyhow::anyhow!("Cannot send Requests after Response"));
+            },
+            _ => {},
+        }
+
+        let _ = send_process_requests_to_loop(
+            requests,
             self.process.metadata.our.clone(),
-            self.process.send_to_loop.clone(),
-            self.process.send_to_terminal.clone(),
+            &self.process.send_to_loop.clone(),
+            &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
         ).await;
+
+        self.process.has_already_sent = HasAlreadySent::Requests;
+        Ok(())
+    }
+
+    async fn send_response(
+        &mut self,
+        response: Result<(wit::WitPayload, String), wit::WitUqbarErrorContent>,
+    ) -> Result<()> {
+        match self.process.has_already_sent {
+            HasAlreadySent::None => {},
+            _ => {
+                return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
+            },
+        }
+
+        let _ = send_process_response_to_loop(
+            response,
+            self.process.metadata.our.clone(),
+            &self.process.send_to_loop,
+            &self.process.send_to_terminal,
+            &self.process.prompting_message,
+            &mut self.process.contexts,
+        ).await;
+
+        self.process.has_already_sent = HasAlreadySent::Response;
+        Ok(())
+    }
+
+    async fn send_response_with_side_effect_request(
+        &mut self,
+        results: Result<wit::WitProtoresponseWithSideEffectProtorequest, wit::WitUqbarErrorContent>,
+    ) -> Result<()> {
+        match self.process.has_already_sent {
+            HasAlreadySent::None => {},
+            _ => {
+                return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
+            },
+        }
+
+        let _ = send_process_response_with_side_effect_request_to_loop(
+            results,
+            self.process.metadata.our.clone(),
+            &self.process.send_to_loop,
+            &self.process.send_to_terminal,
+            &self.process.prompting_message,
+            &mut self.process.contexts,
+        ).await;
+
+        self.process.has_already_sent = HasAlreadySent::Response;
         Ok(())
     }
 
@@ -154,27 +215,27 @@ impl MicrokernelProcessImports for ProcessWasi {
             &mut self.process.contexts_to_clean,
         ).await;
         self.process.prompting_message = Some(wrapped_message);
+
+        self.process.has_already_sent = HasAlreadySent::None;
         process_input
     }
 
-    async fn yield_and_await_response(
+    async fn send_request_and_await_response(
         &mut self,
         target: WitProcessNode,
         payload: WitPayload,
     ) -> Result<Result<WitMessage, WitUqbarError>> {
-        let protomessage = WitProtomessage {
-            protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                is_expecting_response: true,
-                target,
-            }),
+        let protomessage = wit::WitProtorequest {
+            is_expecting_response: true,
+            target,
             payload,
         };
 
-        let ids = send_process_results_to_loop(
-            Ok(vec![(protomessage, "".into())]),
+        let ids = send_process_requests_to_loop(
+            Ok((vec![protomessage], "".into())),
             self.process.metadata.our.clone(),
-            self.process.send_to_loop.clone(),
-            self.process.send_to_terminal.clone(),
+            &self.process.send_to_loop.clone(),
+            &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
         ).await;
@@ -191,7 +252,8 @@ impl MicrokernelProcessImports for ProcessWasi {
             &mut self.process.contexts,
             &mut self.process.contexts_to_clean,
         ).await;
-        // self.process.prompting_message = Some(wrapped_message);
+
+        self.process.has_already_sent = HasAlreadySent::None;
         process_input
     }
 
@@ -454,12 +516,13 @@ async fn get_context(
     }
 }
 
-fn handle_request_case(
+fn make_request_id_target(
+    default_id: u64,
     is_expecting_response: bool,
     prompting_message: &Option<WrappedMessage>,
 ) -> (u64, Rsvp) {
     if is_expecting_response {
-        (rand::random(), None)
+        (default_id, None)
     } else {
         //  rsvp is set if there was a Request expecting Response
         //   followed by Request(s) not expecting Response;
@@ -474,12 +537,12 @@ fn handle_request_case(
                     MessageType::Request(prompting_message_is_expecting_response) => {
                         if prompting_message_is_expecting_response {
                             (
-                                prompting_message.id.clone(), //  TODO: need to reference count? ; is this right? I think we may want new message id here
+                                prompting_message.id.clone(),
                                 Some(pm_message.source.clone()),
                             )
                         } else {
                             (
-                                prompting_message.id.clone(),  //  TODO: need to reference count? ; is this right? I think we may want new message id here
+                                prompting_message.id.clone(),
                                 prompting_message.rsvp.clone(),
                             )
                         }
@@ -492,11 +555,15 @@ fn handle_request_case(
     }
 }
 
-async fn handle_response_case(
-    prompting_message: &WrappedMessage,
+async fn make_response_id_target(
+    prompting_message: &Option<WrappedMessage>,
     contexts: &HashMap<u64, ProcessContext>,
     send_to_terminal: PrintSender,
 ) -> Option<(u64, ProcessNode)> {
+    let Some(ref prompting_message) = prompting_message else {
+        println!("need non-None prompting_message to handle Response");
+        return None;
+    };
     match prompting_message.message {
         Ok(ref pm_message) => {
             match pm_message.content.message_type {
@@ -749,237 +816,321 @@ async fn decrement_context(
     }
 }
 
-async fn send_process_results_to_loop(
-    results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
+async fn send_process_error_to_loop(
+    error: wit::WitUqbarErrorContent,
     source: ProcessNode,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
+    send_to_loop: &MessageSender,
+    prompting_message: &Option<WrappedMessage>,
+) -> Vec<u64> {
+    let Some(ref prompting_message) = prompting_message else {
+        println!("need non-None prompting_message to handle Error");
+        return vec![];  //  TODO: how to handle error on error routing case?
+    };
+
+    let id = prompting_message.id.clone();
+    let target = match prompting_message.message {
+        Ok(ref m) => m.source.clone(),
+        Err(ref e) => e.source.clone(),
+    };
+
+    let wrapped_message = WrappedMessage {
+        id,
+        target,
+        rsvp: None,
+        message: Err(UqbarError {
+            source,
+            timestamp: get_current_unix_time().unwrap(),
+            content: de_wit_error_content(&error),
+        }),
+    };
+
+    send_to_loop
+        .send(wrapped_message)
+        .await
+        .unwrap();
+
+    return vec![id];
+}
+
+async fn handle_request(
+    source: ProcessNode,
+    send_to_loop: &MessageSender,
+    send_to_terminal: &PrintSender,
+    default_id: u64,
+    is_expecting_response: bool,
+    target: wit::WitProcessNode,
+    payload: wit::WitPayload,
+    prompting_message: &Option<WrappedMessage>,
+    new_context: Option<serde_json::Value>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> u64 {
+    let (id, rsvp) = make_request_id_target(
+        default_id,
+        is_expecting_response,
+        &prompting_message,
+    );
+    let target = de_wit_process_node(&target);
+
+    let wrapped_message = make_wrapped_message(
+        id.clone(),
+        source.clone(),
+        target,
+        rsvp,
+        MessageType::Request(is_expecting_response),
+        &payload,
+    );
+
+    //  modify contexts
+    let process_context = match prompting_message {
+        Some(ref prompting_message) => {
+            match prompting_message.message {
+                Ok(ref prompting_message_message) => {
+                    match prompting_message_message.content.message_type {
+                        MessageType::Request(_) => {
+                            //  case: prompting_message_is_expecting_response
+                            //   ultimate stored for source
+                            //  case: !prompting_message_is_expecting_response
+                            //   ultimate stored for rsvp
+                            ProcessContext::new(
+                                &wrapped_message,
+                                Some(&prompting_message),
+                                new_context,
+                            )
+                        },
+                        MessageType::Response => {
+                            match contexts.get(&prompting_message.id) {
+                                Some(context) => {
+                                    //  ultimate is the ultimate of the prompt of Response
+                                    ProcessContext::new_from_context(
+                                        &wrapped_message,
+                                        &context.ultimate,
+                                        new_context,
+                                    )
+                                },
+                                None => {
+                                    //  should this even be allowed?
+                                    ProcessContext::new(
+                                        &wrapped_message,
+                                        Some(&prompting_message),
+                                        new_context,
+                                    )
+                                },
+                            }
+                        },
+                    }
+                },
+                Err(_) => {
+                    match contexts.get(&prompting_message.id) {
+                        Some(context) => {
+                            //  ultimate is the ultimate of the prompt of Response
+                            ProcessContext::new_from_context(
+                                &wrapped_message,
+                                &context.ultimate,
+                                new_context,
+                            )
+                        },
+                        None => {
+                            //  should this even be allowed?
+                            ProcessContext::new(
+                                &wrapped_message,
+                                Some(&prompting_message),
+                                new_context,
+                            )
+                        },
+                    }
+                },
+            }
+        },
+        None => {
+            ProcessContext::new(
+                &wrapped_message,
+                None,
+                new_context,
+            )
+        },
+    };
+    insert_or_increment_context(
+        is_expecting_response,
+        wrapped_message.id,
+        process_context,
+        &send_to_terminal,
+        contexts,
+    ).await;
+
+    send_to_loop
+        .send(wrapped_message)
+        .await
+        .unwrap();
+
+    id
+}
+
+async fn send_process_requests_to_loop(
+    requests: Result<(Vec<wit::WitProtorequest>, String), wit::WitUqbarErrorContent>,
+    source: ProcessNode,
+    send_to_loop: &MessageSender,
+    send_to_terminal: &PrintSender,
+    prompting_message: &Option<WrappedMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Vec<u64> {
+    let Ok(requests) = requests else {
+        let Err(e) = requests else { panic!("") };
+        return send_process_error_to_loop(e, source, send_to_loop, prompting_message).await;
+    };
+
+    let mut ids: Vec<u64> = Vec::new();
+    let default_id = rand::random();
+    let new_context = serde_json::from_str(&requests.1).ok();
+    for WitProtorequest { is_expecting_response, target, payload } in requests.0 {
+        ids.push(handle_request(
+            source.clone(),
+            send_to_loop,
+            send_to_terminal,
+            default_id,
+            is_expecting_response,
+            target,
+            payload,
+            prompting_message,
+            new_context.clone(),
+            contexts,
+        ).await);
+    }
+    ids
+}
+
+async fn send_process_response_to_loop(
+    response: Result<(wit::WitPayload, String), wit::WitUqbarErrorContent>,
+    source: ProcessNode,
+    send_to_loop: &MessageSender,
+    send_to_terminal: &PrintSender,
+    prompting_message: &Option<WrappedMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Option<u64> {
+    let Ok(response) = response else {
+        let Err(e) = response else { panic!("") };
+        let ids = send_process_error_to_loop(e, source, send_to_loop, prompting_message)
+            .await;
+        return Some(ids[0]);
+    };
+
+    let payload = response.0;
+    let new_context: Option<serde_json::Value> = serde_json::from_str(&response.1).ok();
+    let (id, target) = match make_response_id_target(
+        &prompting_message,
+        contexts,
+        send_to_terminal.clone(),
+    ).await {
+        Some(r) => r,
+        None => {
+            send_to_terminal
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "dropping Response: {:?}",
+                        payload.json,
+                    ),
+                })
+                .await
+                .unwrap();
+            return None;
+        },
+    };
+    let rsvp = None;
+
+    let wrapped_message = make_wrapped_message(
+        id.clone(),
+        source.clone(),
+        target,
+        rsvp,
+        MessageType::Response,
+        &payload,
+    );
+
+    send_to_loop
+        .send(wrapped_message)
+        .await
+        .unwrap();
+
+    return Some(id);
+}
+
+async fn send_process_response_with_side_effect_request_to_loop(
+    results: Result<wit::WitProtoresponseWithSideEffectProtorequest, wit::WitUqbarErrorContent>,
+    source: ProcessNode,
+    send_to_loop: &MessageSender,
+    send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) -> Vec<u64> {
     let Ok(results) = results else {
-        //  error case
         let Err(e) = results else { panic!("") };
-
-        let Some(ref prompting_message) = prompting_message else {
-            println!("need non-None prompting_message to handle Error");
-            return vec![];  //  TODO: how to handle error on error routing case?
-        };
-
-        let id = prompting_message.id.clone();
-        let target = match prompting_message.message {
-            Ok(ref m) => m.source.clone(),
-            Err(ref e) => e.source.clone(),
-        };
-
-        let wrapped_message = WrappedMessage {
-            id,
-            target,
-            rsvp: None,
-            message: Err(UqbarError {
-                source,
-                timestamp: get_current_unix_time().unwrap(),
-                content: de_wit_error_content(&e),
-            }),
-        };
-
-        send_to_loop
-            .send(wrapped_message)
-            .await
-            .unwrap();
-
-        return vec![id];
+        return send_process_error_to_loop(e, source, send_to_loop, prompting_message).await;
     };
 
+    //  handle Response
+    let (payload, new_context) = results.response;
+
     let mut ids: Vec<u64> = Vec::new();
-    for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
-        let new_context = serde_json::from_str(new_context_string).ok();
-        let (id, rsvp, target, message_type) =
-            match protomessage_type {
-                WitProtomessageType::Request(type_with_target) => {
-                    let (id, rsvp) = handle_request_case(
-                        type_with_target.is_expecting_response,
-                        &prompting_message,
-                    );
-                    (
-                        id,
-                        rsvp,
-                        de_wit_process_node(&type_with_target.target),
-                        MessageType::Request(type_with_target.is_expecting_response),
-                    )
-                },
-                WitProtomessageType::Response => {
-                    let Some(ref prompting_message) = prompting_message else {
-                        println!("need non-None prompting_message to handle Response");
-                        continue;
-                    };
-                    let (id, target) = match handle_response_case(
-                        &prompting_message,
-                        contexts,
-                        send_to_terminal.clone(),
-                    ).await {
-                        Some(r) => r,
-                        None => {
-                            send_to_terminal
-                                .send(Printout {
-                                    verbosity: 1,
-                                    content: format!(
-                                        "dropping Response: {:?}",
-                                        payload.json,
-                                    ),
-                                })
-                                .await
-                                .unwrap();
-                            continue
-                        },
-                    };
-                    (
-                        id,
-                        None,
-                        target,
-                        MessageType::Response,
-                    )
-                },
-            };
 
-        let wrapped_message = make_wrapped_message(
-            id.clone(),
-            source.clone(),
-            target,
-            rsvp,
-            message_type,
-            payload,
-        );
+    let new_context = serde_json::from_str(&new_context).ok();
+    let (id, target) = match make_response_id_target(
+        &prompting_message,
+        contexts,
+        send_to_terminal.clone(),
+    ).await {
+        Some(r) => r,
+        None => {
+            send_to_terminal
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "dropping Response: {:?}",
+                        payload.json,
+                    ),
+                })
+                .await
+                .unwrap();
+            return vec![];
+        },
+    };
+    let rsvp = None;
 
-        //  modify contexts if necessary
-        //   note that this could be rolled into the `match` making Message above;
-        //   if performance is bad here, roll into above
-        let Ok(ref message) = wrapped_message.message else {
-            panic!("foo");
-        };
-        match message.content.message_type {
-            MessageType::Response => {
-                //  context cleaned up elsewhere
-            },
-            MessageType::Request(is_expecting_response) => {
-                //  add context, as appropriate
-                match prompting_message {
-                    Some(ref prompting_message) => {
-                        match prompting_message.message {
-                            Ok(ref prompting_message_message) => {
-                                match prompting_message_message.content.message_type {
-                                    MessageType::Request(_) => {
-                                        //  case: prompting_message_is_expecting_response
-                                        //   ultimate stored for source
-                                        //  case: !prompting_message_is_expecting_response
-                                        //   ultimate stored for rsvp
-                                        insert_or_increment_context(
-                                            is_expecting_response,
-                                            wrapped_message.id,
-                                            ProcessContext::new(
-                                                &wrapped_message,
-                                                Some(&prompting_message),
-                                                new_context,
-                                            ),
-                                            &send_to_terminal,
-                                            contexts,
-                                        ).await;
-                                    },
-                                    MessageType::Response => {
-                                        //  TODO: factor out with Err case below
-                                        match contexts.get(&prompting_message.id) {
-                                            Some(context) => {
-                                                //  ultimate is the ultimate of the prompt of Response
-                                                insert_or_increment_context(
-                                                    is_expecting_response,
-                                                    wrapped_message.id,
-                                                    ProcessContext::new_from_context(
-                                                        &wrapped_message,
-                                                        &context.ultimate,
-                                                        new_context,
-                                                    ),
-                                                    &send_to_terminal,
-                                                    contexts
-                                                ).await;
-                                            },
-                                            None => {
-                                                //  should this even be allowed?
-                                                insert_or_increment_context(
-                                                    is_expecting_response,
-                                                    wrapped_message.id,
-                                                    ProcessContext::new(
-                                                        &wrapped_message,
-                                                        Some(&prompting_message),
-                                                        new_context,
-                                                    ),
-                                                    &send_to_terminal,
-                                                    contexts
-                                                ).await;
-                                            },
-                                        }
-                                    },
-                                }
-                            },
-                            Err(_) => {
-                                //  TODO: factor out with Response case above
-                                match contexts.get(&prompting_message.id) {
-                                    Some(context) => {
-                                        //  ultimate is the ultimate of the prompt of Response
-                                        insert_or_increment_context(
-                                            is_expecting_response,
-                                            wrapped_message.id,
-                                            ProcessContext::new_from_context(
-                                                &wrapped_message,
-                                                &context.ultimate,
-                                                new_context,
-                                            ),
-                                            &send_to_terminal,
-                                            contexts
-                                        ).await;
-                                    },
-                                    None => {
-                                        //  should this even be allowed?
-                                        insert_or_increment_context(
-                                            is_expecting_response,
-                                            wrapped_message.id,
-                                            ProcessContext::new(
-                                                &wrapped_message,
-                                                Some(&prompting_message),
-                                                new_context,
-                                            ),
-                                            &send_to_terminal,
-                                            contexts,
-                                        ).await;
-                                    },
-                                }
-                            },
-                        }
-                    },
-                    None => {
-                        insert_or_increment_context(
-                            is_expecting_response,
-                            wrapped_message.id,
-                            ProcessContext::new(
-                                &wrapped_message,
-                                None,
-                                new_context,
-                            ),
-                            &send_to_terminal,
-                            contexts,
-                        ).await;
-                    },
-                }
-            },
-        }
+    let wrapped_message = make_wrapped_message(
+        id.clone(),
+        source.clone(),
+        target,
+        rsvp,
+        MessageType::Response,
+        &payload,
+    );
 
-        send_to_loop
-            .send(wrapped_message)
-            .await
-            .unwrap();
+    send_to_loop
+        .send(wrapped_message)
+        .await
+        .unwrap();
 
-        ids.push(id);
-    }
-    ids
+    ids.push(id);
+
+    //  handle side-effect Request
+    let (WitProtorequest { is_expecting_response, target, payload }, request_context) =
+        results.request;
+    let default_id = rand::random();
+    let prompting_message = None;
+
+    ids.push(handle_request(
+        source,
+        send_to_loop,
+        send_to_terminal,
+        default_id,
+        is_expecting_response,
+        target,
+        payload,
+        &prompting_message,
+        new_context,
+        contexts,
+    ).await);
+
+    return ids;
 }
 
 async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
@@ -992,13 +1143,13 @@ async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
     };
     let wit_message_type = match m.content.message_type {
         MessageType::Request(is_expecting_response) => {
-            WitMessageType::Request(is_expecting_response)
+            wit::WitMessageType::Request(is_expecting_response)
         },
-        MessageType::Response => WitMessageType::Response,
+        MessageType::Response => wit::WitMessageType::Response,
     };
     WitMessage {
         source: en_wit_process_node(&m.source),
-        content: WitMessageContent {
+        content: wit::WitMessageContent {
             message_type: wit_message_type,
             payload: wit_payload,
 
@@ -1037,6 +1188,7 @@ async fn make_process_loop(
                 recv_in_process,
                 send_to_loop: send_to_loop.clone(),
                 send_to_terminal: send_to_terminal.clone(),
+                has_already_sent: HasAlreadySent::None,
                 prompting_message: None,
                 contexts: HashMap::new(),
                 contexts_to_clean: Vec::new(),
@@ -1257,12 +1409,10 @@ async fn handle_kernel_request(
                     },
                 })
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(start_completed_message)
-                    .await
-                    .unwrap();
-            }
+            send_to_loop
+                .send(start_completed_message)
+                .await
+                .unwrap();
             return;
         },
         KernelRequest::StopProcess { process_name } => {
@@ -1322,12 +1472,10 @@ async fn handle_kernel_request(
                     },
                 })
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(stop_completed_message)
-                    .await
-                    .unwrap();
-            }
+            send_to_loop
+                .send(stop_completed_message)
+                .await
+                .unwrap();
             return;
         },
     }

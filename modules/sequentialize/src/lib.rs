@@ -2,7 +2,7 @@ cargo_component_bindings::generate!();
 
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
-use bindings::{await_next_message, MicrokernelProcess, print_to_terminal, yield_and_await_response};
+use bindings::{await_next_message, MicrokernelProcess, print_to_terminal, send_request_and_await_response};
 use bindings::component::microkernel_process::types;
 
 mod process_lib;
@@ -56,7 +56,7 @@ fn handle_message(
                 },
                 SequentializeRequest::RunQueue => {
                     for item in message_queue {
-                        let _ = yield_and_await_response(&item.target, &item.payload)?;
+                        let _ = send_request_and_await_response(&item.target, &item.payload)?;
                     }
                     Ok(ReturnStatus::Done)
                 },

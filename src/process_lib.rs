@@ -2,48 +2,25 @@
 
 use super::bindings::component::microkernel_process::types;
 
-pub fn make_response<T>(
-    payload: types::WitPayload,
-    context: Option<T>,  //  ?
-) -> anyhow::Result<(types::WitProtomessage, String)>
-where
-    T: serde::Serialize
-{
-    Ok((
-        types::WitProtomessage {
-            protomessage_type: types::WitProtomessageType::Response,
-            payload,
-        },
-        match context {
-            None => "".into(),
-            Some(c) => serde_json::to_string(&c)?,
-        },
-    ))
-}
-
 pub fn make_request<T>(
     is_expecting_response: bool,
     node: &str,
     process: &str,
     payload: types::WitPayload,
     context: Option<T>,
-) -> anyhow::Result<(types::WitProtomessage, String)>
+) -> anyhow::Result<(Vec<types::WitProtorequest>, String)>
 where
     T: serde::Serialize
 {
     Ok((
-        types::WitProtomessage {
-            protomessage_type: types::WitProtomessageType::Request(
-                types::WitRequestTypeWithTarget {
-                    is_expecting_response,
-                    target: types::WitProcessNode {
-                        node: node.into(),
-                        process: process.into(),
-                    }
-                },
-            ),
+        vec![types::WitProtorequest {
+            is_expecting_response,
+            target: types::WitProcessNode {
+                node: node.into(),
+                process: process.into(),
+            },
             payload,
-        },
+        }],
         match context {
             None => "".into(),
             Some(c) => serde_json::to_string(&c)?,
@@ -78,17 +55,7 @@ where
     Ok(parsed)
 }
 
-// pub fn yield_results(results: Vec<(types::WitProtomessage, String)>) {
-//     let strings = results.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>();
-// 
-//     let mut formatted_results = vec![];
-//     for (i, result) in results.into_iter().enumerate() {
-//         formatted_results.push((result.0, strings[i].as_str()));
-//     }
-//     bindings::yield_results(formatted_results.as_slice())
-// }
-
-pub fn yield_one_request<T, U>(
+pub fn send_one_request<T, U>(
     is_expecting_response: bool,
     target_node: &str,
     target_process: &str,
@@ -101,19 +68,28 @@ where
      U: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    let request = make_request(
+    let protorequest = vec![types::WitProtorequest {
         is_expecting_response,
-        target_node,
-        target_process,
+        target: types::WitProcessNode {
+            node: target_node.into(),
+            process: target_process.into(),
+        },
         payload,
-        context,
-    )?;
-    super::bindings::yield_results(Ok(vec![request].as_slice()));
+    }];
+    let context = match context {
+        None => "".into(),
+        Some(c) => serde_json::to_string(&c)?,
+    };
+    let request = (
+        protorequest.as_slice(),
+        context.as_str(),
+    );
+    super::bindings::send_requests(Ok(request));
 
     Ok(())
 }
 
-pub fn yield_one_response<T, U>(
+pub fn send_response<T, U>(
     json_struct: Option<T>,
     bytes: Option<Vec<u8>>,
     context: Option<U>,  //  ?
@@ -123,13 +99,20 @@ where
      U: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    let response = make_response(payload, context)?;
-    super::bindings::yield_results(Ok(vec![response].as_slice()));
+    let context = match context {
+        None => "".into(),
+        Some(c) => serde_json::to_string(&c)?,
+    };
+    let response = (
+        &payload,
+        context.as_str(),
+    );
+    super::bindings::send_response(Ok(response));
 
     Ok(())
 }
 
-pub fn yield_and_await_response<T>(
+pub fn send_request_and_await_response<T>(
     target_node: String,
     target_process: String,
     json_struct: Option<T>,
@@ -139,7 +122,7 @@ where
      T: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    match super::bindings::yield_and_await_response(
+    match super::bindings::send_request_and_await_response(
         &types::WitProcessNode {
             node: target_node,
             process: target_process,

@@ -2,9 +2,9 @@ cargo_component_bindings::generate!();
 
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
+
 use bindings::print_to_terminal;
-// use bindings::component::microkernel_process::types::WitMessage;
-use bindings::component::microkernel_process::types::WitMessageType;
+use bindings::component::microkernel_process::types;
 
 mod process_lib;
 
@@ -100,7 +100,7 @@ fn send_stop_to_loop(
     process_name: String,
     is_expecting_response: bool,
 ) -> anyhow::Result<()> {
-    process_lib::yield_one_request(
+    process_lib::send_one_request(
         is_expecting_response,
         &our_name,
         "kernel",
@@ -120,7 +120,7 @@ fn handle_message(
         return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
     }
     match message.content.message_type {
-        WitMessageType::Request(_is_expecting_response) => {
+        types::WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
                 ProcessManagerCommand::Start { process_name, wasm_bytes_uri, send_on_panic } => {
                     print_to_terminal(1, "process manager: start");
@@ -132,7 +132,7 @@ fn handle_message(
                         ))
                     }
 
-                    process_lib::yield_one_request(
+                    process_lib::send_one_request(
                         true,
                         &our_name,
                         "filesystem",
@@ -164,7 +164,7 @@ fn handle_message(
                     send_stop_to_loop(our_name.into(), process_name, true)?;
                 },
                 ProcessManagerCommand::ListRunningProcesses => {
-                    process_lib::yield_one_response(
+                    process_lib::send_response(
                         Some(ProcessManagerResponse::ListRunningProcesses {
                             processes: metadatas.iter()
                                 .map(|(key, _value)| key.clone())
@@ -176,7 +176,7 @@ fn handle_message(
                 },
             }
         },
-        WitMessageType::Response => {
+        types::WitMessageType::Response => {
             match (
                 message.source.node,
                 message.source.process.as_str(),
@@ -189,7 +189,7 @@ fn handle_message(
                 ) => {
                     let context: FileSystemReadContext = serde_json::from_str(&context)?;
 
-                    process_lib::yield_one_request(
+                    process_lib::send_one_request(
                         true,
                         &our_name,
                         "kernel",
@@ -213,7 +213,7 @@ fn handle_message(
                                 metadata.our.process.clone(),
                                 metadata.clone(),
                             );
-                            process_lib::yield_one_response(
+                            process_lib::send_response(
                                 Some(KernelResponse::StartProcess(metadata)),
                                 None,
                                 None::<FileSystemReadContext>,
@@ -224,7 +224,7 @@ fn handle_message(
                                 .remove(&process_name)
                                 .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
-                            process_lib::yield_one_request(
+                            process_lib::send_one_request(
                                 true,
                                 &our_name,
                                 &process_name,

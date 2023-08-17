@@ -5,10 +5,7 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
 use bindings::print_to_terminal;
-use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
+use bindings::component::microkernel_process::types;
 
 mod process_lib;
 
@@ -162,8 +159,6 @@ struct Uploading {
     metadata: FileTransferMetadata,
     number_sent_pieces: u32,
 }
-type Downloads = HashMap<FileTransferKey, Downloading>;
-type Uploads = HashMap<FileTransferKey, Uploading>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FileTransferContext {
@@ -205,19 +200,19 @@ fn handle_networking_error(
 }
 
 fn handle_next_message(
-    mut uploading: &mut Option<Uploading>,
+    uploading: &mut Option<Uploading>,
     our_name: &str,
     process_name: &str,
 ) -> anyhow::Result<MessageHandledStatus> {
     let (message, context) = bindings::await_next_message()?;
 
-    let our_filesystem = WitProcessNode {
+    let our_filesystem = types::WitProcessNode {
         node: our_name.into(),
         process: "filesystem".into(),
     };
 
     match message.content.message_type {
-        WitMessageType::Request(_is_expecting_response) => {
+        types::WitMessageType::Request(_is_expecting_response) => {
             //  TODO: perms;
             //   only GetFile and Cancel allowed from non file_transfer
             //   and Cancel should probably only be allowed from same
@@ -237,20 +232,13 @@ fn handle_next_message(
                         uri_string: get_file.uri_string.clone(),
                     };
 
-                    let their_file_transfer = WitProcessNode {
+                    let their_file_transfer = types::WitProcessNode {
                         node: get_file.target_ship.clone(),
                         process: process_name.into(),
                     };
 
-                    let file_transfer_request_type = WitProtomessageType::Request(
-                            WitRequestTypeWithTarget {
-                                is_expecting_response: true,
-                                target: their_file_transfer.clone(),
-                            },
-                        );
-
                     //  TODO: error handle
-                    let _ = process_lib::yield_and_await_response(
+                    let _ = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(FileSystemRequest {
@@ -261,7 +249,7 @@ fn handle_next_message(
                     )?;
 
                     //  TODO: error handle
-                    let message = process_lib::yield_and_await_response(
+                    let message = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(FileSystemRequest {
@@ -272,7 +260,7 @@ fn handle_next_message(
                     )?;
 
                     //  TODO: error handle
-                    let message = process_lib::yield_and_await_response(
+                    let message = process_lib::send_request_and_await_response(
                         get_file.target_ship.clone(),
                         process_name.into(),
                         Some(&FileTransferRequest::Start(FileTransferStart {
@@ -294,7 +282,7 @@ fn handle_next_message(
 
                     let mut piece_number = 0;
                     loop {
-                        let message = process_lib::yield_and_await_response(
+                        let message = process_lib::send_request_and_await_response(
                             get_file.target_ship.clone(),
                             process_name.into(),
                             Some(&FileTransferRequest::GetPiece(FileTransferGetPiece {
@@ -324,7 +312,7 @@ fn handle_next_message(
                         };
 
                         //  TODO: handle errors
-                        let _ = process_lib::yield_and_await_response(
+                        let _ = process_lib::send_request_and_await_response(
                             our_name.into(),
                             "filesystem".into(),
                             Some(FileSystemRequest {
@@ -342,7 +330,7 @@ fn handle_next_message(
 
                         if downloading.metadata.number_pieces == piece_number {
                             //  received last piece; confirm file is good
-                            let message = process_lib::yield_and_await_response(
+                            let message = process_lib::send_request_and_await_response(
                                 our_name.into(),
                                 "filesystem".into(),
                                 Some(&FileSystemRequest {
@@ -361,7 +349,7 @@ fn handle_next_message(
                                 //  file is good; clean up
 
                                 //  TODO: error handle
-                                let _ = process_lib::yield_and_await_response(
+                                let _ = process_lib::send_request_and_await_response(
                                     our_name.into(),
                                     "filesystem".into(),
                                     Some(&FileSystemRequest {
@@ -378,7 +366,7 @@ fn handle_next_message(
                                     get_file.target_ship,
                                 ).as_str());
 
-                                process_lib::yield_one_request(
+                                process_lib::send_one_request(
                                     false,
                                     &get_file.target_ship,
                                     &process_name,
@@ -407,7 +395,7 @@ fn handle_next_message(
                         uri_string: start.uri_string.clone(),
                     };
 
-                    let message = process_lib::yield_and_await_response(
+                    let message = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(&FileSystemRequest {
@@ -453,7 +441,7 @@ fn handle_next_message(
                     });
 
                     //  TODO: handle in case of errors
-                    let _ = process_lib::yield_and_await_response(
+                    let _ = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(&FileSystemRequest {
@@ -463,7 +451,7 @@ fn handle_next_message(
                         None,
                     )?;
 
-                    process_lib::yield_one_response(
+                    process_lib::send_response(
                         Some(FileTransferResponse::Started(metadata)),
                         None,
                         None::<FileTransferContext>,
@@ -482,7 +470,7 @@ fn handle_next_message(
                         panic!("file_transfer: GetPiece uploading must be set");
                     };
 
-                    let message = process_lib::yield_and_await_response(
+                    let message = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(&FileSystemRequest {
@@ -518,7 +506,7 @@ fn handle_next_message(
 
                     uploading.number_sent_pieces += 1;
 
-                    process_lib::yield_one_response(
+                    process_lib::send_response(
                         Some(FileTransferResponse::FilePiece(FileTransferFilePiece {
                             uri_string: uri_hash.uri_string,
                             piece_number: get_piece.piece_number,
@@ -529,7 +517,7 @@ fn handle_next_message(
                     )?;
                 },
                 FileTransferRequest::Done { uri_string } => {
-                    let _ = process_lib::yield_and_await_response(
+                    let _ = process_lib::send_request_and_await_response(
                         our_name.into(),
                         "filesystem".into(),
                         Some(&FileSystemRequest {
@@ -551,7 +539,7 @@ fn handle_next_message(
             }
             return Ok(MessageHandledStatus::ReadyForNext);
         },
-        WitMessageType::Response => {
+        types::WitMessageType::Response => {
             print_to_terminal(1, "Response");
 
             if "filesystem" == message.source.process {

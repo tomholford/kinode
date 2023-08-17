@@ -5,12 +5,8 @@ use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use bindings::print_to_terminal;
-use bindings::component::microkernel_process::types::WitMessageType;
-use bindings::component::microkernel_process::types::WitPayload;
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
-use bindings::component::microkernel_process::types::WitUqbarError;
+use bindings::component::microkernel_process::types;
+// use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 struct Component;
 
@@ -227,14 +223,16 @@ fn bail(
         key: key.clone(),
         additional: FileTransferAdditionalContext::Empty,
     }).unwrap();
-    yield_cancel(
-        our_name,
-        process_name,
-        key,
-        true,
-        format!("{}: {}", process_name, error),
+    bindings::send_requests(Ok((
+        vec![yield_cancel(
+            our_name,
+            process_name,
+            key,
+            true,
+            format!("{}: {}", process_name, error),
+        )].as_slice(),
         context.as_str(),
-    );
+    )));
 }
 
 fn handle_networking_error(
@@ -254,8 +252,8 @@ fn handle_networking_error(
     // }
 }
 
-fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
-    WitProcessNode {
+fn en_wit_process_node(dewit: &ProcessNode) -> types::WitProcessNode {
+    types::WitProcessNode {
         node: dewit.node.clone(),
         process: dewit.process.clone(),
     }
@@ -266,64 +264,45 @@ fn yield_get_piece(
     uri_string: String,
     chunk_size: u64,
     piece_number: u32,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: true,
-                        target: en_wit_process_node(&target)
+) -> types::WitProtorequest {
+    types::WitProtorequest {
+        is_expecting_response: true,
+        target: en_wit_process_node(&target),
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileTransferRequest::GetPiece(
+                    FileTransferGetPiece {
+                        uri_string,
+                        chunk_size,
+                        piece_number,
                     }
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileTransferRequest::GetPiece(
-                            FileTransferGetPiece {
-                                uri_string,
-                                chunk_size,
-                                piece_number,
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            "".into(),
-        )
-    ].as_slice()));
+                )
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn yield_get_metadata(
     our_name: &str,
     uri_string: String,
-    context: &str,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: true,
-                        target: WitProcessNode {
-                            node: our_name.into(),
-                            process: "filesystem".into(),
-                        },
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileSystemRequest {
-                            uri_string,
-                            action: FileSystemAction::GetMetadata,
-                        }
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            context.into(),
-        ),
-    ].as_slice()));
+) -> types::WitProtorequest {
+    types::WitProtorequest {
+        is_expecting_response: true,
+        target: types::WitProcessNode {
+            node: our_name.into(),
+            process: "filesystem".into(),
+        },
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileSystemRequest {
+                    uri_string,
+                    action: FileSystemAction::GetMetadata,
+                }
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn yield_get_file(
@@ -332,99 +311,71 @@ fn yield_get_file(
     target_node: String,
     uri_string: String,
     chunk_size: u64,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: false,
-                        target: WitProcessNode {
-                            node: our_name.into(),
-                            process: process_name.into(),
-                        },
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileTransferRequest::GetFile(
-                            FileTransferGetFile {
-                                target_ship: target_node,
-                                uri_string,
-                                chunk_size,
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            "".into(),
-        )
-    ].as_slice()));
+) -> types::WitProtorequest {
+    bindings::WitProtorequest {
+        is_expecting_response: false,
+        target: types::WitProcessNode {
+            node: our_name.into(),
+            process: process_name.into(),
+        },
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileTransferRequest::GetFile(
+                    FileTransferGetFile {
+                        target_ship: target_node,
+                        uri_string,
+                        chunk_size,
+                    }
+                )
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn yield_start(
     target: ProcessNode,
     uri_string: String,
     chunk_size: u64,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: true,
-                        target: en_wit_process_node(&target),
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileTransferRequest::Start(
-                            FileTransferStart {
-                                uri_string,
-                                chunk_size,
-                            }
-                        )
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            "".into(),
-        )
-    ].as_slice()));
+) -> types::WitProtorequest {
+    types::WitProtorequest {
+        is_expecting_response: true,
+        target: en_wit_process_node(&target),
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileTransferRequest::Start(
+                    FileTransferStart {
+                        uri_string,
+                        chunk_size,
+                    }
+                )
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn yield_close(
     our_name: &str,
     uri_string: String,
     mode: FileSystemMode,
-    context: &str,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: true,
-                        target: WitProcessNode {
-                            node: our_name.into(),
-                            process: "filesystem".into(),
-                        },
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileSystemRequest {
-                            uri_string,
-                            action: FileSystemAction::Close(mode),
-                        }
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            context.into(),
-        ),
-    ].as_slice()));
+) -> types::WitProtorequest {
+    types::WitProtorequest {
+        is_expecting_response: true,
+        target: types::WitProcessNode {
+            node: our_name.into(),
+            process: "filesystem".into(),
+        },
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileSystemRequest {
+                    uri_string,
+                    action: FileSystemAction::Close(mode),
+                }
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn yield_cancel(
@@ -433,34 +384,24 @@ fn yield_cancel(
     key: FileTransferKey,
     is_cancel_both: bool,
     reason: String,
-    context: &str,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: false,
-                        target: WitProcessNode {
-                            node: target_node.into(),
-                            process: process_name.into(),
-                        },
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileTransferRequest::Cancel {
-                            key,
-                            is_cancel_both,
-                            reason,
-                        }
-                    ).unwrap()),
-                    bytes: None,
-                },
-            },
-            context.into(),
-        )
-    ].as_slice()));
+) -> types::WitProtorequest {
+    types::WitProtorequest {
+        is_expecting_response: false,
+        target: types::WitProcessNode {
+            node: target_node.into(),
+            process: process_name.into(),
+        },
+        payload: types::WitPayload {
+            json: Some(serde_json::to_string(
+                &FileTransferRequest::Cancel {
+                    key,
+                    is_cancel_both,
+                    reason,
+                }
+            ).unwrap()),
+            bytes: None,
+        },
+    }
 }
 
 fn handle_next_message(
@@ -481,54 +422,48 @@ fn handle_next_message(
 
     let message_from_loop: serde_json::Value = serde_json::from_str(&payload_json_string).unwrap();
     if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer" {
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
-                }
+        bindings::send_response(Ok((
+            &types::WitPayload {
+                json: Some(serde_json::json!({
+                    "action": "response",
+                    "status": 200,
+                    "headers": {
+                        "Content-Type": "text/html",
+                    },
+                }).to_string()),
+                bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
             },
             "".into(),
-        )].as_slice()));
+        )));
         return Ok(());
     } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/view-files/:username" {
         let target_node = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
         let uri_string = format!("fs://{}", process_name);
 
         if target_node.is_empty() {
-            bindings::yield_results(Ok(vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Response,
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "response",
-                            "status": 400,
-                            "headers": {
-                                "Content-Type": "text/html",
-                            },
-                        }).to_string()),
-                        bytes: Some("Must specify target node".as_bytes().to_vec())
-                    }
+            bindings::send_response(Ok((
+                &types::WitPayload {
+                    json: Some(serde_json::json!({
+                        "action": "response",
+                        "status": 400,
+                        "headers": {
+                            "Content-Type": "text/html",
+                        },
+                    }).to_string()),
+                    bytes: Some("Must specify target node".as_bytes().to_vec())
                 },
                 "".into(),
-            )].as_slice()));
+            )));
             return Err(anyhow!("target_node is empty"));
         }
 
         let message = if our_name == target_node {
-            bindings::yield_and_await_response(
-                &WitProcessNode {
+            bindings::send_request_and_await_response(
+                &types::WitProcessNode {
                     node: target_node.into(),
                     process: "filesystem".into(),
                 },
-                &WitPayload {
+                &types::WitPayload {
                     json: Some(serde_json::to_string(
                         &FileSystemRequest {
                             uri_string,
@@ -539,12 +474,12 @@ fn handle_next_message(
                 },
             ).unwrap()  //  TODO: handle error properly
         } else {
-            bindings::yield_and_await_response(
-                &bindings::WitProcessNode {
+            bindings::send_request_and_await_response(
+                &types::WitProcessNode {
                     node: target_node.into(),
                     process: process_name.into(),
                 },
-                &WitPayload {
+                &types::WitPayload {
                     json: Some(serde_json::to_string(
                         &FileTransferRequest::ReadDir {
                             target_node: target_node.to_string(),
@@ -557,42 +492,36 @@ fn handle_next_message(
         };
 
         let Some(ref payload_json_string) = message.content.payload.json else {
-            bindings::yield_results(Ok(vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Response,
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "response",
-                            "status": 404,
-                            "headers": {
-                                "Content-Type": "text/html",
-                            },
-                        }).to_string()),
-                        bytes: Some("No result from target node".as_bytes().to_vec())
-                    }
-                },
-                "".into(),
-            )].as_slice()));
-            return Err(anyhow!("require non-empty json payload"));
-        };
-
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
+            bindings::send_response(Ok((
+                &types::WitPayload {
                     json: Some(serde_json::json!({
                         "action": "response",
-                        "status": 200,
+                        "status": 404,
                         "headers": {
                             "Content-Type": "text/html",
                         },
                     }).to_string()),
-                    // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
-                    bytes: Some(payload_json_string.as_bytes().to_vec())
-                }
+                    bytes: Some("No result from target node".as_bytes().to_vec())
+                },
+                "".into(),
+            )));
+            return Err(anyhow!("require non-empty json payload"));
+        };
+
+        bindings::send_response(Ok((
+            &types::WitPayload {
+                json: Some(serde_json::json!({
+                    "action": "response",
+                    "status": 200,
+                    "headers": {
+                        "Content-Type": "text/html",
+                    },
+                }).to_string()),
+                // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
+                bytes: Some(payload_json_string.as_bytes().to_vec())
             },
             "".into(),
-        )].as_slice()));
+        )));
         return Ok(());
     } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
         // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
@@ -604,30 +533,33 @@ fn handle_next_message(
         print_to_terminal(1, format!("BODY: {}", body_json_string).as_str());
         let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
 
-        yield_get_file(
-            &our_name,
-            &process_name,
-            body["target_node"].as_str().unwrap_or("").to_string(),
-            format!("fs://{}/{}", process_name, body["uri_string"].as_str().unwrap_or("")),
-            body["chunk_size"].as_u64().unwrap_or(1024001),
-        );
-
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 204,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some("Success".as_bytes().to_vec())
-                }
-            },
-            "".into(),
-        )].as_slice()));
+        bindings::send_response_with_side_effect_request(Ok(
+            &types::WitProtoresponseWithSideEffectProtorequest {
+                response: (
+                    types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 204,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some("Success".as_bytes().to_vec())
+                    },
+                    "".into(),
+                ),
+                request: (
+                    yield_get_file(
+                        &our_name,
+                        &process_name,
+                        body["target_node"].as_str().unwrap_or("").to_string(),
+                        format!("fs://{}/{}", process_name, body["uri_string"].as_str().unwrap_or("")),
+                        body["chunk_size"].as_u64().unwrap_or(1024001),
+                    ),
+                    "".into(),
+                ),
+            }
+        ));
         return Ok(());
     } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/cancel-download" {
         let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
@@ -646,33 +578,34 @@ fn handle_next_message(
 
         downloads.remove(&key);
 
-        yield_cancel(
-            &our_name,
-            &process_name,
-            key,
-            true,
-            "Cancellation from FE".into(),
-            // format!("fs://{}", body["uri_string"].as_str().unwrap_or("")),
-            // FileSystemMode::Append,
-            "",
-        );
+        bindings::send_response_with_side_effect_request(Ok(
+            &types::WitProtoresponseWithSideEffectProtorequest {
+                response: (
+                    types::WitPayload {
+                        json: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 204,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        bytes: Some("Success".as_bytes().to_vec())
+                    },
+                    "".into(),
+                ),
+                request: (
+                    yield_cancel(
+                        &our_name,
+                        &process_name,
+                        key,
+                        true,
+                        "Cancellation from FE".into(),
+                    ),
+                    "".into(),
+                ),
+            }
+        ));
 
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 204,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some("Success".as_bytes().to_vec())
-                }
-            },
-            "".into(),
-        )].as_slice()));
         return Ok(());
     } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/file-transfer/status/:target_node/:uri_string" {
         let target_node = message_from_loop["url_params"]["target_node"].as_str().unwrap_or("");
@@ -694,26 +627,23 @@ fn handle_next_message(
             }
         }
 
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some(percentage_downloaded.to_string().as_bytes().to_vec())
-                }
+        bindings::send_response(Ok((
+            &types::WitPayload {
+                json: Some(serde_json::json!({
+                    "action": "response",
+                    "status": 200,
+                    "headers": {
+                        "Content-Type": "text/html",
+                    },
+                }).to_string()),
+                bytes: Some(percentage_downloaded.to_string().as_bytes().to_vec())
             },
             "".into(),
-        )].as_slice()));
+        )));
         return Ok(());
     } else {
         match message.content.message_type {
-            WitMessageType::Request(_is_expecting_response) => {
+            types::WitMessageType::Request(_is_expecting_response) => {
                 //  TODO: perms;
                 //   only GetFile and Cancel allowed from non file_transfer
                 //   and Cancel should probably only be allowed from same
@@ -753,18 +683,22 @@ fn handle_next_message(
                         }).unwrap();
 
                         if downloads.contains_key(&key) {
-                            yield_get_metadata(
-                                &our_name,
-                                get_file.uri_string,
+                            bindings::send_requests(Ok((
+                                vec![yield_get_metadata(
+                                    &our_name,
+                                    get_file.uri_string,
+                                )].as_slice(),
                                 &context,
-                            );
+                            )));
                         } else {
-                            yield_close(
-                                &our_name,
-                                get_file.uri_string,
-                                FileSystemMode::Append,
+                            bindings::send_requests(Ok((
+                                vec![yield_close(
+                                    &our_name,
+                                    get_file.uri_string,
+                                    FileSystemMode::Append,
+                                )].as_slice(),
                                 &context,
-                            );
+                            )));
                         }
                     },
                     FileTransferRequest::Start(start) => {
@@ -800,11 +734,13 @@ fn handle_next_message(
                             },
                         }).unwrap();
 
-                        yield_get_metadata(
-                            &our_name,
-                            start.uri_string,
+                        bindings::send_requests(Ok((
+                            vec![yield_get_metadata(
+                                &our_name,
+                                start.uri_string,
+                            )].as_slice(),
                             &context,
-                        );
+                        )));
                     },
                     FileTransferRequest::Cancel { key, is_cancel_both, reason } => {
                         print_to_terminal(1, "Cancel");
@@ -832,13 +768,14 @@ fn handle_next_message(
                             key: key.clone(),
                             additional: FileTransferAdditionalContext::Empty,
                         }).unwrap();
-                        yield_close(
-                            &our_name,
-                            key.uri_string.clone(),
-                            mode,
-                            // context.as_str(),
+                        bindings::send_requests(Ok((
+                            vec![yield_close(
+                                &our_name,
+                                key.uri_string.clone(),
+                                mode,
+                            )].as_slice(),
                             "",
-                        );
+                        )));
 
                         if is_cancel_both {
                             //  propagate cancel to other node
@@ -850,14 +787,16 @@ fn handle_next_message(
                                 } else {
                                     return Err(anyhow!("Cancel: must be either requester or server"));
                                 };
-                            yield_cancel(
-                                &other_node,
-                                &process_name,
-                                key,
-                                false,
-                                reason,
+                            bindings::send_requests(Ok((
+                                vec![yield_cancel(
+                                    &other_node,
+                                    &process_name,
+                                    key,
+                                    false,
+                                    reason,
+                                )].as_slice(),
                                 context.as_str(),
-                            );
+                            )));
                         }
                     },
                     FileTransferRequest::GetPiece(get_piece) => {
@@ -878,7 +817,7 @@ fn handle_next_message(
                         }).unwrap();
                         let payload =
                             if (0 != uploading.number_sent_pieces) & (uploading.number_sent_pieces == get_piece.piece_number) {
-                                WitPayload {
+                                types::WitPayload {
                                     json: Some(serde_json::to_string(
                                         &FileSystemRequest {
                                             uri_string: get_piece.uri_string,
@@ -892,7 +831,7 @@ fn handle_next_message(
                             } else {
                                 //  requester is resuming a previous download:
                                 //   make sure file handle is seeked to right place
-                                WitPayload {
+                                types::WitPayload {
                                     json: Some(serde_json::to_string(
                                         &FileSystemRequest {
                                             uri_string: get_piece.uri_string,
@@ -906,23 +845,17 @@ fn handle_next_message(
                                     bytes: None,
                                 }
                             };
-                        bindings::yield_results(Ok(vec![
-                            (
-                                bindings::WitProtomessage {
-                                    protomessage_type: WitProtomessageType::Request(
-                                        WitRequestTypeWithTarget {
-                                            is_expecting_response: true,
-                                            target: WitProcessNode {
-                                                node: our_name.into(),
-                                                process: "filesystem".into(),
-                                            },
-                                        },
-                                    ),
-                                    payload,
+                        bindings::send_requests(Ok((
+                            &vec![bindings::WitProtorequest {
+                                is_expecting_response: true,
+                                target: types::WitProcessNode {
+                                    node: our_name.into(),
+                                    process: "filesystem".into(),
                                 },
-                                context,
-                            )
-                        ].as_slice()));
+                                payload,
+                            }],
+                            &context,
+                        )));
                     },
                     FileTransferRequest::Done { uri_string } => {
                         let key = FileTransferKey {
@@ -931,12 +864,14 @@ fn handle_next_message(
                             uri_string: uri_string.clone(),
                         };
                         uploads.remove(&key);
-                        yield_close(
-                            &our_name,
-                            uri_string.clone(),
-                            FileSystemMode::Read,
-                            ""
-                        );
+                        bindings::send_requests(Ok((
+                            vec![yield_close(
+                                &our_name,
+                                uri_string.clone(),
+                                FileSystemMode::Read,
+                            )].as_slice(),
+                            "",
+                        )));
                         print_to_terminal(0, format!(
                             "file_transfer: done transferring {} to {}",
                             uri_string,
@@ -985,31 +920,25 @@ fn handle_next_message(
                                 },
                                 additional: FileTransferAdditionalContext::Empty,
                             }).unwrap();
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target: WitProcessNode {
-                                                    node: our_name.into(),
-                                                    process: "filesystem".into(),
-                                                },
-                                            },
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string,
-                                                    action: FileSystemAction::ReadDir,
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+                            bindings::send_requests(Ok((
+                                &vec![bindings::WitProtorequest {
+                                    is_expecting_response: true,
+                                    target: types::WitProcessNode {
+                                        node: our_name.into(),
+                                        process: "filesystem".into(),
                                     },
-                                    context,
-                                )
-                            ].as_slice()));
+                                    payload: types::WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string,
+                                                action: FileSystemAction::ReadDir,
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    },
+                                }],
+                                &context,
+                            )));
                         } else {
                             //  send Request to target
                             // TODO: attach additional context to say it's http
@@ -1021,37 +950,32 @@ fn handle_next_message(
                                 },
                                 additional: FileTransferAdditionalContext::Empty,
                             }).unwrap();
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target: WitProcessNode {
-                                                    node: target_node.clone(),
-                                                    process: process_name.into(),
-                                                },
-                                            },
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferRequest::ReadDir {
-                                                    target_node: target_node.clone(),
-                                                    uri_string: uri_string.clone(),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+
+                            bindings::send_requests(Ok((
+                                &vec![types::WitProtorequest {
+                                    is_expecting_response: true,
+                                    target: types::WitProcessNode {
+                                        node: target_node.clone(),
+                                        process: process_name.into(),
                                     },
-                                    context,
-                                )
-                            ].as_slice()));
+                                    payload: types::WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileTransferRequest::ReadDir {
+                                                target_node: target_node.clone(),
+                                                uri_string: uri_string.clone(),
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    },
+                                }],
+                                &context,
+                            )));
                         }
                     },
                 }
                 return Ok(());
             },
-            WitMessageType::Response => {
+            types::WitMessageType::Response => {
                 print_to_terminal(1, "Response");
 
                 if "filesystem" == message.source.process {
@@ -1120,45 +1044,40 @@ fn handle_next_message(
                                     additional: FileTransferAdditionalContext::Empty,
                                 }).unwrap();
 
-                                bindings::yield_results(Ok(vec![
-                                    (
-                                        bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Response,
-                                            payload: WitPayload {
+                                bindings::send_response_with_side_effect_request(Ok(
+                                    &types::WitProtoresponseWithSideEffectProtorequest {
+                                        response: (
+                                            types::WitPayload {
                                                 json: Some(serde_json::to_string(
                                                     &FileTransferResponse::Started(metadata)
                                                 ).unwrap()),
                                                 bytes: None,
                                             },
-                                        },
-                                        "".into(),
-                                    ),
-                                    (
-                                        bindings::WitProtomessage {
-                                            protomessage_type: WitProtomessageType::Request(
-                                                WitRequestTypeWithTarget {
-                                                    is_expecting_response: true,
-                                                    target: WitProcessNode {
-                                                        node: our_name.into(),
-                                                        process: "filesystem".into(),
-                                                    },
+                                            "".into(),
+                                        ),
+                                        request: (
+                                            types::WitProtorequest {
+                                                is_expecting_response: true,
+                                                target: types::WitProcessNode {
+                                                    node: our_name.into(),
+                                                    process: "filesystem".into(),
                                                 },
-                                            ),
-                                            payload: WitPayload {
-                                                json: Some(serde_json::to_string(
-                                                    &FileSystemRequest {
-                                                        uri_string: file_metadata.uri_string,
-                                                        action: FileSystemAction::Open(
-                                                            FileSystemMode::Read
-                                                        ),
-                                                    }
-                                                ).unwrap()),
-                                                bytes: None,
+                                                payload: types::WitPayload {
+                                                    json: Some(serde_json::to_string(
+                                                        &FileSystemRequest {
+                                                            uri_string: file_metadata.uri_string,
+                                                            action: FileSystemAction::Open(
+                                                                FileSystemMode::Read
+                                                            ),
+                                                        }
+                                                    ).unwrap()),
+                                                    bytes: None,
+                                                },
                                             },
-                                        },
-                                        context,
-                                    ),
-                                ].as_slice()));
+                                            context,
+                                        ),
+                                    }
+                                ));
                             } else if our_name == context.key.requester {
                                 let Some(ref downloading) = downloads.get(&context.key) else {
                                     //  re-issue GetFile to self to download from scratch
@@ -1181,36 +1100,33 @@ fn handle_next_message(
                                             key: context.key.clone(),
                                             additional: FileTransferAdditionalContext::Empty,
                                         }).unwrap();
-                                        yield_close(
-                                            &our_name,
-                                            file_metadata.uri_string,
-                                            FileSystemMode::Append,
+                                        bindings::send_requests(Ok((
+                                            vec![yield_close(
+                                                &our_name,
+                                                file_metadata.uri_string,
+                                                FileSystemMode::Append,
+                                            )].as_slice(),
                                             context_string.as_str(),
-                                        );
-                                        bindings::yield_results(Ok(vec![
-                                            (
-                                                bindings::WitProtomessage {
-                                                    protomessage_type: WitProtomessageType::Request(
-                                                        WitRequestTypeWithTarget {
-                                                            is_expecting_response: false,
-                                                            target: WitProcessNode {
-                                                                node: context.key.server.clone(),
-                                                                process: process_name.into(),
-                                                            },
-                                                        },
-                                                    ),
-                                                    payload: WitPayload {
-                                                        json: Some(serde_json::to_string(
-                                                            &FileTransferRequest::Done {
-                                                                uri_string: context.key.uri_string.clone(),
-                                                            }
-                                                        ).unwrap()),
-                                                        bytes: None,
-                                                    },
+                                        )));
+
+                                        bindings::send_requests(Ok((
+                                            &vec![bindings::WitProtorequest {
+                                                is_expecting_response: false,
+                                                target: types::WitProcessNode {
+                                                    node: context.key.server.clone(),
+                                                    process: process_name.into(),
                                                 },
-                                                "".into(),
-                                            ),
-                                        ].as_slice()));
+                                                payload: types::WitPayload {
+                                                    json: Some(serde_json::to_string(
+                                                        &FileTransferRequest::Done {
+                                                            uri_string: context.key.uri_string.clone(),
+                                                        }
+                                                    ).unwrap()),
+                                                    bytes: None,
+                                                },
+                                            }],
+                                            "".into(),
+                                        )));
                                         return Ok(());
                                     } else {
                                         downloads.remove(&context.key);
@@ -1221,14 +1137,17 @@ fn handle_next_message(
                                 //  requester getting metadata of possibly-resumable file
                                 if (chunk_size == downloading_chunk_size) & (file_metadata.len == chunk_size * downloading_number_received_pieces) {
                                     //  resume file transfer
-                                    yield_start(
-                                        ProcessNode {
-                                            node: context.key.server,
-                                            process: process_name.into(),
-                                        },
-                                        context.key.uri_string,
-                                        chunk_size,
-                                    );
+                                    bindings::send_requests(Ok((
+                                        vec![yield_start(
+                                            ProcessNode {
+                                                node: context.key.server,
+                                                process: process_name.into(),
+                                            },
+                                            context.key.uri_string,
+                                            chunk_size,
+                                        )].as_slice(),
+                                        "",
+                                    )));
                                 } else {
                                     //  re-issue GetFile to self to download from scratch
                                     downloads.remove(&context.key);
@@ -1246,20 +1165,15 @@ fn handle_next_message(
                             //  serve Request:
                             //    1. query local fs
                             //    2. pass fs Reponse on to Requester  <---
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferResponse::ReadDir(metadatas)
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
-                                    },
-                                    "".into(),
-                                )
-                            ].as_slice()));
+                            bindings::send_response(Ok((
+                                &types::WitPayload {
+                                    json: Some(serde_json::to_string(
+                                        &FileTransferResponse::ReadDir(metadatas)
+                                    ).unwrap()),
+                                    bytes: None,
+                                },
+                                "".into(),
+                            )));
                         },
                         FileSystemResponse::Open { uri_string, mode } => {
                             match mode {
@@ -1272,15 +1186,19 @@ fn handle_next_message(
                                     let context: FileTransferContext =
                                         serde_json::from_str(&context).unwrap();
                                     let downloading = downloads.get(&context.key).unwrap();
-                                    yield_get_piece(
-                                        ProcessNode {
-                                            node: context.key.server,
-                                            process: process_name.into()
-                                        },
-                                        uri_string,
-                                        downloading.metadata.chunk_size,
-                                        downloading.received_pieces.len() as u32,
-                                    )
+
+                                    bindings::send_requests(Ok((
+                                        vec![yield_get_piece(
+                                            ProcessNode {
+                                                node: context.key.server,
+                                                process: process_name.into()
+                                            },
+                                            uri_string,
+                                            downloading.metadata.chunk_size,
+                                            downloading.received_pieces.len() as u32,
+                                        )].as_slice(),
+                                        "",
+                                    )));
                                 },
                                 FileSystemMode::AppendOverwrite => {
                                     //  AppendOverwrite case: fresh Start
@@ -1300,14 +1218,17 @@ fn handle_next_message(
                                         );
                                         return Err(anyhow!(error_message));
                                     };
-                                    yield_start(
-                                        ProcessNode {
-                                            node: context.key.server,
-                                            process: process_name.into(),
-                                        },
-                                        context.key.uri_string,
-                                        chunk_size,
-                                    );
+                                    bindings::send_requests(Ok((
+                                        vec![yield_start(
+                                            ProcessNode {
+                                                node: context.key.server,
+                                                process: process_name.into(),
+                                            },
+                                            context.key.uri_string,
+                                            chunk_size,
+                                        )].as_slice(),
+                                        "",
+                                    )));
                                 },
                             }
                         },
@@ -1339,33 +1260,28 @@ fn handle_next_message(
                                         },
                                         None => {
                                             //  starting a fresh download
-                                            bindings::yield_results(Ok(vec![
-                                                (
-                                                    bindings::WitProtomessage {
-                                                        protomessage_type: WitProtomessageType::Request(
-                                                            WitRequestTypeWithTarget {
-                                                                is_expecting_response: true,
-                                                                target: WitProcessNode {
-                                                                    node: our_name.into(),
-                                                                    process: "filesystem".into(),
-                                                                },
-                                                            },
-                                                        ),
-                                                        payload: WitPayload {
-                                                            json: Some(serde_json::to_string(
-                                                                &FileSystemRequest {
-                                                                    uri_string,
-                                                                    action: FileSystemAction::Open(
-                                                                        FileSystemMode::AppendOverwrite
-                                                                    ),
-                                                                }
-                                                            ).unwrap()),
-                                                            bytes: None,
-                                                        },
+
+                                            bindings::send_requests(Ok((
+                                                &vec![bindings::WitProtorequest {
+                                                    is_expecting_response: true,
+                                                    target: types::WitProcessNode {
+                                                        node: our_name.into(),
+                                                        process: "filesystem".into(),
                                                     },
-                                                    context,
-                                                ),
-                                            ].as_slice()));
+                                                    payload: types::WitPayload {
+                                                        json: Some(serde_json::to_string(
+                                                            &FileSystemRequest {
+                                                                uri_string,
+                                                                action: FileSystemAction::Open(
+                                                                    FileSystemMode::AppendOverwrite
+                                                                ),
+                                                            }
+                                                        ).unwrap()),
+                                                        bytes: None,
+                                                    },
+                                                }],
+                                                &context,
+                                            )));
                                         }
                                     }
                                 },
@@ -1426,26 +1342,21 @@ fn handle_next_message(
 
                             uploading.number_sent_pieces = piece_number.clone() + 1;
 
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Response,
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileTransferResponse::FilePiece(
-                                                    FileTransferFilePiece {
-                                                        uri_string: uri_hash.uri_string,
-                                                        piece_number,
-                                                        piece_hash: uri_hash.hash,
-                                                    }
-                                                )
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
-                                    },
-                                    "".into(),
-                                )
-                            ].as_slice()));
+                            bindings::send_response(Ok((
+                                &types::WitPayload {
+                                    json: Some(serde_json::to_string(
+                                        &FileTransferResponse::FilePiece(
+                                            FileTransferFilePiece {
+                                                uri_string: uri_hash.uri_string,
+                                                piece_number,
+                                                piece_hash: uri_hash.hash,
+                                            }
+                                        )
+                                    ).unwrap()),
+                                    bytes: Some(bytes),
+                                },
+                                "".into(),
+                            )));
                         },
                         FileSystemResponse::Append(uri_string) => {
                             print_to_terminal(1, "Append");
@@ -1474,25 +1385,30 @@ fn handle_next_message(
                                         chunk_size: downloading.metadata.chunk_size,
                                     },
                                 }).unwrap();
-                                yield_get_metadata(
-                                    &our_name,
-                                    uri_string,
+                                bindings::send_requests(Ok((
+                                    vec![yield_get_metadata(
+                                        &our_name,
+                                        uri_string,
+                                    )].as_slice(),
                                     &context,
-                                )
+                                )));
                             } else {
                                 //  still expecting file pieces
                                 let chunk_size = downloading.metadata.chunk_size.clone();
                                 let piece_number = downloading.received_pieces.len() as u32;
 
-                                yield_get_piece(
-                                    ProcessNode {
-                                        node: context.key.server.clone(),
-                                        process: process_name.into()
-                                    },
-                                    uri_string,
-                                    chunk_size,
-                                    piece_number,
-                                );
+                                bindings::send_requests(Ok((
+                                    vec![yield_get_piece(
+                                        ProcessNode {
+                                            node: context.key.server.clone(),
+                                            process: process_name.into()
+                                        },
+                                        uri_string,
+                                        chunk_size,
+                                        piece_number,
+                                    )].as_slice(),
+                                    "",
+                                )));
                             }
                         },
                         FileSystemResponse::SeekWithinOpen(uri_string) => {
@@ -1511,33 +1427,27 @@ fn handle_next_message(
                             };
                             let uploading = uploads.get(&parsed_context.key).unwrap();
 
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target: WitProcessNode {
-                                                    node: our_name.into(),
-                                                    process: "filesystem".into(),
-                                                },
-                                            },
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: uri_string,
-                                                    action: FileSystemAction::ReadChunkFromOpen(
-                                                        uploading.metadata.chunk_size.clone(),
-                                                    ),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+                            bindings::send_requests(Ok((
+                                &vec![bindings::WitProtorequest {
+                                    is_expecting_response: true,
+                                    target: types::WitProcessNode {
+                                        node: our_name.into(),
+                                        process: "filesystem".into(),
                                     },
-                                    context,
-                                )
-                            ].as_slice()));
+                                    payload: types::WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string: uri_string,
+                                                action: FileSystemAction::ReadChunkFromOpen(
+                                                    uploading.metadata.chunk_size.clone(),
+                                                ),
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    },
+                                }],
+                                &context,
+                            )));
                         },
                         _ => {
                             return Err(
@@ -1583,33 +1493,29 @@ fn handle_next_message(
                                 key,
                                 additional: FileTransferAdditionalContext::Empty,
                             }).unwrap();
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target: WitProcessNode {
-                                                    node: our_name.into(),
-                                                    process: "filesystem".into(),
-                                                },
-                                            },
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: uri_string.clone(),
-                                                    action: FileSystemAction::Open(
-                                                        FileSystemMode::Append
-                                                    ),
-                                                }
-                                            ).unwrap()),
-                                            bytes: None,
-                                        },
+
+                            bindings::send_requests(Ok((
+                                &vec![bindings::WitProtorequest {
+                                    is_expecting_response: true,
+                                    target: types::WitProcessNode {
+                                        node: our_name.into(),
+                                        process: "filesystem".into(),
                                     },
-                                    context,
-                                ),
-                            ].as_slice()));
+                                    payload: types::WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string: uri_string.clone(),
+                                                action: FileSystemAction::Open(
+                                                    FileSystemMode::Append
+                                                ),
+                                            }
+                                        ).unwrap()),
+                                        bytes: None,
+                                    },
+                                }],
+                                &context,
+                            )));
+
                             print_to_terminal(1, "Started 7");
                         },
                         FileTransferResponse::FilePiece(file_piece) => {
@@ -1658,31 +1564,25 @@ fn handle_next_message(
                                     piece_number: file_piece.piece_number,
                                 },
                             }).unwrap();
-                            bindings::yield_results(Ok(vec![
-                                (
-                                    bindings::WitProtomessage {
-                                        protomessage_type: WitProtomessageType::Request(
-                                            WitRequestTypeWithTarget {
-                                                is_expecting_response: true,
-                                                target: WitProcessNode {
-                                                    node: our_name.into(),
-                                                    process: "filesystem".into(),
-                                                },
-                                            },
-                                        ),
-                                        payload: WitPayload {
-                                            json: Some(serde_json::to_string(
-                                                &FileSystemRequest {
-                                                    uri_string: file_piece.uri_string,
-                                                    action: FileSystemAction::Append,
-                                                }
-                                            ).unwrap()),
-                                            bytes: Some(bytes),
-                                        },
+                            bindings::send_requests(Ok((
+                                &vec![bindings::WitProtorequest {
+                                    is_expecting_response: true,
+                                    target: types::WitProcessNode {
+                                        node: our_name.into(),
+                                        process: "filesystem".into(),
                                     },
-                                    context,
-                                ),
-                            ].as_slice()));
+                                    payload: types::WitPayload {
+                                        json: Some(serde_json::to_string(
+                                            &FileSystemRequest {
+                                                uri_string: file_piece.uri_string,
+                                                action: FileSystemAction::Append,
+                                            }
+                                        ).unwrap()),
+                                        bytes: Some(bytes),
+                                    },
+                                }],
+                                &context,
+                            )));
                         },
                         FileTransferResponse::ReadDir(metadatas) => {
                             // TODO: read the context to see if this is HTTP
@@ -1739,19 +1639,16 @@ impl bindings::MicrokernelProcess for Component {
     fn run_process(our_name: String, process_name: String) {
         print_to_terminal(1, "file_transfer: begin");
         // HTTP bindings
-        bindings::yield_results(Ok(
-            vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+
+        bindings::send_requests(Ok((
+            vec![
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer",
@@ -1761,19 +1658,13 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/view-files/:username",
@@ -1782,19 +1673,13 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/get-file",
@@ -1803,19 +1688,13 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/cancel-download",
@@ -1824,19 +1703,13 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
+                types::WitProtorequest {
+                    is_expecting_response: false,
+                    target: types::WitProcessNode {
+                        node: our_name.clone(),
+                        process: "http_bindings".into(),
+                    },
+                    payload: types::WitPayload {
                         json: Some(serde_json::json!({
                             "action": "bind-app",
                             "path": "/file-transfer/status/:target_node/:uri_string",
@@ -1845,9 +1718,9 @@ impl bindings::MicrokernelProcess for Component {
                         bytes: None
                     }
                 },
-                "".into(),
-            )].as_slice()
-        ));
+            ].as_slice(),
+            "".into()
+        )));
 
         //  in progress
         let mut downloads: Downloads = HashMap::new();
@@ -1862,7 +1735,7 @@ impl bindings::MicrokernelProcess for Component {
             ) {
                 Ok(_) => {},
                 Err(e) => {
-                    match e.downcast_ref::<WitUqbarError>() {
+                    match e.downcast_ref::<types::WitUqbarError>() {
                         Some(uqbar_error) => {
                             if "filesystem" == uqbar_error.source.process {
                                 let fs_error: FileSystemError =
@@ -1880,15 +1753,18 @@ impl bindings::MicrokernelProcess for Component {
                                                 let downloading = downloads.get(&context.key)
                                                     .unwrap();
 
-                                                yield_get_piece(
-                                                    ProcessNode {
-                                                        node: context.key.server.clone(),
-                                                        process: process_name.clone(),
-                                                    },
-                                                    context.key.uri_string.clone(),
-                                                    downloading.metadata.chunk_size,
-                                                    downloading.received_pieces.len() as u32,
-                                                );
+                                                bindings::send_requests(Ok((
+                                                    vec![yield_get_piece(
+                                                        ProcessNode {
+                                                            node: context.key.server.clone(),
+                                                            process: process_name.clone(),
+                                                        },
+                                                        context.key.uri_string.clone(),
+                                                        downloading.metadata.chunk_size,
+                                                        downloading.received_pieces.len() as u32,
+                                                    )].as_slice(),
+                                                    "",
+                                                )));
                                             },
                                             FileSystemMode::Read => print_to_terminal(1, "AlreadyOpen: Read"),
                                             _ => {},

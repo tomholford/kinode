@@ -163,10 +163,10 @@ impl MicrokernelProcessImports for ProcessWasi {
         response: Result<(wit::WitPayload, String), wit::WitUqbarErrorContent>,
     ) -> Result<()> {
         match self.process.has_already_sent {
-            HasAlreadySent::None => {
+            HasAlreadySent::None => {},
+            _ => {
                 return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
             },
-            _ => {},
         }
 
         let _ = send_process_response_to_loop(
@@ -187,10 +187,10 @@ impl MicrokernelProcessImports for ProcessWasi {
         results: Result<wit::WitProtoresponseWithSideEffectProtorequest, wit::WitUqbarErrorContent>,
     ) -> Result<()> {
         match self.process.has_already_sent {
-            HasAlreadySent::None => {
+            HasAlreadySent::None => {},
+            _ => {
                 return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
             },
-            _ => {},
         }
 
         let _ = send_process_response_with_side_effect_request_to_loop(
@@ -215,10 +215,11 @@ impl MicrokernelProcessImports for ProcessWasi {
             &mut self.process.contexts_to_clean,
         ).await;
         self.process.prompting_message = Some(wrapped_message);
+
+        self.process.has_already_sent = HasAlreadySent::None;
         process_input
     }
 
-    // async fn yield_and_await_response(
     async fn send_request_and_await_response(
         &mut self,
         target: WitProcessNode,
@@ -251,7 +252,8 @@ impl MicrokernelProcessImports for ProcessWasi {
             &mut self.process.contexts,
             &mut self.process.contexts_to_clean,
         ).await;
-        // self.process.prompting_message = Some(wrapped_message);
+
+        self.process.has_already_sent = HasAlreadySent::None;
         process_input
     }
 
@@ -1407,12 +1409,10 @@ async fn handle_kernel_request(
                     },
                 })
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(start_completed_message)
-                    .await
-                    .unwrap();
-            }
+            send_to_loop
+                .send(start_completed_message)
+                .await
+                .unwrap();
             return;
         },
         KernelRequest::StopProcess { process_name } => {
@@ -1472,12 +1472,10 @@ async fn handle_kernel_request(
                     },
                 })
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(stop_completed_message)
-                    .await
-                    .unwrap();
-            }
+            send_to_loop
+                .send(stop_completed_message)
+                .await
+                .unwrap();
             return;
         },
     }

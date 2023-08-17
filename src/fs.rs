@@ -1,9 +1,9 @@
+use blake3::Hasher;
 use bytes::Bytes;
 use http::Uri;
-use blake3::Hasher;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use crate::types::*;
 
 const HASH_READER_CHUNK_SIZE: usize = 1_024;
-const CHUNK_SIZE: u64 = 100 * 1024;  // 100kb
+const CHUNK_SIZE: u64 = 100 * 1024; // 100kb
 
 const SEPARATOR: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
 
@@ -29,24 +29,24 @@ struct ChunkEntry {
 // In-Memory
 #[derive(Debug, Clone)]
 struct InMemoryFile {
-    filled_chunk_hash: Hasher,                      // filled chunk hash
-    final_hash: Hasher,                             // start with filled_hash, apply partial ones to get final content addressed hash
+    filled_chunk_hash: Hasher, // filled chunk hash
+    final_hash: Hasher, // start with filled_hash, apply partial ones to get final content addressed hash
     filled_chunks: Vec<MemoryChunk>,
-    partial_chunk: Option<(MemoryChunk, Vec<u8>)>   // partial chunk data in-mem
+    partial_chunk: Option<(MemoryChunk, Vec<u8>)>, // partial chunk data in-mem
 }
 
 // note on in-memory chunks. for future, might be useful to store them in a Btreemap of <position, chunkdata>
 
 #[derive(Debug, Clone)]
 struct MemoryChunk {
-    chunk_range: (u64, u64),  // start and end positions in the file
+    chunk_range: (u64, u64), // start and end positions in the file
     chunk_hash: [u8; 32],
-    wal_position: u64,        // position of this chunk in the WAL.
+    wal_position: u64, // position of this chunk in the WAL.
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum FsAction {
-    Write,                 
+    Write,
     Append(u128),
     Read(u128),
     ReadChunk(ReadChunkRequest),
@@ -69,7 +69,6 @@ pub struct ReadChunkRequest {
     start: u64,
     length: u64,
 }
-
 
 fn make_error_message(
     our_name: String,
@@ -128,7 +127,9 @@ pub async fn fs_sender(
 
     let mut manifest: HashMap<u128, Metadata> = HashMap::new();
 
-    let _ = load_wal(&log_file, &mut manifest).await.expect("fs: loading in log failed");
+    let _ = load_wal(&log_file, &mut manifest)
+        .await
+        .expect("fs: loading in log failed");
 
     let log_file = Arc::new(RwLock::new(log_file));
 
@@ -213,29 +214,57 @@ async fn handle_request(
     };
 
     let response_payload = match action {
-        FsAction::Read => {
-            //  TODO: use read_exact()?
-            let file_contents = match fs::read(&file_path).await {
-                Ok(fc) => fc,
-                Err(e) => {
-                    return Err(FileSystemError::ReadFailed {
-                        path: file_path,
-                        error: format!("{}", e),
-                    })
+        FsAction::Read(file_uuid) => {
+            let manifest_read = manifest.read().await;
+
+            // Get the InMemoryFile structure for the UUID
+            let memfile = manifest_read.get(&file_uuid).unwrap();
+
+            let mut result_data = Vec::new();
+
+            // Loop through the filled_chunks and read relevant chunks
+            for memory_chunk in &memfile.filled_chunks {
+                if memory_chunk.chunk_range.1 > range.0 && memory_chunk.chunk_range.0 < range.1 {
+                    // Use read lock
+                    let mut log_file_lock = log_file.read().await;
+                    let chunk_data =
+                        get_chunk_data(memory_chunk.wal_position, &mut *log_file_lock).await?;
+
+                    let start_idx = if memory_chunk.chunk_range.0 < range.0 {
+                        (range.0 - memory_chunk.chunk_range.0) as usize
+                    } else {
+                        0
+                    };
+                    let end_idx = if memory_chunk.chunk_range.1 > range.1 {
+                        (range.1 - memory_chunk.chunk_range.0) as usize
+                    } else {
+                        chunk_data.len()
+                    };
+
+                    result_data.extend_from_slice(&chunk_data[start_idx..end_idx]);
                 }
-            };
-            let hash = compute_truncated_hash_bytes(&file_contents);
-            let _ = send_to_terminal
-                .send(Printout {
-                    verbosity: 0,
-                    content: format!(
-                        "filesystem: got file at {} of size {} with hash {}",
-                        file_path,
-                        file_contents.len(),
-                        hash,
-                    ),
-                })
-                .await;
+            }
+
+            if let Some((partial_chunk, _)) = &memfile.partial_chunk {
+                if partial_chunk.chunk_range.1 > range.0 && partial_chunk.chunk_range.0 < range.1 {
+                    let mut log_file_lock = log_file.read().await; // Use read lock
+                    let chunk_data =
+                        get_chunk_data(partial_chunk.wal_position, &mut *log_file_lock).await?;
+
+                    let start_idx = if partial_chunk.chunk_range.0 < range.0 {
+                        (range.0 - partial_chunk.chunk_range.0) as usize
+                    } else {
+                        0
+                    };
+                    let end_idx = if partial_chunk.chunk_range.1 > range.1 {
+                        (range.1 - partial_chunk.chunk_range.0) as usize
+                    } else {
+                        chunk_data.len()
+                    };
+
+                    result_data.extend_from_slice(&chunk_data[start_idx..end_idx]);
+                }
+            }
 
             Payload {
                 json: Some(
@@ -245,7 +274,7 @@ async fn handle_request(
                     }))
                     .unwrap(),
                 ),
-                bytes: Some(file_contents),
+                bytes: Some(result_data),
             }
         }
         FsAction::Write => {
@@ -259,20 +288,20 @@ async fn handle_request(
 
             let mut offset = 0;
             let mut filled_chunk_hash = Hasher::new();
-            
-            // fill up whole chunks first. 
+
+            // fill up whole chunks first.
             while offset + CHUNK_SIZE <= data.len() {
                 let chunk_data = &data[offset..offset + CHUNK_SIZE];
                 let chunk_hash = Blake3::digest(chunk_data);
                 filled_chunk_hash.update(chunk_data);
-        
+
                 let chunk_entry = ChunkEntry {
                     file_uuid,
                     chunk_range: (offset as u64, (offset + CHUNK_SIZE) as u64),
                     chunk_hash: *chunk_hash.as_bytes(),
                     data: chunk_data.to_vec(),
                 };
-        
+
                 // Serialize and write to WAL
                 let wal_position = wal_file.seek(SeekFrom::Current(0)).await?;
                 let serialized_chunk = bincode::serialize(&chunk_entry)?;
@@ -281,44 +310,43 @@ async fn handle_request(
                 buffer.extend_from_slice(&SEPARATOR);
                 buffer.extend_from_slice(&(serialized_chunk.len() as u64).to_le_bytes());
                 buffer.extend_from_slice(&serialized_chunk);
-                
+
                 wal_file.write_all(&buffer).await?;
-        
+
                 // Update in-memory structures for full chunks
                 let memory_chunk = MemoryChunk {
                     chunk_range: (offset as u64, (offset + CHUNK_SIZE) as u64),
                     chunk_hash: *chunk_hash.as_bytes(),
                     wal_position,
                 };
-        
+
                 let memfile = manifest.entry(file_uuid).or_insert_with(|| InMemoryFile {
                     filled_chunk_hash: Hasher::new(),
                     final_hash: Hasher::new(),
                     filled_chunks: Vec::new(),
                     partial_chunk: None,
                 });
-        
+
                 memfile.filled_chunks.push(memory_chunk);
                 offset += CHUNK_SIZE;
             }
 
             let mut final_hash = filled_chunk_hash.clone();
 
-
             // Handling partial bytes
             if offset < data.len() {
                 let chunk_data = &data[offset..];
-        
+
                 let chunk_hash = Blake3::digest(chunk_data);
                 final_hash.update(chunk_data);
-        
+
                 let chunk_entry = ChunkEntry {
                     file_uuid,
                     chunk_range: (offset as u64, data.len() as u64),
                     chunk_hash: *chunk_hash.as_bytes(),
                     data: chunk_data.to_vec(),
                 };
-        
+
                 // Serialize and write to WAL
                 let serialized_chunk = bincode::serialize(&chunk_entry)?;
                 let wal_position = wal_file.seek(SeekFrom::Current(0)).await?;
@@ -329,26 +357,63 @@ async fn handle_request(
                 buffer.extend_from_slice(&serialized_chunk);
 
                 wal_file.write_all(&buffer).await?;
-        
+
                 // Update in-memory structures for partial chunk
                 let memory_chunk = MemoryChunk {
                     chunk_range: (offset as u64, data.len() as u64),
                     chunk_hash: *chunk_hash.as_bytes(),
                     wal_position,
                 };
-        
+
                 let memfile = manifest.get_mut(&file_uuid).unwrap();
                 memfile.partial_chunk = Some((memory_chunk, chunk_data.to_vec()));
             }
-                
+
             Payload {
-                json: Some(
-                    serde_json::to_value(FsResponse::Write(file_uuid)).unwrap(),
-                ),
+                json: Some(serde_json::to_value(FsResponse::Write(file_uuid)).unwrap()),
                 bytes: None,
             }
         }
-        FsAction::Append => {}
+        FsAction::Append(file_uuid) => {
+            let mut manifest_write = manifest.write().await;
+
+            // Check if the given file UUID exists in the manifest.
+            let in_memory_file = manifest_write.get_mut(&file_uuid).ok_or(FileSystemError::FileNotFound)?;
+        
+            // Serialize the chunk entry.
+            let chunk_entry = ChunkEntry { data: data.clone() };
+            let serialized_entry = bincode::serialize(&chunk_entry).map_err(FileSystemError::SerializeError)?;
+        
+            // Lock the WAL file for writing.
+            let mut log_file_write = log_file.write().await;
+        
+            // Seek to the end to append data.
+            let current_position = log_file_write.seek(SeekFrom::End(0)).await.map_err(FileSystemError::IOError)?;
+        
+            // Write the length of the serialized data followed by the actual serialized data.
+            let length = serialized_entry.len() as u64;
+            log_file_write.write_all(&length.to_be_bytes()).await.map_err(FileSystemError::IOError)?;
+            log_file_write.write_all(&serialized_entry).await.map_err(FileSystemError::IOError)?;
+        
+            // Update the in-memory file's metadata.
+            let last_position = if let Some((last_chunk, _)) = &in_memory_file.partial_chunk {
+                last_chunk.chunk_range.1
+            } else {
+                0
+            };
+        
+            let new_partial_chunk = MemoryChunk {
+                chunk_range: (last_position, last_position + data.len() as u64),
+                wal_position: current_position,
+            };
+        
+            in_memory_file.partial_chunk = Some((new_partial_chunk, false));
+
+            Payload {
+                json: Some(serde_json::to_value(FsResponse::Append(file_uuid)).unwrap()),
+                bytes: None,
+            }
+        }
     };
 
     if is_expecting_response {
@@ -379,9 +444,12 @@ async fn handle_request(
 
 /// HELPERS
 
-async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile>) -> Result<(), FileSystemError> {
+async fn load_wal(
+    log_file: &fs::File,
+    manifest: &mut HashMap<u128, InMemoryFile>,
+) -> Result<(), FileSystemError> {
     let mut current_position = 0;
-    
+
     loop {
         // Seek to the current position
         log_file.seek(SeekFrom::Start(current_position)).await?;
@@ -389,9 +457,9 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
         // Check for the SEPARATOR
         let mut sep_buffer = [0u8; SEPARATOR.len()];
         let separator_size = log_file.read(&mut sep_buffer).await?;
-        
+
         if separator_size == 0 || sep_buffer != SEPARATOR {
-            break;  // End of file or corruption
+            break; // End of file or corruption
         }
 
         // Read length of the serialized entry
@@ -402,9 +470,9 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
         // Read serialized entry
         let mut entry_buffer = vec![0u8; entry_length];
         let read_size = log_file.read(&mut entry_buffer).await?;
-        
+
         if read_size == 0 {
-            break;  // End of file
+            break; // End of file
         }
 
         let chunk_entry: Result<ChunkEntry, _> = bincode::deserialize(&entry_buffer);
@@ -413,13 +481,15 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
             Ok(entry) => {
                 // Process the valid ChunkEntry
                 if entry.chunk_range.1 - entry.chunk_range.0 == CHUNK_SIZE as u64 {
-                    let memfile = manifest.entry(entry.file_uuid).or_insert_with(|| InMemoryFile {
-                        filled_chunk_hash: Hasher::new(),
-                        final_hash: Hasher::new(),
-                        filled_chunks: Vec::new(),
-                        partial_chunk: None,
-                    });
-                    
+                    let memfile = manifest
+                        .entry(entry.file_uuid)
+                        .or_insert_with(|| InMemoryFile {
+                            filled_chunk_hash: Hasher::new(),
+                            final_hash: Hasher::new(),
+                            filled_chunks: Vec::new(),
+                            partial_chunk: None,
+                        });
+
                     memfile.filled_chunk_hash.update(&entry.data);
 
                     let memory_chunk = MemoryChunk {
@@ -427,52 +497,65 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
                         chunk_hash: entry.chunk_hash,
                         wal_position: current_position,
                     };
-                    
+
                     memfile.filled_chunks.push(memory_chunk);
                 } else {
                     // Handle partial chunks
-                    let memfile = manifest.entry(entry.file_uuid).or_insert_with(InMemoryFile::default);
-                
+                    let memfile = manifest
+                        .entry(entry.file_uuid)
+                        .or_insert_with(InMemoryFile::default);
+
                     // Take any existing partial data and append the new data
-                    let existing_partial_data = memfile.partial_chunk.take().map_or_else(Vec::new, |(_, data)| data);
+                    let existing_partial_data = memfile
+                        .partial_chunk
+                        .take()
+                        .map_or_else(Vec::new, |(_, data)| data);
                     let combined_data = [existing_partial_data, entry.data.clone()].concat();
-                
+
                     // Check if combined_data forms a full chunk or remains partial
                     if combined_data.len() >= CHUNK_SIZE {
                         // Update the filled_chunk_hash and add to filled_chunks
-                        memfile.filled_chunk_hash.update(&combined_data[0..CHUNK_SIZE]);
-                        
+                        memfile
+                            .filled_chunk_hash
+                            .update(&combined_data[0..CHUNK_SIZE]);
+
                         let memory_chunk = MemoryChunk {
-                            chunk_range: (entry.chunk_range.0, entry.chunk_range.0 + CHUNK_SIZE as u64),
+                            chunk_range: (
+                                entry.chunk_range.0,
+                                entry.chunk_range.0 + CHUNK_SIZE as u64,
+                            ),
                             chunk_hash: Blake3::digest(&combined_data[0..CHUNK_SIZE]),
                             wal_position: current_position,
                         };
-                
+
                         memfile.filled_chunks.push(memory_chunk);
-                
+
                         // If there are any remaining bytes, treat them as the new partial data
                         if combined_data.len() > CHUNK_SIZE {
                             memfile.final_hash.update(&combined_data[CHUNK_SIZE..]);
-                            
+
                             let memory_chunk = MemoryChunk {
-                                chunk_range: (entry.chunk_range.0 + CHUNK_SIZE as u64, entry.chunk_range.0 + combined_data.len() as u64),
+                                chunk_range: (
+                                    entry.chunk_range.0 + CHUNK_SIZE as u64,
+                                    entry.chunk_range.0 + combined_data.len() as u64,
+                                ),
                                 chunk_hash: Blake3::digest(&combined_data[CHUNK_SIZE..]),
                                 wal_position: current_position,
                             };
-                
-                            memfile.partial_chunk = Some((memory_chunk, combined_data[CHUNK_SIZE..].to_vec()));
+
+                            memfile.partial_chunk =
+                                Some((memory_chunk, combined_data[CHUNK_SIZE..].to_vec()));
                         }
-                
                     } else {
                         // If data remains partial after combining, simply update the final_hash and store as partial_chunk
                         memfile.final_hash.update(&combined_data);
-                        
+
                         let memory_chunk = MemoryChunk {
                             chunk_range: entry.chunk_range,
                             chunk_hash: entry.chunk_hash,
                             wal_position: current_position,
                         };
-                
+
                         memfile.partial_chunk = Some((memory_chunk, combined_data));
                     }
                 }
@@ -481,7 +564,7 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
                 current_position += (SEPARATOR.len() + 8 + entry_length) as u64;
             }
             Err(_) => {
-                // corrupted Entry... 
+                // corrupted Entry...
                 // currently we skip to the next bytes, but could SLOWLY iterate until we find next separator.
                 current_position += (SEPARATOR.len() + 8 + entry_length) as u64;
             }
@@ -491,9 +574,26 @@ async fn load_wal(log_file: &fs::File, manifest: &mut HashMap<u128, InMemoryFile
     Ok(())
 }
 
+//  option: store direct positions of the actual data instead.
+async fn get_chunk_data(
+    wal_position: u64,
+    log_file: &mut fs::File,
+) -> Result<Vec<u8>, FileSystemError> {
+    log_file.seek(SeekFrom::Start(wal_position)).await?;
+
+    let mut length_buffer = [0u8; 8];
+    log_file.read_exact(&mut length_buffer).await?;
+    let entry_length = u64::from_be_bytes(length_buffer);
+
+    let mut entry_buffer = vec![0u8; entry_length as usize];
+    log_file.read_exact(&mut entry_buffer).await?;
+
+    let chunk_entry: ChunkEntry = bincode::deserialize(&entry_buffer)?;
+    Ok(chunk_entry.data)
+}
 
 // this one should be made more efficient:
-// in the case of a corrupt WAL entry, we seek until we find the next entry separator. 
+// in the case of a corrupt WAL entry, we seek until we find the next entry separator.
 // unused for now.
 async fn seek_to_next_separator(log_file: &mut fs::File) -> Result<u64, std::io::Error> {
     let mut buffer = [0u8; SEPARATOR.len()];
@@ -501,10 +601,13 @@ async fn seek_to_next_separator(log_file: &mut fs::File) -> Result<u64, std::io:
 
     loop {
         let read_size = log_file.read(&mut buffer).await?;
-        
+
         // End of file or insufficient bytes to match the SEPARATOR
         if read_size < SEPARATOR.len() {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "Could not find the next separator"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Could not find the next separator",
+            ));
         }
 
         if buffer == SEPARATOR {
@@ -515,7 +618,6 @@ async fn seek_to_next_separator(log_file: &mut fs::File) -> Result<u64, std::io:
         }
     }
 }
-
 
 async fn create_dir_if_dne(path: &str) -> Result<(), FileSystemError> {
     if let Err(_) = fs::read_dir(&path).await {

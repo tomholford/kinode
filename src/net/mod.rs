@@ -28,9 +28,9 @@ type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type MessageResult = Result<Option<NetworkMessage>, NetworkError>;
 type ErrorShuttle = Option<oneshot::Sender<MessageResult>>;
 
+#[derive(Clone)]
 pub struct Peer {
     pub networking_address: String,
-    pub is_ward: bool,
     pub sender: mpsc::UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     pub handler: mpsc::UnboundedSender<Vec<u8>>,
     pub destructor: mpsc::UnboundedSender<()>,
@@ -41,6 +41,7 @@ pub struct Peer {
 pub enum NetworkMessage {
     Ack(u64),
     Nack(u64),
+    Keepalive,
     Msg {
         from: String,
         to: String,
@@ -48,9 +49,14 @@ pub enum NetworkMessage {
         contents: Vec<u8>,
     },
     Raw(WrappedMessage),
-    Handshake(Handshake),
-    HandshakeAck(Handshake),
-    Error(NetworkError),
+    Handshake {
+        id: u64,
+        handshake: Handshake,
+    },
+    HandshakeAck {
+        id: u64,
+        handshake: Handshake,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,7 +71,6 @@ pub enum NetworkError {
 pub struct Handshake {
     from: String,
     target: String,
-    init: bool,
     id_signature: Vec<u8>,
     ephemeral_public_key: Vec<u8>,
     ephemeral_public_key_signature: Vec<u8>,
@@ -119,7 +124,7 @@ pub async fn networking(
             let _ = s_print_tx
                 .send(Printout {
                     verbosity: 1,
-                    content: format!("message_to_peer took {:?}", elapsed),
+                    content: format!("message_to_peer e2e took {:?}", elapsed),
                 })
                 .await;
 
@@ -189,48 +194,38 @@ async fn connect_to_routers(
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    // first accumulate as many connections as possible
     let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
-    for router_name in &our.allowed_routers {
-        if let Some(router_id) = pki.read().await.get(router_name) {
-            if let Some((ip, port)) = &router_id.ws_routing {
-                if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                    if let Ok(Ok((websocket, _response))) =
-                        timeout(TIMEOUT, connect_async(ws_url)).await
-                    {
-                        // this is a real and functional router! woohoo
-                        if let Ok(active_peer) = build_connection(
-                            our.clone(),
-                            keypair.clone(),
-                            Some(router_id.clone()),
-                            None,
-                            pki.clone(),
-                            peers.clone(),
-                            websocket,
-                            kernel_message_tx.clone(),
-                        )
-                        .await
-                        {
-                            routers.spawn(active_peer);
-                        }
+
+    loop {
+        for router_name in &our.allowed_routers {
+            let peer_read = peers.read().await;
+            if let Some(router_peer) = peer_read.get(router_name) {
+                let router_peer = router_peer.clone();
+                drop(peer_read);
+                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                if let Ok(()) = router_peer
+                    .sender
+                    .send((NetworkMessage::Keepalive, Some(result_tx)))
+                {
+                    if let Ok(Ok(Ok(_))) = timeout(TIMEOUT, result_rx).await {
+                        continue;
+                    } else {
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 0,
+                                content: format!(
+                                    "lost connection to {router_name}!"
+                                ),
+                            })
+                            .await;
+                        let _ = router_peer.destructor.send(());
+                        peers.write().await.remove(router_name);
                     }
                 }
-            }
-        }
-    }
-    // then, poll those connections in parallel
-    // if any of them fail, we will try to reconnect
-    while let Some(err) = routers.join_next().await {
-        if let Ok(Ok(router_name)) = err {
-            // try to reconnect
-            let _ = print_tx
-                .send(Printout {
-                    verbosity: 1,
-                    content: format!("reconnecting to router: {router_name}\r"),
-                })
-                .await;
-            if let Some(router_id) = pki.read().await.get(&router_name) {
+            } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
+                drop(peer_read);
                 if let Some((ip, port)) = &router_id.ws_routing {
+                    // println!("trying to connect to {router_name}\r");
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                         if let Ok(Ok((websocket, _response))) =
                             timeout(TIMEOUT, connect_async(ws_url)).await
@@ -248,6 +243,14 @@ async fn connect_to_routers(
                             )
                             .await
                             {
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 0,
+                                        content: format!(
+                                            "(re)connected to router: {router_name}\r"
+                                        ),
+                                    })
+                                    .await;
                                 routers.spawn(active_peer);
                             }
                         }
@@ -255,8 +258,11 @@ async fn connect_to_routers(
                 }
             }
         }
+        if routers.is_empty() {
+            break;
+        }
+        tokio::time::sleep(TIMEOUT).await;
     }
-    // if no connections exist, fatal end!
 }
 
 /// only used if direct. should live forever
@@ -305,6 +311,7 @@ async fn message_to_peer(
     let target = &wm.target.node;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
+        // println!("sending message to known peer\r");
         // if we have the peer, simply send the message to their sender
         let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
         let _ = peer
@@ -323,30 +330,18 @@ async fn message_to_peer(
     } else {
         drop(peers_write);
     }
-    // if peer is a *router*, reconnect will be attempted automatically.
-    // TODO: *wait* here until this is *known to have happened*!
-    // this solution is only remotely acceptable because of the META_TIMEOUT
-    if our.allowed_routers.contains(target) {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        return message_to_peer(
-            our,
-            our_ip,
-            keypair.clone(),
-            pki.clone(),
-            peers,
-            wm,
-            kernel_message_tx,
-        )
-        .await;
-    }
+    // println!("sending message to unknown peer\r");
     // search PKI for peer and attempt to create a connection, then resend
-    match pki.read().await.get(target) {
+    let pki_read = pki.read().await;
+    match pki_read.get(target) {
         // peer does not exist in PKI!
         None => {
             return Err(NetworkError::Offline);
         }
         // peer exists in PKI
         Some(peer_id) => {
+            let peer_id = peer_id.clone();
+            drop(pki_read);
             match &peer_id.ws_routing {
                 //
                 //  can connect directly to peer
@@ -391,6 +386,9 @@ async fn message_to_peer(
                 None => {
                     let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
                     while let Some(router) = routers_to_try.pop_front() {
+                        if router == our.name {
+                            continue;
+                        }
                         let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                         let res = connections::build_routed_connection(
                             our.clone(),
@@ -403,16 +401,14 @@ async fn message_to_peer(
                             kernel_message_tx.clone(),
                         )
                         .await;
-                        if let Ok(Some(new_router)) = res {
-                            routers_to_try.push_back(new_router);
-                            continue;
-                        }
-                        if result_rx
-                            .await
-                            .unwrap_or(Err(NetworkError::Timeout))
-                            .is_ok()
-                        {
-                            return Ok(());
+                        if let Ok(()) = res {
+                            if result_rx
+                                .await
+                                .unwrap_or(Err(NetworkError::Timeout))
+                                .is_ok()
+                            {
+                                return Ok(());
+                            }
                         }
                     }
                     //
@@ -519,7 +515,7 @@ fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -
                     json: Some(serde_json::to_value(err).unwrap_or("".into())),
                     bytes: None,
                 },
-            }
+            },
         }),
     }
 }
@@ -588,7 +584,6 @@ fn make_secret_and_handshake(
     our: &Identity,
     keypair: Arc<Ed25519KeyPair>,
     target: &str,
-    init: bool,
 ) -> (Arc<EphemeralSecret<Secp256k1>>, Handshake) {
     // produce ephemeral keys for DH exchange and subsequent symmetric encryption
     let ephemeral_secret = Arc::new(EphemeralSecret::<k256::Secp256k1>::random(
@@ -612,7 +607,6 @@ fn make_secret_and_handshake(
     let handshake = Handshake {
         from: our.name.clone(),
         target: target.to_string(),
-        init,
         id_signature: signed_id,
         ephemeral_public_key: ephemeral_public_key.to_sec1_bytes().to_vec(),
         ephemeral_public_key_signature: signed_pk,

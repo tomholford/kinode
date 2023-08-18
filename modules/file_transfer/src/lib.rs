@@ -532,7 +532,7 @@ fn handle_next_message(
         };
         print_to_terminal(1, format!("BODY: {}", body_json_string).as_str());
         let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
-
+      
         bindings::send_response_with_side_effect_request(Ok(
             &types::WitProtoresponseWithSideEffectProtorequest {
                 response: (
@@ -554,7 +554,7 @@ fn handle_next_message(
                         &process_name,
                         body["target_node"].as_str().unwrap_or("").to_string(),
                         format!("fs://{}/{}", process_name, body["uri_string"].as_str().unwrap_or("")),
-                        body["chunk_size"].as_u64().unwrap_or(1024001),
+                        body["chunk_size"].as_u64().unwrap_or(63001),
                     ),
                     "".into(),
                 ),

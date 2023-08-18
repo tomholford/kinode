@@ -23,6 +23,7 @@ mod http_client;
 mod http_server;
 mod microkernel;
 mod net;
+mod lfs;
 mod register;
 mod terminal;
 mod types;
@@ -93,6 +94,9 @@ async fn main() {
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY.clone());
+    // new FS channel: todo merge
+    let (lfs_message_sender, lfs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
     // http server channel (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
@@ -449,6 +453,7 @@ async fn main() {
      *      terminal,
      *      websockets,
      *      filesystem,
+     *      fs, 
      *      http-server,
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
@@ -466,6 +471,7 @@ async fn main() {
         kernel_debug_message_receiver,
         net_message_sender.clone(),
         fs_message_sender,
+        lfs_message_sender,
         http_server_sender,
         http_client_message_sender,
     ));
@@ -489,6 +495,13 @@ async fn main() {
         kernel_message_sender.clone(),
         print_sender.clone(),
         fs_message_receiver,
+    ));
+    let lfs_handle = tokio::spawn(lfs::fs_sender(
+        our.name.clone(),
+        home_directory_path.into(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        lfs_message_receiver,
     ));
     let http_server_handle = tokio::spawn(http_server::http_server(
         our.name.clone(),
@@ -523,6 +536,7 @@ async fn main() {
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},
         _ = http_client_handle => {"".into()},
+        _ = lfs_handle => {"".into()},
     };
     let _ = crossterm::terminal::disable_raw_mode();
     println!("");

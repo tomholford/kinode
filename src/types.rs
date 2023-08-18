@@ -277,6 +277,7 @@ impl FileSystemError {
             FileSystemError::WriteFailed { .. } => "WriteFailed",
             FileSystemError::OpenFailed { .. } => "OpenFailed",
             FileSystemError::FsError { .. } => "FsError",
+            FileSystemError::LFSError { .. } => "LFSErrror",
         }
     }
 }
@@ -308,6 +309,8 @@ pub enum FileSystemError {
     OpenFailed { path: String, mode: FileSystemMode, error: String, },
     #[error("Filesystem error while {what} on {path}: {error}.")]
     FsError { what: String, path: String, error: String, },
+    #[error("LFS error: {error}.")]
+    LFSError { error: String },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {

@@ -64,7 +64,7 @@ async fn http_handle_messages(
                 let _ = channel.send(HttpResponse {
                     status: request.status,
                     headers: request.headers,
-                    body: content.payload.bytes.clone(),  //  TODO: ? ; could remove ref in 51 and avoid clone
+                    body: content.payload.bytes.content.clone(),  //  TODO: ? ; could remove ref in 51 and avoid clone
                 });
             }
             None => {
@@ -159,7 +159,10 @@ async fn handler(
                         "query_params": query_params,
                       }
                     )),
-                    bytes: Some(body.to_vec()), // TODO None sometimes
+                    bytes: PayloadBytes {
+                        circumvent: Circumvent::False,
+                        content: Some(body.to_vec()), // TODO None sometimes
+                    },
                 },
             },
         }),

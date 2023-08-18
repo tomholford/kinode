@@ -112,7 +112,10 @@ async fn handle_message(
                 message_type: MessageType::Response,
                 payload: Payload {
                     json: Some(serde_json::to_value(http_client_response).unwrap()),
-                    bytes: Some(response.bytes().await.unwrap().to_vec()),
+                    bytes: PayloadBytes {
+                        circumvent: Circumvent::False,
+                        content: Some(response.bytes().await.unwrap().to_vec()),
+                    },
                 },
             },
         }),

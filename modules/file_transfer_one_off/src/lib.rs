@@ -245,7 +245,10 @@ fn handle_next_message(
                             uri_string: get_file.uri_string.clone(),
                             action: FileSystemAction::Close(FileSystemMode::Append),
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     //  TODO: error handle
@@ -256,7 +259,10 @@ fn handle_next_message(
                             uri_string: get_file.uri_string.clone(),
                             action: FileSystemAction::Open(FileSystemMode::AppendOverwrite),
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     //  TODO: error handle
@@ -267,7 +273,10 @@ fn handle_next_message(
                             uri_string: get_file.uri_string.clone(),
                             chunk_size: get_file.chunk_size.clone(),
                         })),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     let FileTransferResponse::Started(metadata) =
@@ -290,7 +299,10 @@ fn handle_next_message(
                                 chunk_size: get_file.chunk_size.clone(),
                                 piece_number,
                             })),
-                            None,
+                            types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: None,
+                            },
                         )?;
 
                         let FileTransferResponse::FilePiece(file_piece) =
@@ -305,7 +317,7 @@ fn handle_next_message(
                             panic!("file_transfer: GetPiece wrong piece_number");
                         }
 
-                        let Some(bytes) = message.content.payload.bytes else {
+                        let Some(bytes) = message.content.payload.bytes.content else {
                             return Err(anyhow::anyhow!(
                                 "GetPiece: no bytes",
                             ));
@@ -319,7 +331,10 @@ fn handle_next_message(
                                 uri_string: file_piece.uri_string,
                                 action: FileSystemAction::Append,
                             }),
-                            Some(bytes),
+                            types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: Some(bytes),
+                            },
                         )?;
 
                         print_to_terminal(1, format!(
@@ -337,7 +352,10 @@ fn handle_next_message(
                                     uri_string: get_file.uri_string.clone(),
                                     action: FileSystemAction::GetMetadata,
                                 }),
-                                None,
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
                             )?;
 
                             let FileSystemResponse::GetMetadata(file_metadata) =
@@ -356,7 +374,10 @@ fn handle_next_message(
                                         uri_string: get_file.uri_string.clone(),
                                         action: FileSystemAction::Close(FileSystemMode::Append),
                                     }),
-                                    None,
+                                    types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
                                 )?;
 
 
@@ -373,7 +394,10 @@ fn handle_next_message(
                                     Some(FileTransferRequest::Done {
                                         uri_string: get_file.uri_string.clone(),
                                     }),
-                                    None,
+                                    types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
                                     None::<FileTransferContext>,
                                 )?;
                             }
@@ -402,7 +426,10 @@ fn handle_next_message(
                             uri_string: start.uri_string.clone(),
                             action: FileSystemAction::GetMetadata,
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     let FileSystemResponse::GetMetadata(file_metadata) =
@@ -448,12 +475,18 @@ fn handle_next_message(
                             uri_string: file_metadata.uri_string,
                             action: FileSystemAction::Open(FileSystemMode::Read),
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     process_lib::send_response(
                         Some(FileTransferResponse::Started(metadata)),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                         None::<FileTransferContext>,
                     )?;
                 },
@@ -477,7 +510,10 @@ fn handle_next_message(
                             uri_string: get_piece.uri_string.clone(),
                             action: FileSystemAction::ReadChunkFromOpen(get_piece.chunk_size),
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
                     let FileSystemResponse::ReadChunkFromOpen(uri_hash) =
@@ -489,7 +525,7 @@ fn handle_next_message(
                         panic!("file_transfer: ReadChunkFromOpen wrong uri_string");
                     }
 
-                    let Some(bytes) = message.content.payload.bytes else {
+                    let Some(bytes) = message.content.payload.bytes.content else {
                         // bail(
                         return Err(anyhow::anyhow!(
                             "ReadChunkFromOpen: no bytes",
@@ -512,7 +548,10 @@ fn handle_next_message(
                             piece_number: get_piece.piece_number,
                             piece_hash: uri_hash.hash,
                         })),
-                        Some(bytes),
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some(bytes),
+                        },
                         None::<FileTransferContext>,
                     )?;
                 },
@@ -524,7 +563,10 @@ fn handle_next_message(
                             uri_string: uri_string.clone(),
                             action: FileSystemAction::Close(FileSystemMode::Read),
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     )?;
 
 

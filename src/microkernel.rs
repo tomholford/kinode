@@ -12,7 +12,6 @@ use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
 use crate::types::*;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
-// use crate::microkernel::component::microkernel_process::types::WitErrorContent;
 use crate::microkernel::component::microkernel_process::types as wit;
 
 bindgen!({
@@ -144,6 +143,17 @@ impl MicrokernelProcessImports for ProcessWasi {
             },
             _ => {},
         }
+        if let Ok(ref rs) = requests {
+            for request in &rs.0 {
+                if !is_valid_payload_bytes_from_process(&request.payload.bytes) {
+                    return Err(
+                        anyhow::anyhow!("Must have Some bytes when setting is_passthrough")
+                    );
+                }
+            }
+        };
+
+        //  TODO: check if Circumvent::Receive & add bytes
 
         let _ = send_process_requests_to_loop(
             requests,
@@ -152,7 +162,7 @@ impl MicrokernelProcessImports for ProcessWasi {
             &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
-        ).await;
+        ).await?;
 
         self.process.has_already_sent = HasAlreadySent::Requests;
         Ok(())
@@ -168,6 +178,11 @@ impl MicrokernelProcessImports for ProcessWasi {
                 return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
             },
         }
+        if let Ok(ref r) = response {
+            if !is_valid_payload_bytes_from_process(&r.0.bytes) {
+                return Err(anyhow::anyhow!("Must have Some bytes when setting is_passthrough"));
+            }
+        };
 
         let _ = send_process_response_to_loop(
             response,
@@ -176,7 +191,7 @@ impl MicrokernelProcessImports for ProcessWasi {
             &self.process.send_to_terminal,
             &self.process.prompting_message,
             &mut self.process.contexts,
-        ).await;
+        ).await?;
 
         self.process.has_already_sent = HasAlreadySent::Response;
         Ok(())
@@ -192,6 +207,12 @@ impl MicrokernelProcessImports for ProcessWasi {
                 return Err(anyhow::anyhow!("Cannot send Response after Requests or Response"));
             },
         }
+        if let Ok(ref rs) = results {
+            if !is_valid_payload_bytes_from_process(&rs.response.0.bytes)
+               | !is_valid_payload_bytes_from_process(&rs.request.0.payload.bytes) {
+                return Err(anyhow::anyhow!("Must have Some bytes when setting is_passthrough"));
+            }
+        };
 
         let _ = send_process_response_with_side_effect_request_to_loop(
             results,
@@ -200,13 +221,14 @@ impl MicrokernelProcessImports for ProcessWasi {
             &self.process.send_to_terminal,
             &self.process.prompting_message,
             &mut self.process.contexts,
-        ).await;
+        ).await?;
 
         self.process.has_already_sent = HasAlreadySent::Response;
         Ok(())
     }
 
-    async fn await_next_message(&mut self) -> Result<Result<(WitMessage, String), WitUqbarError>> {
+    async fn await_next_message(&mut self)
+    -> Result<Result<(wit::WitMessage, String), wit::WitUqbarError>> {
         let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
@@ -222,9 +244,9 @@ impl MicrokernelProcessImports for ProcessWasi {
 
     async fn send_request_and_await_response(
         &mut self,
-        target: WitProcessNode,
-        payload: WitPayload,
-    ) -> Result<Result<WitMessage, WitUqbarError>> {
+        target: wit::WitProcessNode,
+        payload: wit::WitPayload,
+    ) -> Result<Result<wit::WitMessage, wit::WitUqbarError>> {
         let protomessage = wit::WitProtorequest {
             is_expecting_response: true,
             target,
@@ -238,7 +260,7 @@ impl MicrokernelProcessImports for ProcessWasi {
             &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
-        ).await;
+        ).await?;
 
         if 1 != ids.len() {
             panic!("yield_and_await_response: must receive only 1 id back");
@@ -285,21 +307,21 @@ fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
 }
 
-fn de_wit_process_node(wit: &WitProcessNode) -> ProcessNode {
+fn de_wit_process_node(wit: &wit::WitProcessNode) -> ProcessNode {
     ProcessNode {
         node: wit.node.clone(),
         process: wit.process.clone(),
     }
 }
 
-fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
-    WitProcessNode {
+fn en_wit_process_node(dewit: &ProcessNode) -> wit::WitProcessNode {
+    wit::WitProcessNode {
         node: dewit.node.clone(),
         process: dewit.process.clone(),
     }
 }
 
-fn de_wit_error_content(wit: &WitUqbarErrorContent) -> UqbarErrorContent {
+fn de_wit_error_content(wit: &wit::WitUqbarErrorContent) -> UqbarErrorContent {
     UqbarErrorContent {
         kind: wit.kind.clone(),
         message: serde_json::from_str(&wit.message).unwrap(),  //  TODO: handle error?
@@ -307,8 +329,9 @@ fn de_wit_error_content(wit: &WitUqbarErrorContent) -> UqbarErrorContent {
     }
 }
 
-fn en_wit_error_content(dewit: &UqbarErrorContent, context: String) -> WitUqbarErrorContent {
-    WitUqbarErrorContent {
+fn en_wit_error_content(dewit: &UqbarErrorContent, context: String)
+-> wit::WitUqbarErrorContent {
+    wit::WitUqbarErrorContent {
         kind: dewit.kind.clone(),
         message: dewit.message.to_string(),
         context: if "" == context {
@@ -319,7 +342,7 @@ fn en_wit_error_content(dewit: &UqbarErrorContent, context: String) -> WitUqbarE
     }
 }
 
-fn de_wit_error(wit: &WitUqbarError) -> UqbarError {
+fn de_wit_error(wit: &wit::WitUqbarError) -> UqbarError {
     UqbarError {
         source: ProcessNode {
             node: wit.source.node.clone(),
@@ -330,14 +353,38 @@ fn de_wit_error(wit: &WitUqbarError) -> UqbarError {
     }
 }
 
-fn en_wit_error(dewit: &UqbarError, context: String) -> WitUqbarError {
-    WitUqbarError {
-        source: WitProcessNode {
+fn en_wit_error(dewit: &UqbarError, context: String) -> wit::WitUqbarError {
+    wit::WitUqbarError {
+        source: wit::WitProcessNode {
             node: dewit.source.node.clone(),
             process: dewit.source.process.clone(),
         },
         timestamp: dewit.timestamp.clone(),
         content: en_wit_error_content(&dewit.content, context),
+    }
+}
+
+fn is_valid_payload_bytes_from_process(bytes: &wit::WitPayloadBytes) -> bool {
+    match bytes.circumvent {
+        wit::WitCircumvent::False => {
+            //  do not circumvent: acceptable
+            true
+        },
+        wit::WitCircumvent::Send => {
+            //  must have Some content
+            match bytes.content {
+                Some(_) => true,
+                None => false,
+            }
+        },
+        wit::WitCircumvent::Circumvented => {
+            //  kernel must set: user is not allowed to set
+            false
+        },
+        wit::WitCircumvent::Receive => {
+            //  apply already-circumvented bytes to message: acceptable
+            true
+        },
     }
 }
 
@@ -372,7 +419,7 @@ async fn get_and_send_specific_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
-) -> (WrappedMessage, Result<Result<WitMessage, WitUqbarError>>) {
+) -> (WrappedMessage, Result<Result<wit::WitMessage, wit::WitUqbarError>>) {
     clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
@@ -428,18 +475,17 @@ async fn get_and_send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
-) -> (WrappedMessage, Result<Result<(WitMessage, String), WitUqbarError>>) {
+) -> (WrappedMessage, Result<Result<(wit::WitMessage, String), wit::WitUqbarError>>) {
     clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
     let wrapped_message = recv_in_process.recv().await.unwrap();
-    let wrapped_message =
-        match message_queue.pop_front() {
-            Some(m) => {
-                message_queue.push_back(wrapped_message);
-                m
-            },
-            None => wrapped_message,
-        };
+    let wrapped_message = match message_queue.pop_front() {
+        Some(m) => {
+            message_queue.push_back(wrapped_message);
+            m
+        },
+        None => wrapped_message,
+    };
 
     let to_loop = send_loop_message_to_process(
         wrapped_message,
@@ -456,7 +502,7 @@ async fn send_loop_message_to_process(
     send_to_terminal: &mut PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
-) -> (WrappedMessage, Result<(WitMessage, String), WitUqbarError>) {
+) -> (WrappedMessage, Result<(wit::WitMessage, String), wit::WitUqbarError>) {
     match wrapped_message.message {
         Ok(ref message) => {
             let wit_message = convert_message_to_wit_message(message).await;
@@ -715,20 +761,32 @@ async fn make_response_id_target(
     }
 }
 
+fn de_wit_payload_bytes(wit: &wit::WitPayloadBytes) -> PayloadBytes {
+    PayloadBytes {
+        circumvent: match wit.circumvent {
+            wit::WitCircumvent::False => Circumvent::False,
+            wit::WitCircumvent::Send => Circumvent::Send,
+            wit::WitCircumvent::Circumvented => Circumvent::Circumvented,
+            wit::WitCircumvent::Receive => Circumvent::Receive,
+        },
+        content: wit.content.clone(),
+    }
+}
+
 fn make_wrapped_message(
     id: u64,
     source: ProcessNode,
     target: ProcessNode,
     rsvp: Rsvp,
     message_type: MessageType,
-    payload: &WitPayload,
+    payload: &wit::WitPayload,
 ) -> WrappedMessage {
     let payload = Payload {
         json: match payload.json {
             Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
             None => None,
         },
-        bytes: payload.bytes.clone(),
+        bytes: de_wit_payload_bytes(&payload.bytes),
     };
     WrappedMessage {
         id,
@@ -863,13 +921,18 @@ async fn handle_request(
     prompting_message: &Option<WrappedMessage>,
     new_context: Option<serde_json::Value>,
     contexts: &mut HashMap<u64, ProcessContext>,
-) -> u64 {
+) -> Result<u64> {
     let (id, rsvp) = make_request_id_target(
         default_id,
         is_expecting_response,
         &prompting_message,
     );
     let target = de_wit_process_node(&target);
+
+    let payload: wit::WitPayload = if_circumvent_update_bytes_with_circumvent(
+        payload,
+        prompting_message,
+    )?;
 
     let wrapped_message = make_wrapped_message(
         id.clone(),
@@ -962,7 +1025,29 @@ async fn handle_request(
         .await
         .unwrap();
 
-    id
+    Ok(id)
+}
+
+fn if_circumvent_update_bytes_with_circumvent(
+    mut payload: wit::WitPayload,
+    prompting_message: &Option<WrappedMessage>,
+) -> Result<wit::WitPayload> {
+    match payload.bytes.circumvent {
+        wit::WitCircumvent::Receive => {
+            let Some(pm) = prompting_message else {
+                return Err(anyhow::anyhow!(""));
+            };
+            let Ok(ref m) = pm.message else {
+                return Err(anyhow::anyhow!(""));
+            };
+            let Some(ref b) = m.content.payload.bytes.content else {
+                return Err(anyhow::anyhow!(""));
+            };
+            payload.bytes.content = Some(b.clone());
+            return Ok(payload);
+        },
+        _ => Ok(payload),
+    }
 }
 
 async fn send_process_requests_to_loop(
@@ -972,16 +1057,18 @@ async fn send_process_requests_to_loop(
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
-) -> Vec<u64> {
+) -> Result<Vec<u64>> {
     let Ok(requests) = requests else {
         let Err(e) = requests else { panic!("") };
-        return send_process_error_to_loop(e, source, send_to_loop, prompting_message).await;
+        return Ok(
+            send_process_error_to_loop(e, source, send_to_loop, prompting_message).await
+        );
     };
 
     let mut ids: Vec<u64> = Vec::new();
     let default_id = rand::random();
     let new_context = serde_json::from_str(&requests.1).ok();
-    for WitProtorequest { is_expecting_response, target, payload } in requests.0 {
+    for wit::WitProtorequest { is_expecting_response, target, payload } in requests.0 {
         ids.push(handle_request(
             source.clone(),
             send_to_loop,
@@ -993,9 +1080,9 @@ async fn send_process_requests_to_loop(
             prompting_message,
             new_context.clone(),
             contexts,
-        ).await);
+        ).await?);
     }
-    ids
+    Ok(ids)
 }
 
 async fn send_process_response_to_loop(
@@ -1005,16 +1092,16 @@ async fn send_process_response_to_loop(
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
-) -> Option<u64> {
+) -> Result<u64> {
     let Ok(response) = response else {
         let Err(e) = response else { panic!("") };
         let ids = send_process_error_to_loop(e, source, send_to_loop, prompting_message)
             .await;
-        return Some(ids[0]);
+        return Ok(ids[0]);
     };
 
     let payload = response.0;
-    let new_context: Option<serde_json::Value> = serde_json::from_str(&response.1).ok();
+    // let new_context: Option<serde_json::Value> = serde_json::from_str(&response.1).ok();
     let (id, target) = match make_response_id_target(
         &prompting_message,
         contexts,
@@ -1032,10 +1119,15 @@ async fn send_process_response_to_loop(
                 })
                 .await
                 .unwrap();
-            return None;
+            return Ok(0);  //  TODO: do better
         },
     };
     let rsvp = None;
+
+    let payload: wit::WitPayload = if_circumvent_update_bytes_with_circumvent(
+        payload,
+        prompting_message,
+    )?;
 
     let wrapped_message = make_wrapped_message(
         id.clone(),
@@ -1051,7 +1143,7 @@ async fn send_process_response_to_loop(
         .await
         .unwrap();
 
-    return Some(id);
+    return Ok(id);
 }
 
 async fn send_process_response_with_side_effect_request_to_loop(
@@ -1061,10 +1153,12 @@ async fn send_process_response_with_side_effect_request_to_loop(
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
     contexts: &mut HashMap<u64, ProcessContext>,
-) -> Vec<u64> {
+) -> Result<Vec<u64>> {
     let Ok(results) = results else {
         let Err(e) = results else { panic!("") };
-        return send_process_error_to_loop(e, source, send_to_loop, prompting_message).await;
+        return Ok(
+            send_process_error_to_loop(e, source, send_to_loop, prompting_message).await
+        );
     };
 
     //  handle Response
@@ -1090,10 +1184,15 @@ async fn send_process_response_with_side_effect_request_to_loop(
                 })
                 .await
                 .unwrap();
-            return vec![];
+            return Ok(vec![]);
         },
     };
     let rsvp = None;
+
+    let payload: wit::WitPayload = if_circumvent_update_bytes_with_circumvent(
+        payload,
+        prompting_message,
+    )?;
 
     let wrapped_message = make_wrapped_message(
         id.clone(),
@@ -1112,7 +1211,7 @@ async fn send_process_response_with_side_effect_request_to_loop(
     ids.push(id);
 
     //  handle side-effect Request
-    let (WitProtorequest { is_expecting_response, target, payload }, request_context) =
+    let (wit::WitProtorequest { is_expecting_response, target, payload }, request_context) =
         results.request;
     let default_id = rand::random();
     let prompting_message = None;
@@ -1128,18 +1227,34 @@ async fn send_process_response_with_side_effect_request_to_loop(
         &prompting_message,
         new_context,
         contexts,
-    ).await);
+    ).await?);
 
-    return ids;
+    return Ok(ids);
 }
 
-async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
-    let wit_payload = WitPayload {
+async fn convert_message_to_wit_message(m: &Message) -> wit::WitMessage {
+    let wit_payload = wit::WitPayload {
         json: match m.content.payload.json.clone() {
             Some(value) => Some(json_to_string(&value)),
             None => None,
         },
-        bytes: m.content.payload.bytes.clone(),
+        bytes: match m.content.payload.bytes.circumvent {
+            Circumvent::False => {
+                wit::WitPayloadBytes {
+                    circumvent: wit::WitCircumvent::False,
+                    content: m.content.payload.bytes.content.clone(),
+                }
+            },
+            Circumvent::Send => {
+                wit::WitPayloadBytes {
+                    circumvent: wit::WitCircumvent::Circumvented,
+                    content: None,
+                }
+            },
+            Circumvent::Circumvented | Circumvent::Receive => {
+                panic!("convert_message_to_wit_message")
+            },
+        },
     };
     let wit_message_type = match m.content.message_type {
         MessageType::Request(is_expecting_response) => {
@@ -1147,7 +1262,7 @@ async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
         },
         MessageType::Response => wit::WitMessageType::Response,
     };
-    WitMessage {
+    wit::WitMessage {
         source: en_wit_process_node(&m.source),
         content: wit::WitMessageContent {
             message_type: wit_message_type,
@@ -1253,7 +1368,10 @@ async fn make_process_loop(
                                         process_name: process_name.clone()
                                     }).unwrap()
                                 ),
-                                bytes: None,
+                                bytes: PayloadBytes {
+                                    circumvent: Circumvent::False,
+                                    content: None
+                                },
                             },
                         },
                     }),
@@ -1281,7 +1399,10 @@ async fn make_process_loop(
                                                 send_on_panic,
                                             }).unwrap()
                                         ),
-                                        bytes: None,
+                                        bytes: PayloadBytes {
+                                            circumvent: Circumvent::False,
+                                            content: None
+                                        },
                                     },
                                 },
                             }),
@@ -1347,7 +1468,7 @@ async fn handle_kernel_request(
         .expect("kernel: could not parse to command");
     match kernel_request {
         KernelRequest::StartProcess { process_name, wasm_bytes_uri, send_on_panic } => {
-            let Some(wasm_bytes) = message.content.payload.bytes else {
+            let Some(wasm_bytes) = message.content.payload.bytes.content else {
                 send_to_terminal
                     .send(Printout{
                         verbosity: 0,
@@ -1404,7 +1525,10 @@ async fn handle_kernel_request(
                                     KernelResponse::StartProcess(metadata)
                                 ).unwrap()
                             ),
-                            bytes: None,
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: None
+                            },
                         },
                     },
                 })
@@ -1467,7 +1591,10 @@ async fn handle_kernel_request(
                         message_type: MessageType::Response,
                         payload: Payload {
                             json: Some(json_payload),
-                            bytes: None,
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: None
+                            },
                         },
                     },
                 })

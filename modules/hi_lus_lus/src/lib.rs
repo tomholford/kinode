@@ -51,7 +51,10 @@ impl bindings::MicrokernelProcess for Component {
                     });
                     let payload = types::WitPayload {
                         json: Some(payload.to_string()),
-                        bytes: None,
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     };
                     bindings::send_requests(Ok((
                         vec![

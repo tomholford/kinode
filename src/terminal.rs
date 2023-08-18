@@ -559,7 +559,10 @@ pub async fn terminal(
                                                     message_type: MessageType::Request(false),
                                                     payload: Payload {
                                                         json: None,
-                                                        bytes: bincode::serialize(&command).ok(),
+                                                        bytes: PayloadBytes {
+                                                            circumvent: Circumvent::False,
+                                                            content: bincode::serialize(&command).ok()
+                                                        },
                                                     },
                                                 },
                                             })

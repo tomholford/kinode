@@ -127,7 +127,10 @@ fn failure(http_head: serde_json::Value) {
                 })
                 .to_string(),
             ),
-            bytes: Some("bad transaction".as_bytes().to_vec()),
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: Some("bad transaction".as_bytes().to_vec()),
+            },
         },
         "",
     )));
@@ -155,7 +158,10 @@ impl bindings::MicrokernelProcess for Component {
                             })
                             .unwrap(),
                         ),
-                        bytes: None,
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     },
                 },
             ]
@@ -167,7 +173,7 @@ impl bindings::MicrokernelProcess for Component {
 
         bindings::print_to_terminal(1, "sequencer: got blockchain.json");
 
-        let mut pki: OnchainPKI = match fs_response.content.payload.bytes {
+        let mut pki: OnchainPKI = match fs_response.content.payload.bytes.content {
             Some(b) => serde_json::from_str::<OnchainPKI>(&String::from_utf8(b).unwrap()).unwrap(),
             None => HashMap::<String, Identity>::new(),
         };
@@ -190,7 +196,10 @@ impl bindings::MicrokernelProcess for Component {
                             })
                             .to_string(),
                         ),
-                        bytes: None,
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     },
                 },
             ]
@@ -216,12 +225,15 @@ impl bindings::MicrokernelProcess for Component {
                             })
                             .to_string(),
                         ),
-                        bytes: Some(
-                            serde_json::to_string(&pki)
-                                .unwrap_or_default()
-                                .as_bytes()
-                                .to_vec(),
-                        ),
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some(
+                                serde_json::to_string(&pki)
+                                    .unwrap_or_default()
+                                    .as_bytes()
+                                    .to_vec(),
+                            ),
+                        },
                     },
                     "",
                 )));
@@ -232,7 +244,7 @@ impl bindings::MicrokernelProcess for Component {
                 continue;
             }
             let http_body: IdentityTransaction = match bincode::deserialize::<IdentityTransaction>(
-                &message.content.payload.bytes.unwrap_or_default(),
+                &message.content.payload.bytes.content.unwrap_or_default(),
             ) {
                 Ok(i) => i,
                 Err(e) => {
@@ -265,12 +277,15 @@ impl bindings::MicrokernelProcess for Component {
                         })
                         .to_string(),
                     ),
-                    bytes: Some(
-                        serde_json::to_string(&pki)
-                            .unwrap_or_default()
-                            .as_bytes()
-                            .to_vec(),
-                    ),
+                    bytes: types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: Some(
+                            serde_json::to_string(&pki)
+                                .unwrap_or_default()
+                                .as_bytes()
+                                .to_vec(),
+                        ),
+                    },
                 },
                 "".into(),
             )));

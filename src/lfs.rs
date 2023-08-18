@@ -701,7 +701,7 @@ pub async fn pm_bootstrap(
     let mut log_file = fs::OpenOptions::new()
         .append(true)
         .read(true)
-        .create(true)
+        // .create(true)  //  do not create if DNE
         .open(&log_file_path)
         .await
         .map_err(|_| FileSystemError::LFSError { error: "failed to open log file".into() })?;

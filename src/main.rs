@@ -207,6 +207,81 @@ async fn main() {
                 username
             ),
         };
+
+        //  bootstrap PM state from WAL file if it exists -- or fail out
+        let pm_bootstrap_bytes = match lfs::pm_bootstrap(home_directory_path.clone()).await {
+            Ok(maybe) => {
+                match maybe  {
+                    Some((bytes, _hash)) => bytes,
+                    None => panic!("failed to bootstrap from manifest to PM: no pm_uuid"),
+                }
+            },
+            Err(e) => panic!("failed to bootstrap from manifest to PM: {}", e),
+        };
+        //  start PM
+        kernel_message_sender
+            .send(WrappedMessage {
+                id: rand::random(),
+                target: ProcessNode{
+                    node: our_identity.name.clone(),
+                    process: "kernel".into()
+                },
+                rsvp: None,
+                message: Ok(Message {
+                    source: ProcessNode{
+                        node: our_identity.name.clone(),
+                        process: "kernel".into()
+                    },
+                    content: MessageContent {
+                        message_type: MessageType::Request(false),
+                        payload: Payload {
+                            json: Some(serde_json::to_value(KernelRequest::StartProcess {
+                                process_name: "process_manager".into(),
+                                wasm_bytes_uri: "fs://sequentialize/process_manager.wasm"
+                                    .into(),  //  TODO: stop cheating
+                                send_on_panic: SendOnPanic::None,  //  TODO: enable Restart
+                            }).unwrap()),
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: None,
+                            },
+                        },
+                    },
+                }),
+            })
+            .await
+            .unwrap();
+        //  load
+        kernel_message_sender
+            .send(WrappedMessage {
+                id: rand::random(),
+                target: ProcessNode{
+                    node: our_identity.name.clone(),
+                    process: "process_manager".into()
+                },
+                rsvp: None,
+                message: Ok(Message {
+                    source: ProcessNode{
+                        node: our_identity.name.clone(),
+                        process: "kernel".into()
+                    },
+                    content: MessageContent {
+                        message_type: MessageType::Request(false),
+                        payload: Payload {
+                            json: Some(serde_json::to_value(ProcessManagerCommand::Initialize)
+                                .unwrap()),
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: Some(pm_bootstrap_bytes),
+                            },
+                        },
+                    },
+                }),
+            })
+            .await
+            .unwrap();
+
+
         (our_identity.clone(), networking_keypair, jwt_secret_bytes)
     } else {
         // REGISTER flow
@@ -321,6 +396,62 @@ async fn main() {
         )
         .await
         .unwrap();
+
+        //  load in initial boot sequence
+        let mut boot_sequence_path = "boot_sequence.bin";
+        for i in 3..args.len() - 1 {
+            if args[i] == "--bs" {
+                boot_sequence_path = &args[i + 1];
+                break;
+            }
+        }
+        let boot_sequence_bin = match fs::read(boot_sequence_path).await {
+            Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
+                Ok(bs) => bs,
+                Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+            },
+            Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
+        };
+
+        // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
+        for bin_message in boot_sequence_bin {
+            kernel_message_sender
+                .send(WrappedMessage {
+                    id: bin_message.id,
+                    target: ProcessNode {
+                        node: our.name.clone(),
+                        process: bin_message.target_process,
+                    },
+                    rsvp: None,
+                    message: Ok(Message {
+                        source: ProcessNode {
+                            node: our.name.clone(),
+                            process: "kernel".into(),
+                        },
+                        content: MessageContent {
+                            message_type: bin_message.message.content.message_type,
+                            payload: Payload {
+                                json: match bin_message.message.content.payload.json {
+                                    Some(js) => Some(match serde_json::from_slice(&js) {
+                                        Ok(j) => j,
+                                        Err(e) => {
+                                            panic!("{:?}", format!("failed to deserialize json: {}", e))
+                                        }
+                                    }),
+                                    None => None,
+                                },
+                                bytes: PayloadBytes {
+                                    circumvent: Circumvent::False,
+                                    content: bin_message.message.content.payload.bytes,
+                                },
+                            },
+                        },
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)
     };
@@ -342,60 +473,6 @@ async fn main() {
     fs::write(format!("{}/.user", home_directory_path), our.name.clone())
         .await
         .unwrap();
-
-    let mut boot_sequence_path = "boot_sequence.bin";
-    for i in 3..args.len() - 1 {
-        if args[i] == "--bs" {
-            boot_sequence_path = &args[i + 1];
-            break;
-        }
-    }
-    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
-        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
-            Ok(bs) => bs,
-            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
-        },
-        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
-    };
-
-    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
-    for bin_message in boot_sequence_bin {
-        kernel_message_sender
-            .send(WrappedMessage {
-                id: bin_message.id,
-                target: ProcessNode {
-                    node: our.name.clone(),
-                    process: bin_message.target_process,
-                },
-                rsvp: None,
-                message: Ok(Message {
-                    source: ProcessNode {
-                        node: our.name.clone(),
-                        process: "kernel".into(),
-                    },
-                    content: MessageContent {
-                        message_type: bin_message.message.content.message_type,
-                        payload: Payload {
-                            json: match bin_message.message.content.payload.json {
-                                Some(js) => Some(match serde_json::from_slice(&js) {
-                                    Ok(j) => j,
-                                    Err(e) => {
-                                        panic!("{:?}", format!("failed to deserialize json: {}", e))
-                                    }
-                                }),
-                                None => None,
-                            },
-                            bytes: PayloadBytes {
-                                circumvent: Circumvent::False,
-                                content: bin_message.message.content.payload.bytes,
-                            },
-                        },
-                    },
-                }),
-            })
-            .await
-            .unwrap();
-    }
 
     let our_kernel = ProcessNode {
         node: our.name.clone(),
@@ -462,7 +539,7 @@ async fn main() {
      *      terminal,
      *      websockets,
      *      filesystem,
-     *      fs, 
+     *      fs,
      *      http-server,
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.

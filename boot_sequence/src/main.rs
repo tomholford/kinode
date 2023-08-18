@@ -120,6 +120,15 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  boot_sequence.push(foo);
     //  ```
 
+    boot_sequence.push(make_sequentialize_bswm(BinSerializablePayload {
+        json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
+            target_node: None,
+            target_process: "process_manager".into(),
+            json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize).unwrap()),
+        }).unwrap()),
+        bytes: None,
+    }));
+
     //  it is runtime's responsibility to run the sequentialize queue
 
     boot_sequence

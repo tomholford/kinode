@@ -260,6 +260,7 @@ pub enum SendOnPanic {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
+    Initialize,
     Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
     Stop { process_name: String },
     Restart { process_name: String },

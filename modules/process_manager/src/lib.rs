@@ -29,6 +29,7 @@ pub enum SendOnPanic {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
+    Initialize,
     Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
     Stop { process_name: String },
     Restart { process_name: String },
@@ -125,6 +126,9 @@ fn handle_message(
     match message.content.message_type {
         types::WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
+                ProcessManagerCommand::Initialize => {
+                    print_to_terminal(0, "process manager: init");
+                },
                 ProcessManagerCommand::Start { process_name, wasm_bytes_uri, send_on_panic } => {
                     print_to_terminal(1, "process manager: start");
                     if reserved_process_names.contains(&process_name) {

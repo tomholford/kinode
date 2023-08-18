@@ -435,11 +435,14 @@ async fn handle_request(
                         })
                     ).unwrap()
                 ),
-                bytes: Some(file_contents),
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: Some(file_contents),
+                },
             }
         },
         FileSystemAction::Write => {
-            let Some(payload_bytes) = content.payload.bytes.clone() else {
+            let Some(payload_bytes) = content.payload.bytes.content.clone() else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
             if let Err(e) = fs::write(&file_path, &payload_bytes).await {
@@ -454,7 +457,10 @@ async fn handle_request(
                     serde_json::to_value(FileSystemResponse::Write(request.uri_string))
                         .unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         },
         FileSystemAction::GetMetadata => {
@@ -500,7 +506,10 @@ async fn handle_request(
                         })
                     ).unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         },
         FileSystemAction::ReadDir => {
@@ -576,7 +585,10 @@ async fn handle_request(
                 json: Some(
                     serde_json::to_value(FileSystemResponse::ReadDir(metadatas)).unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         }
         FileSystemAction::Open(mode) => {
@@ -640,7 +652,10 @@ async fn handle_request(
                                 }
                             ).unwrap()
                         ),
-                        bytes: None,
+                        bytes: PayloadBytes {
+                            circumvent: Circumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 Err(e) => {
@@ -668,7 +683,10 @@ async fn handle_request(
                         }
                     ).unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         }
         FileSystemAction::Append => {
@@ -687,7 +705,7 @@ async fn handle_request(
                     })
                 },
             };
-            let payload_bytes = match content.payload.bytes {
+            let payload_bytes = match content.payload.bytes.content {
                 Some(b) => b.clone(),
                 None =>  {
                     return Err(FileSystemError::BadBytes { action: "Append".into() })
@@ -705,7 +723,10 @@ async fn handle_request(
                     serde_json::to_value(FileSystemResponse::Append(request.uri_string))
                         .unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         },
         FileSystemAction::ReadChunkFromOpen(number_bytes) => {
@@ -753,7 +774,10 @@ async fn handle_request(
                     )
                         .unwrap()
                 ),
-                bytes: Some(file_contents),
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: Some(file_contents),
+                },
             }
         },
         FileSystemAction::SeekWithinOpen(seek_from) => {
@@ -797,7 +821,10 @@ async fn handle_request(
                     serde_json::to_value(FileSystemResponse::SeekWithinOpen(request.uri_string))
                         .unwrap()
                 ),
-                bytes: None,
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
+                },
             }
         },
     };

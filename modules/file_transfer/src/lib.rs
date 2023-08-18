@@ -278,7 +278,10 @@ fn yield_get_piece(
                     }
                 )
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -300,7 +303,10 @@ fn yield_get_metadata(
                     action: FileSystemAction::GetMetadata,
                 }
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -328,7 +334,10 @@ fn yield_get_file(
                     }
                 )
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -350,7 +359,10 @@ fn yield_start(
                     }
                 )
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -373,7 +385,10 @@ fn yield_close(
                     action: FileSystemAction::Close(mode),
                 }
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -399,7 +414,10 @@ fn yield_cancel(
                     reason,
                 }
             ).unwrap()),
-            bytes: None,
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
         },
     }
 }
@@ -431,7 +449,10 @@ fn handle_next_message(
                         "Content-Type": "text/html",
                     },
                 }).to_string()),
-                bytes: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
+                bytes: types::WitPayloadBytes {
+                    circumvent: types::WitCircumvent::False,
+                    content: Some(FILE_TRANSFER_PAGE.replace("${our}", &our_name).as_bytes().to_vec()),
+                },
             },
             "".into(),
         )));
@@ -450,7 +471,10 @@ fn handle_next_message(
                             "Content-Type": "text/html",
                         },
                     }).to_string()),
-                    bytes: Some("Must specify target node".as_bytes().to_vec())
+                    bytes: types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: Some("Must specify target node".as_bytes().to_vec()),
+                    },
                 },
                 "".into(),
             )));
@@ -470,7 +494,10 @@ fn handle_next_message(
                             action: FileSystemAction::ReadDir,
                         }
                     ).unwrap()),
-                    bytes: None,
+                    bytes: types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: None,
+                    },
                 },
             ).unwrap()  //  TODO: handle error properly
         } else {
@@ -486,7 +513,10 @@ fn handle_next_message(
                             uri_string: uri_string.clone(),
                         }
                     ).unwrap()),
-                    bytes: None,
+                    bytes: types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: None,
+                    },
                 },
             ).unwrap()  //  TODO: handle error properly
         };
@@ -501,7 +531,10 @@ fn handle_next_message(
                             "Content-Type": "text/html",
                         },
                     }).to_string()),
-                    bytes: Some("No result from target node".as_bytes().to_vec())
+                    bytes: types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: Some("No result from target node".as_bytes().to_vec()),
+                    },
                 },
                 "".into(),
             )));
@@ -518,14 +551,17 @@ fn handle_next_message(
                     },
                 }).to_string()),
                 // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
-                bytes: Some(payload_json_string.as_bytes().to_vec())
+                bytes: types::WitPayloadBytes {
+                    circumvent: types::WitCircumvent::False,
+                    content: Some(payload_json_string.as_bytes().to_vec()),
+                },
             },
             "".into(),
         )));
         return Ok(());
     } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/get-file" {
         // {"ReadDir":[{"entry_type":"File","hash":null,"len":7219,"uri_string":"README.md"}]}
-        let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+        let body_bytes = message.content.payload.bytes.content.unwrap_or(vec![]);
         let body_json_string = match String::from_utf8(body_bytes) {
             Ok(s) => s,
             Err(_) => String::new()
@@ -544,7 +580,10 @@ fn handle_next_message(
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some("Success".as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some("Success".as_bytes().to_vec()),
+                        },
                     },
                     "".into(),
                 ),
@@ -562,7 +601,7 @@ fn handle_next_message(
         ));
         return Ok(());
     } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/file-transfer/cancel-download" {
-        let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+        let body_bytes = message.content.payload.bytes.content.unwrap_or(vec![]);
         let body_json_string = match String::from_utf8(body_bytes) {
             Ok(s) => s,
             Err(_) => String::new()
@@ -589,7 +628,10 @@ fn handle_next_message(
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some("Success".as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some("Success".as_bytes().to_vec()),
+                        },
                     },
                     "".into(),
                 ),
@@ -636,7 +678,10 @@ fn handle_next_message(
                         "Content-Type": "text/html",
                     },
                 }).to_string()),
-                bytes: Some(percentage_downloaded.to_string().as_bytes().to_vec())
+                bytes: types::WitPayloadBytes {
+                    circumvent: types::WitCircumvent::False,
+                    content: Some(percentage_downloaded.to_string().as_bytes().to_vec()),
+                },
             },
             "".into(),
         )));
@@ -826,7 +871,10 @@ fn handle_next_message(
                                             ),
                                         }
                                     ).unwrap()),
-                                    bytes: None,
+                                    bytes: types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
                                 }
                             } else {
                                 //  requester is resuming a previous download:
@@ -842,7 +890,10 @@ fn handle_next_message(
                                             ),
                                         }
                                     ).unwrap()),
-                                    bytes: None,
+                                    bytes: types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
                                 }
                             };
                         bindings::send_requests(Ok((
@@ -934,7 +985,10 @@ fn handle_next_message(
                                                 action: FileSystemAction::ReadDir,
                                             }
                                         ).unwrap()),
-                                        bytes: None,
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: None,
+                                        },
                                     },
                                 }],
                                 &context,
@@ -965,7 +1019,10 @@ fn handle_next_message(
                                                 uri_string: uri_string.clone(),
                                             }
                                         ).unwrap()),
-                                        bytes: None,
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: None,
+                                        },
                                     },
                                 }],
                                 &context,
@@ -1051,7 +1108,10 @@ fn handle_next_message(
                                                 json: Some(serde_json::to_string(
                                                     &FileTransferResponse::Started(metadata)
                                                 ).unwrap()),
-                                                bytes: None,
+                                                bytes: types::WitPayloadBytes {
+                                                    circumvent: types::WitCircumvent::False,
+                                                    content: None,
+                                                },
                                             },
                                             "".into(),
                                         ),
@@ -1071,7 +1131,10 @@ fn handle_next_message(
                                                             ),
                                                         }
                                                     ).unwrap()),
-                                                    bytes: None,
+                                                    bytes: types::WitPayloadBytes {
+                                                        circumvent: types::WitCircumvent::False,
+                                                        content: None,
+                                                    },
                                                 },
                                             },
                                             context,
@@ -1122,7 +1185,10 @@ fn handle_next_message(
                                                             uri_string: context.key.uri_string.clone(),
                                                         }
                                                     ).unwrap()),
-                                                    bytes: None,
+                                                    bytes: types::WitPayloadBytes {
+                                                        circumvent: types::WitCircumvent::False,
+                                                        content: None,
+                                                    },
                                                 },
                                             }],
                                             "".into(),
@@ -1170,7 +1236,10 @@ fn handle_next_message(
                                     json: Some(serde_json::to_string(
                                         &FileTransferResponse::ReadDir(metadatas)
                                     ).unwrap()),
-                                    bytes: None,
+                                    bytes: types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
                                 },
                                 "".into(),
                             )));
@@ -1277,7 +1346,10 @@ fn handle_next_message(
                                                                 ),
                                                             }
                                                         ).unwrap()),
-                                                        bytes: None,
+                                                        bytes: types::WitPayloadBytes {
+                                                            circumvent: types::WitCircumvent::False,
+                                                            content: None,
+                                                        },
                                                     },
                                                 }],
                                                 &context,
@@ -1302,7 +1374,7 @@ fn handle_next_message(
                                 );
                                 return Err(anyhow!(error_message));
                             };
-                            let Some(bytes) = message.content.payload.bytes.clone() else {
+                            let Some(bytes) = message.content.payload.bytes.content.clone() else {
                                 let error_message = "ReadChunkFromOpen: no bytes";
                                 bail(
                                     error_message.into(),
@@ -1353,7 +1425,10 @@ fn handle_next_message(
                                             }
                                         )
                                     ).unwrap()),
-                                    bytes: Some(bytes),
+                                    bytes: types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: Some(bytes),
+                                    },
                                 },
                                 "".into(),
                             )));
@@ -1443,7 +1518,10 @@ fn handle_next_message(
                                                 ),
                                             }
                                         ).unwrap()),
-                                        bytes: None,
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: None,
+                                        },
                                     },
                                 }],
                                 &context,
@@ -1510,7 +1588,10 @@ fn handle_next_message(
                                                 ),
                                             }
                                         ).unwrap()),
-                                        bytes: None,
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: None,
+                                        },
                                     },
                                 }],
                                 &context,
@@ -1528,7 +1609,7 @@ fn handle_next_message(
                                 uri_string: file_piece.uri_string.clone(),
                             };
 
-                            let Some(bytes) = message.content.payload.bytes.clone() else {
+                            let Some(bytes) = message.content.payload.bytes.content.clone() else {
                                 let error_message = "FilePiece must be sent bytes";
                                 bail(
                                     error_message.into(),
@@ -1578,7 +1659,10 @@ fn handle_next_message(
                                                 action: FileSystemAction::Append,
                                             }
                                         ).unwrap()),
-                                        bytes: Some(bytes),
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: Some(bytes),
+                                        },
                                     },
                                 }],
                                 &context,
@@ -1655,7 +1739,10 @@ impl bindings::MicrokernelProcess for Component {
                             "authenticated": true,
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -1670,7 +1757,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/file-transfer/view-files/:username",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -1685,7 +1775,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/file-transfer/get-file",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -1700,7 +1793,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/file-transfer/cancel-download",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -1715,7 +1811,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/file-transfer/status/:target_node/:uri_string",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
             ].as_slice(),

@@ -105,7 +105,10 @@ fn send_stop_to_loop(
         &our_name,
         "kernel",
         Some(KernelRequest::StopProcess { process_name }),
-        None,
+        types::WitPayloadBytes {
+            circumvent: types::WitCircumvent::False,
+            content: None,
+        },
         None::<FileSystemReadContext>,
     )
 }
@@ -140,7 +143,10 @@ fn handle_message(
                             uri_string: wasm_bytes_uri.clone(),
                             action: FileSystemAction::Read,
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                         Some(FileSystemReadContext {
                             process_name,
                             wasm_bytes_uri,
@@ -170,7 +176,10 @@ fn handle_message(
                                 .map(|(key, _value)| key.clone())
                                 .collect()
                         }),
-                        None,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                         None::<FileSystemReadContext>,
                     )?;
                 },
@@ -180,7 +189,7 @@ fn handle_message(
             match (
                 message.source.node,
                 message.source.process.as_str(),
-                message.content.payload.bytes,
+                message.content.payload.bytes.content,
             ) {
                 (
                     our_name,
@@ -198,7 +207,10 @@ fn handle_message(
                             wasm_bytes_uri: context.wasm_bytes_uri,
                             send_on_panic: context.send_on_panic,
                         }),
-                        Some(wasm_bytes),
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some(wasm_bytes),
+                        },
                         None::<FileSystemReadContext>,
                     )?;
                 },
@@ -215,7 +227,10 @@ fn handle_message(
                             );
                             process_lib::send_response(
                                 Some(KernelResponse::StartProcess(metadata)),
-                                None,
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
                                 None::<FileSystemReadContext>,
                             )?;
                         },
@@ -233,7 +248,10 @@ fn handle_message(
                                     wasm_bytes_uri: removed.wasm_bytes_uri,
                                     send_on_panic: removed.send_on_panic,
                                 }),
-                                None,
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
                                 None::<FileSystemReadContext>,
                             )?;
                         },

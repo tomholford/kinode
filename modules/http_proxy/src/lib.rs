@@ -41,7 +41,10 @@ impl bindings::MicrokernelProcess for Component {
                             "authenticated": true,
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -57,7 +60,10 @@ impl bindings::MicrokernelProcess for Component {
                             "authenticated": true,
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -72,7 +78,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/http-proxy/list",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -87,7 +96,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/http-proxy/register",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
                 types::WitProtorequest {
@@ -102,7 +114,10 @@ impl bindings::MicrokernelProcess for Component {
                             "path": "/http-proxy/serve/:username/.*",
                             "app": process_name
                         }).to_string()),
-                        bytes: None
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     }
                 },
             ].as_slice(),
@@ -129,7 +144,10 @@ impl bindings::MicrokernelProcess for Component {
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some(PROXY_HOME_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some(PROXY_HOME_PAGE.replace("${our}", &our_name).as_bytes().to_vec()),
+                        },
                     },
                     "",
                 )));
@@ -143,16 +161,21 @@ impl bindings::MicrokernelProcess for Component {
                                 "Content-Type": "application/json",
                             },
                         }).to_string()),
-                        bytes: Some(serde_json::json!({
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some(serde_json::json!({
                                 "registrations": registrations
-                            }).to_string()
-                        .as_bytes().to_vec())
+                            })
+                                .to_string()
+                                .as_bytes()
+                                .to_vec()),
+                        },
                     },
                     "",
                 )));
             } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "POST" {
                 let mut status = 204;
-                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+                let body_bytes = message.content.payload.bytes.content.unwrap_or(vec![]);
                 let body_json_string = match String::from_utf8(body_bytes) {
                     Ok(s) => s,
                     Err(_) => String::new()
@@ -177,7 +200,10 @@ impl bindings::MicrokernelProcess for Component {
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec()),
+                        },
                     },
                     "",
                 )));
@@ -203,7 +229,10 @@ impl bindings::MicrokernelProcess for Component {
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some((if status == 400 { "Bad Request" } else { "Success" }).to_string().as_bytes().to_vec()),
+                        },
                     },
                     "",
                 )));
@@ -222,7 +251,10 @@ impl bindings::MicrokernelProcess for Component {
                                     "Content-Type": "text/html",
                                 },
                             }).to_string()),
-                            bytes: Some("Not Found".to_string().as_bytes().to_vec())
+                            bytes: types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: Some("Not Found".to_string().as_bytes().to_vec()),
+                            },
                         },
                         "",
                     )));
@@ -236,7 +268,10 @@ impl bindings::MicrokernelProcess for Component {
                                     "Content-Type": "text/html",
                                 },
                             }).to_string()),
-                            bytes: Some("Not Authorized".to_string().as_bytes().to_vec())
+                            bytes: types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: Some("Not Authorized".to_string().as_bytes().to_vec()),
+                            },
                         },
                         "",
                     )));
@@ -274,7 +309,10 @@ impl bindings::MicrokernelProcess for Component {
                                                 "Content-Type": "text/html"
                                             },
                                         }).to_string()),
-                                        bytes: Some("Node is offline".as_bytes().to_vec()),
+                                        bytes: types::WitPayloadBytes {
+                                            circumvent: types::WitCircumvent::False,
+                                            content: Some("Node is offline".as_bytes().to_vec()),
+                                        },
                                     },
                                     "".into(),
                                 )))
@@ -296,7 +334,10 @@ impl bindings::MicrokernelProcess for Component {
                                         "Content-Type": "text/html"
                                     },
                                 }).to_string()),
-                                bytes: Some("Not Found".as_bytes().to_vec()),
+                                bytes: types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: Some("Not Found".as_bytes().to_vec()),
+                                },
                             },
                             "".into(),
                         ))),
@@ -312,7 +353,10 @@ impl bindings::MicrokernelProcess for Component {
                                 "Content-Type": "text/html",
                             },
                         }).to_string()),
-                        bytes: Some("Not Found".as_bytes().to_vec())
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: Some("Not Found".as_bytes().to_vec()),
+                        },
                     },
                     "".into(),
                 )));

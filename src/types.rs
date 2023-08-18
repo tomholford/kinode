@@ -51,7 +51,21 @@ pub struct ProcessNode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
     pub json: Option<serde_json::Value>,
-    pub bytes: Option<Vec<u8>>,
+    pub bytes: PayloadBytes,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PayloadBytes {
+    pub circumvent: Circumvent,
+    pub content: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Circumvent {
+    False,         //  do not circumvent
+    Send,          //  circumvent with these bytes
+    Circumvented,  //  we were circumvented
+    Receive,       //  copy circumventing bytes into this message
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -148,17 +162,28 @@ impl std::fmt::Display for ProcessNode {
     }
 }
 
-impl std::fmt::Display for Payload {
+impl std::fmt::Display for PayloadBytes {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let bytes_string = match self.bytes {
+        let bytes_string = match self.content {
             Some(_) => "Some(<elided>)",
             None => "None",
         };
         write!(
             f,
-            "Payload {{ json: {:?}, bytes: {} }}",
-            self.json,
+            "{{ circumvent: {:?}, bytes: {} }}",
+            self.circumvent,
             bytes_string,
+        )
+    }
+}
+
+impl std::fmt::Display for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{{ json: {:?}, bytes: {} }}",
+            self.json,
+            self.bytes,
         )
     }
 }
@@ -167,7 +192,7 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "Message {{ source: {}, content: {} }}",
+            "{{ source: {}, content: {} }}",
             self.source,
             self.content,
         )
@@ -178,7 +203,7 @@ impl std::fmt::Display for MessageContent {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "MessageContent {{ message_type: {:?}, payload: {} }}",
+            "{{ message_type: {:?}, payload: {} }}",
             self.message_type,
             self.payload,
         )
@@ -197,7 +222,7 @@ impl std::fmt::Display for WrappedMessage {
         };
         write!(
             f,
-            "WrappedMessage {{ id: {}, target: {}, rsvp: {}, message: {} }}",
+            "{{ id: {}, target: {}, rsvp: {}, message: {} }}",
             self.id,
             self.target,
             rsvp,

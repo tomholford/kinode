@@ -26,7 +26,10 @@ fn parse_command(our_name: &str, line: String) {
                         },
                         payload: types::WitPayload {
                             json: Some(serde_json::Value::String(message.into()).to_string()),
-                            bytes: None,
+                            bytes: types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: None,
+                            },
                         },
                     },
                 ].as_slice(),
@@ -62,7 +65,10 @@ fn parse_command(our_name: &str, line: String) {
                         },
                         payload: types::WitPayload {
                             json: Some(payload.into()),
-                            bytes: None,
+                            bytes: types::WitPayloadBytes {
+                                circumvent: types::WitCircumvent::False,
+                                content: None,
+                            },
                         },
                     },
                 ].as_slice(),
@@ -83,7 +89,7 @@ impl bindings::MicrokernelProcess for Component {
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
             if let types::WitMessageType::Request(_) = message.content.message_type {
-                let stringy = bincode::deserialize(&message.content.payload.bytes.unwrap_or_default())
+                let stringy = bincode::deserialize(&message.content.payload.bytes.content.unwrap_or_default())
                     .unwrap_or_default();
                 parse_command(&our_name, stringy);
             } else {

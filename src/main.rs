@@ -385,7 +385,10 @@ async fn main() {
                                 }),
                                 None => None,
                             },
-                            bytes: bin_message.message.content.payload.bytes,
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: bin_message.message.content.payload.bytes,
+                            },
                         },
                     },
                 }),
@@ -419,7 +422,10 @@ async fn main() {
                             &serde_json::json!({"action": "set-jwt-secret"})
                         ).unwrap()),
                     }).unwrap()),
-                    bytes: Some(jwt_secret_bytes.to_vec()),
+                    bytes: PayloadBytes {
+                        circumvent: Circumvent::False,
+                        content: Some(jwt_secret_bytes.to_vec()),
+                    },
                 },
             },
         }),
@@ -442,7 +448,10 @@ async fn main() {
                     json: Some(
                         serde_json::to_value(&SequentializeRequest::RunQueue).unwrap()
                     ),
-                    bytes: None,
+                    bytes: PayloadBytes {
+                        circumvent: Circumvent::False,
+                        content: None,
+                    },
                 },
             },
         }),

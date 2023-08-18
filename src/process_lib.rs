@@ -30,7 +30,7 @@ where
 
 pub fn make_payload<T>(
     json_struct: Option<T>,
-    bytes: Option<Vec<u8>>,
+    bytes: types::WitPayloadBytes,
 ) -> anyhow::Result<types::WitPayload>
 where
      T: serde::Serialize
@@ -60,7 +60,7 @@ pub fn send_one_request<T, U>(
     target_node: &str,
     target_process: &str,
     json_struct: Option<T>,
-    bytes: Option<Vec<u8>>,
+    bytes: types::WitPayloadBytes,
     context: Option<U>,
 ) -> anyhow::Result<()>
 where
@@ -91,7 +91,7 @@ where
 
 pub fn send_response<T, U>(
     json_struct: Option<T>,
-    bytes: Option<Vec<u8>>,
+    bytes: types::WitPayloadBytes,
     context: Option<U>,  //  ?
 ) -> anyhow::Result<()>
 where
@@ -116,7 +116,7 @@ pub fn send_request_and_await_response<T>(
     target_node: String,
     target_process: String,
     json_struct: Option<T>,
-    bytes: Option<Vec<u8>>,
+    bytes: types::WitPayloadBytes,
 ) -> anyhow::Result<types::WitMessage>
 where
      T: serde::Serialize,

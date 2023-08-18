@@ -72,7 +72,10 @@ fn yield_http_response(id: String, status: u16, headers: HashMap<String, String>
                 "status": status,
                 "headers": headers,
             }).to_string()),
-            bytes: Some(payload_bytes),
+            bytes: types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: Some(payload_bytes),
+            },
         },
         "",
     )));
@@ -116,7 +119,7 @@ impl bindings::MicrokernelProcess for Component {
                     };
 
                     if action == "set-jwt-secret" {
-                        let jwt_secret_bytes = message.content.payload.bytes.unwrap_or_default();
+                        let jwt_secret_bytes = message.content.payload.bytes.content.unwrap_or_default();
 
                         if jwt_secret_bytes.is_empty() {
                             bindings::print_to_terminal(1, "http_bindings: got empty jwt_secret_bytes");
@@ -163,7 +166,7 @@ impl bindings::MicrokernelProcess for Component {
                             } else if message_json["method"] == "POST" {
                                 bindings::print_to_terminal(1, "http_bindings: got login POST request");
 
-                                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+                                let body_bytes = message.content.payload.bytes.content.unwrap_or(vec![]);
                                 let body_json_string = match String::from_utf8(body_bytes) {
                                     Ok(s) => s,
                                     Err(_) => String::new()
@@ -202,7 +205,7 @@ impl bindings::MicrokernelProcess for Component {
                             } else if message_json["method"] == "PUT" {
                                 bindings::print_to_terminal(1, "http_bindings: got login PUT request");
 
-                                let body_bytes = message.content.payload.bytes.unwrap_or(vec![]);
+                                let body_bytes = message.content.payload.bytes.content.unwrap_or(vec![]);
                                 let body_json_string = match String::from_utf8(body_bytes) {
                                     Ok(s) => s,
                                     Err(_) => String::new()

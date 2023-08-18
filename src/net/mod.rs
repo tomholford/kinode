@@ -513,7 +513,10 @@ fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -
                 message_type: MessageType::Response,
                 payload: Payload {
                     json: Some(serde_json::to_value(err).unwrap_or("".into())),
-                    bytes: None,
+                    bytes: PayloadBytes {
+                        circumvent: Circumvent::False,
+                        content: None,
+                    },
                 },
             },
         }),

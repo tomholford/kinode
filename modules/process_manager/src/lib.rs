@@ -1,5 +1,6 @@
 cargo_component_bindings::generate!();
 
+// use bincode::{serialize, deserialize};
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize, Deserialize};
 
@@ -63,6 +64,33 @@ pub enum FileSystemSeekFrom {
     Current(i64),
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsAction {
+    Write,
+    Append([u8; 32]),
+    Read([u8; 32]),
+    ReadChunk(ReadChunkRequest),
+    PmWrite                  //  specific case for process manager persistance.
+    // different backup add/remove requests
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsResponse {
+    //  bytes are in payload_bytes, [old-fileHash, new_filehash, file_uuid]
+    Read([u8; 32]),
+    ReadChunk([u8; 32]),
+    Write([u8; 32]),
+    Append([u8; 32]),   //  new file_hash [old too?]
+                        //  use FileSystemError
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReadChunkRequest {
+    file_hash: [u8; 32],
+    start: u64,
+    length: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelRequest {
     StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
@@ -87,7 +115,13 @@ pub struct ProcessMetadata {
     send_on_panic: SendOnPanic,
 }
 
-type ProcessMetadatas = HashMap<String, ProcessMetadata>;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Process {
+    metadata: ProcessMetadata,
+    //  persistent_state: Vec[u8]
+}
+
+type Processes = HashMap<String, Process>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FileSystemReadContext {
@@ -115,7 +149,7 @@ fn send_stop_to_loop(
 }
 
 fn handle_message(
-    metadatas: &mut ProcessMetadatas,
+    processes: &mut Processes,
     our_name: &str,
     reserved_process_names: &HashSet<String>,
 ) -> anyhow::Result<()> {
@@ -128,6 +162,25 @@ fn handle_message(
             match process_lib::parse_message_json(message.content.payload.json)? {
                 ProcessManagerCommand::Initialize => {
                     print_to_terminal(0, "process manager: init");
+
+                    match message.content.payload.bytes.content {
+                        Some(bytes) => {
+                            //  rebooting -> load bytes in to memory
+                        },
+                        None => {
+                            //  starting from scratch -> set up persisted memory
+                            let response = process_lib::send_request_and_await_response(
+                                our_name.into(),
+                                "lfs".into(),
+                                Some(FsAction::PmWrite),
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: Some(bincode::serialize(processes)
+                                        .unwrap()),
+                                },
+                            )?;
+                        },
+                    }
                 },
                 ProcessManagerCommand::Start { process_name, wasm_bytes_uri, send_on_panic } => {
                     print_to_terminal(1, "process manager: start");
@@ -160,13 +213,13 @@ fn handle_message(
                 },
                 ProcessManagerCommand::Stop { process_name } => {
                     print_to_terminal(1, "process manager: stop");
-                    let _ = metadatas
+                    let _ = processes
                         .remove(&process_name)
                         .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
                     send_stop_to_loop(our_name.into(), process_name, false)?;
 
-                    println!("process manager: {:?}\r", metadatas.keys().collect::<Vec<_>>());
+                    println!("process manager: {:?}\r", processes.keys().collect::<Vec<_>>());
                 },
                 ProcessManagerCommand::Restart { process_name } => {
                     print_to_terminal(1, "process manager: restart");
@@ -176,7 +229,7 @@ fn handle_message(
                 ProcessManagerCommand::ListRunningProcesses => {
                     process_lib::send_response(
                         Some(ProcessManagerResponse::ListRunningProcesses {
-                            processes: metadatas.iter()
+                            processes: processes.iter()
                                 .map(|(key, _value)| key.clone())
                                 .collect()
                         }),
@@ -225,9 +278,11 @@ fn handle_message(
                 ) => {
                     match process_lib::parse_message_json(message.content.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
-                            metadatas.insert(
+                            processes.insert(
                                 metadata.our.process.clone(),
-                                metadata.clone(),
+                                Process {
+                                    metadata: metadata.clone(),
+                                },
                             );
                             process_lib::send_response(
                                 Some(KernelResponse::StartProcess(metadata)),
@@ -239,7 +294,7 @@ fn handle_message(
                             )?;
                         },
                         KernelResponse::StopProcess { process_name } => {
-                            let removed = metadatas
+                            let removed = processes
                                 .remove(&process_name)
                                 .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
@@ -248,9 +303,9 @@ fn handle_message(
                                 &our_name,
                                 &process_name,
                                 Some(ProcessManagerCommand::Start {
-                                    process_name: removed.our.process,
-                                    wasm_bytes_uri: removed.wasm_bytes_uri,
-                                    send_on_panic: removed.send_on_panic,
+                                    process_name: removed.metadata.our.process,
+                                    wasm_bytes_uri: removed.metadata.wasm_bytes_uri,
+                                    send_on_panic: removed.metadata.send_on_panic,
                                 }),
                                 types::WitPayloadBytes {
                                     circumvent: types::WitCircumvent::False,
@@ -282,10 +337,10 @@ impl bindings::MicrokernelProcess for Component {
         let reserved_process_names: HashSet<String> = reserved_process_names
             .into_iter()
             .collect();
-        let mut metadatas: ProcessMetadatas = HashMap::new();
+        let mut processes: Processes = HashMap::new();
         loop {
             match handle_message(
-                &mut metadatas,
+                &mut processes,
                 &our_name,
                 &reserved_process_names
             ) {

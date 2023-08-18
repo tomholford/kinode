@@ -219,6 +219,14 @@ async fn main() {
             Err(e) => panic!("failed to bootstrap from manifest to PM: {}", e),
         };
         //  start PM
+
+        let process_wasm_path = fs::canonicalize(home_directory_path)
+            .await
+            .unwrap()
+            .join("sequentialize/process_manager.wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path)
+            .await
+            .expect(format!("{:?}", &process_wasm_path).as_str());
         kernel_message_sender
             .send(WrappedMessage {
                 id: rand::random(),
@@ -243,7 +251,7 @@ async fn main() {
                             }).unwrap()),
                             bytes: PayloadBytes {
                                 circumvent: Circumvent::False,
-                                content: None,
+                                content: Some(process_wasm_bytes),
                             },
                         },
                     },

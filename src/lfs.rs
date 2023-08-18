@@ -105,7 +105,8 @@ pub async fn fs_sender(
     load_wal(&mut log_file, &mut manifest, &mut hash_index)
         .await
         .expect("wal loading failed.");
-    println!("whole manifest {:?}", manifest);
+    
+    //  println!("whole manifest {:?}", manifest);
 
     let manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>> = Arc::new(RwLock::new(manifest));
     let hash_index: Arc<RwLock<HashMap<[u8; 32], u128>>> = Arc::new(RwLock::new(hash_index));
@@ -289,8 +290,6 @@ async fn handle_request(
                 data.extend_from_slice(&bytes);
             }
 
-            println!("read bytes: {:?}", data);
-
             Payload {
                 json: Some(serde_json::to_value(FsResponse::Read(file_hash)).unwrap()),
                 bytes: Some(data),
@@ -396,8 +395,6 @@ async fn handle_request(
         
                 data.extend_from_slice(&chunk_data[chunk_start as usize..chunk_end as usize]);
             }
-
-            println!("read bytes: {:?}", data);
         
             Payload {
                 json: Some(serde_json::to_value(FsResponse::ReadChunk(req.file_hash)).unwrap()),

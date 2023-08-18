@@ -13,9 +13,6 @@ use bincode;
 
 use crate::types::*;
 
-//  use crate::lfs::wal::{LogFile, LogError};
-//  mod wal;
-
 // const CHUNK_SIZE: u64 = 100 * 1024; // 100kb
 // const SEPARATOR: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
 
@@ -41,35 +38,39 @@ struct InMemoryFile {
 #[derive(Debug, Clone)]
 struct MemoryChunk {
     chunk_range: (u64, u64),  // start and end positions in the file
-    chunk_hash: [u8; 32],
+    chunk_hash: [u8; 32],     // data hash by itself.
     wal_position: u64,        // position of this chunk's data in the WAL.
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
-    Write(String),
+    Write,
     Append([u8; 32]),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
+    PmWrite                  //  specific case for process manager persistance.
     // different backup add/remove requests
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
     //  bytes are in payload_bytes, [old-fileHash, new_filehash, file_uuid]
     Read([u8; 32]),
     ReadChunk([u8; 32]),
     Write([u8; 32]),
-    Append([u8; 32]),   //  new/old file_hash?
+    Append([u8; 32]),   //  new file_hash [old too?]
                         //  use FileSystemError
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
     file_hash: [u8; 32],
     start: u64,
     length: u64,
 }
+
+// special process manager uuid
+const pm_uuid: u128 = 0;
 
 pub async fn fs_sender(
     our_name: String,
@@ -79,12 +80,10 @@ pub async fn fs_sender(
     mut recv_in_fs: MessageReceiver,
 ) {
     // fs bootstrapping, create home_directory and log file if none.
-    println!("starting fs");
-
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
     }
-    let home_directory_path = fs::canonicalize(home_directory_path).await.unwrap();
+    let home_directory_path: std::path::PathBuf = fs::canonicalize(home_directory_path).await.unwrap();
 
     //  open log file, load it in.
 
@@ -117,13 +116,17 @@ pub async fn fs_sender(
     while let Some(wrapped_message) = recv_in_fs.recv().await {
         let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { ref source, content: _ }), }
                 = wrapped_message else {
-            panic!("filesystem: unexpected Error")
+            println!(
+                "fs: got weird message from {}: {}",
+                our_name, &wrapped_message,
+            );
+            continue;
         };
 
         let source_process = &source.process;
         if our_name != source.node {
             println!(
-                "filesystem: request must come from our_name={}, got: {}",
+                "fs: request must come from our_name={}, got: {}",
                 our_name, &wrapped_message,
             );
             continue;
@@ -170,7 +173,7 @@ async fn handle_request(
 ) -> Result<(), FileSystemError> {
     let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
             = wrapped_message else {
-        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
+        return Err(FileSystemError::LFSError { error: "got weird message".to_string() });
     };
     let Some(value) = content.payload.json.clone() else {
         return Err(FileSystemError::BadJson {
@@ -197,31 +200,44 @@ async fn handle_request(
     };
 
     let response_payload = match action {
-        FsAction::Write(str) => {
-            //  let Some(data) = content.payload.bytes.clone() else {
-            //      return Err(FileSystemError::BadBytes { action: "Write".into() })
-            //  };
-
-            let mut bytes = str.as_bytes().to_vec();
+        FsAction::Write => {
+            let Some(data) = content.payload.bytes.clone() else {
+                return Err(FileSystemError::BadBytes { action: "Write".into() })
+            };
 
             let file_uuid = uuid::Uuid::new_v4().as_u128();
-
+            
             //  hashing: note chunks[]
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&bytes);
+            hasher.update(&data);
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
+            
+            // don't write the same file twice
+            // TODO: reconsider, doesn't quite map with filehash => UUID, but should
+            //  let hash_exists;
+            //  {
+            //      let whash_index = hash_index.read().await;
+            //      hash_exists = whash_index.contains_key(&hash_array);
+            //  }
+            //  
+            //  if hash_exists {
+            //      Payload {
+            //          json: Some(serde_json::to_value(FsResponse::Write(hash_array)).unwrap()),
+            //          bytes: None,
+            //      };
+            //  }   
 
             let entry = ChunkEntry {
                 file_uuid,
-                chunk_range: (0, bytes.len() as u64 - 1),
+                chunk_range: (0, data.len() as u64 - 1),
                 chunk_hash: hash_array.clone(),
             };
 
             let wal_result;
             {
                 let mut wlog = log.write().await;
-                wal_result = append_to_wal(&mut wlog, &entry, &bytes).await;
+                wal_result = append_to_wal(&mut wlog, &entry, &data).await;
             }
 
             match wal_result {
@@ -244,8 +260,7 @@ async fn handle_request(
                     whash_index.insert(hash_array, file_uuid);
                 }
                 Err(e) => {
-                    // fix error
-                    panic!("wal write failed.");
+                    return Err(FileSystemError::LFSError { error: format!("wal append failed: {}", e)} );
                 }
             }
 
@@ -260,8 +275,12 @@ async fn handle_request(
             let rhash_index = hash_index.read().await;
             let mut rlog = log.write().await;   // need mut for reading file, check
 
-            let file_uuid = rhash_index.get(&file_hash).unwrap();
-            let memfile = rmanifest.get(&file_uuid).unwrap();
+            let file_uuid = rhash_index.get(&file_hash)
+                .ok_or_else(|| FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash) })?;
+        
+            let memfile = rmanifest.get(&file_uuid)
+                .ok_or_else(|| FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash) })?;
+        
 
             let mut data = Vec::new();
             for chunk in &memfile.chunks {
@@ -269,6 +288,8 @@ async fn handle_request(
                 let bytes = get_chunk_data(&mut rlog, chunk.wal_position).await.unwrap();
                 data.extend_from_slice(&bytes);
             }
+
+            println!("read bytes: {:?}", data);
 
             Payload {
                 json: Some(serde_json::to_value(FsResponse::Read(file_hash)).unwrap()),
@@ -284,7 +305,7 @@ async fn handle_request(
                 let rhash_index = hash_index.read().await;
                 match rhash_index.get(&file_hash) {
                     Some(uuid) => *uuid,
-                    None => panic!("temp"),
+                    None => return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash)} )
                 }
             };
             
@@ -300,7 +321,7 @@ async fn handle_request(
                 let rmanifest = manifest.read().await;
                 match rmanifest.get(&file_uuid) {
                     Some(file) => previous_end_position = file.chunks.last().unwrap().chunk_range.1,
-                    None => panic!("temp"),
+                    None => return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash)} )
                 }
             }
             let chunk_range = (previous_end_position + 1, previous_end_position + data.len() as u64);
@@ -339,7 +360,7 @@ async fn handle_request(
             }
         },
         FsAction::ReadChunk(req) => {
-            // obtain read locks.
+            // obtain read locks.            
             let rmanifest = manifest.read().await;
             let rhash_index = hash_index.read().await;
             let mut rlog = log.write().await;  // need mut for reading file, check
@@ -347,17 +368,17 @@ async fn handle_request(
             // Find the file UUID from the file hash.
             let file_uuid = match rhash_index.get(&req.file_hash) {
                 Some(uuid) => uuid,
-                None => panic!("temp")
+                None => return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", req.file_hash)} )
             };
-        
+            
             // Get the memory file.
             let memfile = match rmanifest.get(&file_uuid) {
                 Some(file) => file,
-                None =>  panic!("temp")
+                None =>  return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", req.file_hash)} )
             };
-        
+            
             let mut data = Vec::new();
-        
+            
             for chunk in &memfile.chunks {
                 if chunk.chunk_range.1 < req.start {
                     continue;  // chunk is entirely before the requested range
@@ -375,10 +396,68 @@ async fn handle_request(
         
                 data.extend_from_slice(&chunk_data[chunk_start as usize..chunk_end as usize]);
             }
+
+            println!("read bytes: {:?}", data);
         
             Payload {
                 json: Some(serde_json::to_value(FsResponse::ReadChunk(req.file_hash)).unwrap()),
                 bytes: Some(data),
+            }
+        },
+        // specific process manager write:
+        FsAction::PmWrite => {
+            let Some(data) = content.payload.bytes.clone() else {
+                return Err(FileSystemError::BadBytes { action: "Write".into() })
+            };
+
+            //  unique process manager file. [hash not appendable]
+            let file_uuid = pm_uuid;
+
+            //  hashing: note chunks[]
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&data);
+            let hash_result = hasher.finalize();
+            let hash_array: [u8; 32] = *hash_result.as_bytes();
+
+            let entry = ChunkEntry {
+                file_uuid,
+                chunk_range: (0, data.len() as u64 - 1),
+                chunk_hash: hash_array.clone(),
+            };
+
+            let wal_result;
+            {
+                let mut wlog = log.write().await;
+                wal_result = append_to_wal(&mut wlog, &entry, &data).await;
+            }
+
+            match wal_result {
+                Ok(wal_position) => {
+                    let mut wmanifest = manifest.write().await;
+                    let mut whash_index = hash_index.write().await;
+
+                    let memory_chunk = MemoryChunk {
+                        chunk_range: entry.chunk_range,
+                        chunk_hash: hash_array,
+                        wal_position,
+                    };
+
+                    let mut new_file = InMemoryFile {
+                        hasher: hasher,
+                        chunks: vec![memory_chunk],
+                    };
+
+                    wmanifest.insert(file_uuid, new_file);
+                    whash_index.insert(hash_array, file_uuid);
+                }
+                Err(e) => {
+                    return Err(FileSystemError::LFSError { error: format!("wal append failed: {}", e)} );
+                }
+            }
+
+            Payload {
+                json: Some(serde_json::to_value(FsResponse::Write(hash_array)).unwrap()),
+                bytes: None,
             }
         }
     };
@@ -473,7 +552,6 @@ async fn load_wal(
 
         match chunk_entry_metadata {
             Ok(mut entry) => {
-                //  entry.data = data_buffer;
 
                 // Calculate the wal_position for the data
                 let memory_chunk = MemoryChunk {
@@ -481,11 +559,27 @@ async fn load_wal(
                     chunk_hash: entry.chunk_hash,
                     wal_position: data_position,
                 };
+                let is_pm_uuid = entry.file_uuid == pm_uuid;
 
                 // Update the hasher with the data
                 if let Some(memfile) = manifest.get_mut(&entry.file_uuid) {
-                    memfile.hasher.update(&data_buffer);
-                    memfile.chunks.push(memory_chunk);
+                    // specific pm case, revise
+                    if is_pm_uuid {
+                        let mut new_file = InMemoryFile {
+                            hasher: Hasher::new(),
+                            chunks: vec![memory_chunk],
+                        };
+                        new_file.hasher.update(&data_buffer);
+                        let file_hash = new_file.hasher.finalize();
+                        let hash_array: [u8; 32] = *file_hash.as_bytes();
+                
+                        manifest.insert(entry.file_uuid, new_file);
+                        hash_index.insert(hash_array, entry.file_uuid);
+                    } else {
+                        memfile.hasher.update(&data_buffer);
+                        memfile.chunks.push(memory_chunk);
+                    }
+                
                 } else {
                     let mut new_file = InMemoryFile {
                         hasher: Hasher::new(),
@@ -528,7 +622,7 @@ async fn append_to_wal(
     log_file.write_all(&entry_length.to_le_bytes()).await?;  // write the metadata length prefix
     log_file.write_all(&serialized_entry).await?;            // write the serialized metadata
     log_file.write_all(&data_length.to_le_bytes()).await?;   // write the data length
-    log_file.write_all(data).await?; // write the data
+    log_file.write_all(data).await?;                         // write the data
 
     // return the location where the data starts in the WAL
     Ok(wal_position + (8 + serialized_entry.len() as u64))
@@ -568,7 +662,7 @@ fn make_error_message(
                 node: our_name,
                 process: "filesystem".into(),
             },
-            timestamp: get_current_unix_time().unwrap(), //  TODO: handle error?
+            timestamp: get_current_unix_time().unwrap(),       //  TODO: handle error?
             content: UqbarErrorContent {
                 kind: error.kind().into(),
                 // message: format!("{}", error),
@@ -577,4 +671,58 @@ fn make_error_message(
             },
         }),
     }
+}
+
+pub async fn pm_bootstrap(
+    home_directory_path: String,
+) -> Result<Option<(Vec<u8>, [u8; 32])>, FileSystemError> {  
+
+    // fs bootstrapping, create home_directory and log file if none.
+    create_dir_if_dne(&home_directory_path).await
+        .map_err(|_| FileSystemError::LFSError { error: "couldn't create home dir".into() })?;
+    
+    let home_directory_path = fs::canonicalize(home_directory_path).await
+        .map_err(|_| FileSystemError::LFSError { error: "couldn't canonicalize path".into() })?;
+
+    //  open log file, load it in.
+    let log_file_path = home_directory_path.join("log.bin");
+    let mut log_file = fs::OpenOptions::new()
+        .append(true)
+        .read(true)
+        .create(true)
+        .open(&log_file_path)
+        .await
+        .map_err(|_| FileSystemError::LFSError { error: "failed to open log file".into() })?;
+
+    //  in memory details about files.
+    let mut manifest: HashMap<u128, InMemoryFile> = HashMap::new();
+    //  enable lookup by file_hash
+    let mut hash_index: HashMap<[u8; 32], u128> = HashMap::new();
+
+    // Loading the WAL
+    load_wal(&mut log_file, &mut manifest, &mut hash_index)
+        .await
+        .map_err(|_| FileSystemError::LFSError { error: "wal loading failed".into() })?;
+
+    // Check for the pm_uuid entry in the manifest
+    if let Some(pm_file) = manifest.get(&pm_uuid) {
+        // If found, prepare the data to return
+        let mut data = Vec::new();
+        for chunk in &pm_file.chunks {
+            // Assuming you have a get_chunk_data function to fetch the chunk's data
+            let bytes = get_chunk_data(&mut log_file, chunk.wal_position).await
+                .map_err(|_| FileSystemError::LFSError { error: "error getting chunk data".into() })?;
+            data.extend_from_slice(&bytes);
+        }
+        
+        // Fetch the filehash for the pm_uuid
+        let file_hash = pm_file.hasher.finalize();
+        let hash_array: [u8; 32] = *file_hash.as_bytes();
+
+        // Return the data and filehash
+        return Ok(Some((data, hash_array)));
+    }
+
+    // If pm_uuid entry not found
+    Ok(None)
 }

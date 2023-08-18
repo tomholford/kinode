@@ -1,6 +1,6 @@
-use bincode;
 /// log structured filesystem
 /// immutable/append []
+
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -9,16 +9,17 @@ use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
 use uuid;
+use bincode;
 
 use crate::types::*;
 
 //  use crate::lfs::wal::{LogFile, LogError};
-// mod wal;
+//  mod wal;
 
 // const CHUNK_SIZE: u64 = 100 * 1024; // 100kb
 // const SEPARATOR: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
 
-//  On-Disk
+// On-Disk
 #[derive(Serialize, Deserialize)]
 struct ChunkEntry {
     file_uuid: u128,
@@ -33,15 +34,15 @@ struct ChunkEntry {
 // In-Memory
 #[derive(Debug, Clone)]
 struct InMemoryFile {
-    hasher: Hasher,           // content addressed hash (naive)
-    chunks: Vec<MemoryChunk>, // Chunks meta-information.
+    hasher: Hasher,            // content addressed hash (naive)
+    chunks: Vec<MemoryChunk>,  // chunks meta-information.
 }
 
 #[derive(Debug, Clone)]
 struct MemoryChunk {
-    chunk_range: (u64, u64), // start and end positions in the file
+    chunk_range: (u64, u64),  // start and end positions in the file
     chunk_hash: [u8; 32],
-    wal_position: u64, // position of this chunk's data in the WAL.
+    wal_position: u64,        // position of this chunk's data in the WAL.
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,8 +60,8 @@ pub enum FsResponse {
     Read([u8; 32]),
     ReadChunk([u8; 32]),
     Write([u8; 32]),
-    Append([u8; 32]), // new/old file_hash?
-                      //  use FileSystemError
+    Append([u8; 32]),   //  new/old file_hash?
+                        //  use FileSystemError
 }
 
 #[derive(Serialize, Deserialize)]
@@ -206,7 +207,7 @@ async fn handle_request(
             let file_uuid = uuid::Uuid::new_v4().as_u128();
 
             //  hashing: note chunks[]
-            let hasher = blake3::Hasher::new();
+            let mut hasher = blake3::Hasher::new();
             hasher.update(&bytes);
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
@@ -257,7 +258,7 @@ async fn handle_request(
             // obtain read locks.
             let rmanifest = manifest.read().await;
             let rhash_index = hash_index.read().await;
-            let mut rlog = log.read().await;
+            let mut rlog = log.write().await;   // need mut for reading file, check
 
             let file_uuid = rhash_index.get(&file_hash).unwrap();
             let memfile = rmanifest.get(&file_uuid).unwrap();
@@ -273,22 +274,113 @@ async fn handle_request(
                 json: Some(serde_json::to_value(FsResponse::Read(file_hash)).unwrap()),
                 bytes: Some(data),
             }
-        }
-
+        },
         FsAction::Append(file_hash) => {
-            let last_position = memfile
-                .chunks
-                .last()
-                .map(|chunk| chunk.chunk_range.1)
-                .unwrap_or(0);
-            let chunk_range = (last_position, last_position + data.len() as u64);
+            let Some(data) = content.payload.bytes.clone() else {
+                return Err(FileSystemError::BadBytes { action: "Write".into() })
+            };
 
-            // Compute the chunk hash
-            let chunk_hash = blake3::hash(data);
+            let file_uuid = {
+                let rhash_index = hash_index.read().await;
+                match rhash_index.get(&file_hash) {
+                    Some(uuid) => *uuid,
+                    None => panic!("temp"),
+                }
+            };
+            
+            // compute hash of the data chunk
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&data);
+            let hash_result = hasher.finalize();
+            let hash_array: [u8; 32] = *hash_result.as_bytes();
+            
+            // determine the new chunk range
+            let previous_end_position: u64;
+            {
+                let rmanifest = manifest.read().await;
+                match rmanifest.get(&file_uuid) {
+                    Some(file) => previous_end_position = file.chunks.last().unwrap().chunk_range.1,
+                    None => panic!("temp"),
+                }
+            }
+            let chunk_range = (previous_end_position + 1, previous_end_position + data.len() as u64);
 
+            let entry = ChunkEntry {
+                file_uuid,
+                chunk_range,
+                chunk_hash: hash_array,
+            };
+            
+            let wal_position;
+            {
+                let mut wlog = log.write().await;
+                wal_position = append_to_wal(&mut wlog, &entry, &data).await.unwrap();
+            }
+            
+            {
+                let mut wmanifest = manifest.write().await;
+                if let Some(memfile) = wmanifest.get_mut(&file_uuid) {
+                    let memory_chunk = MemoryChunk {
+                        chunk_range: entry.chunk_range,
+                        chunk_hash: hash_array,
+                        wal_position,
+                    };
+                    
+                    memfile.hasher.update(&data);       // update file's hash with the new data chunk
+                    memfile.chunks.push(memory_chunk); 
+                } else {
+                    return Err(FileSystemError::BadUri { uri: "".to_string(), bad_part_name: "".to_string(), bad_part:None });
+                }
+            }
+
+            Payload {
+                json: Some(serde_json::to_value(FsResponse::Append(file_hash)).unwrap()),
+                bytes: None,
+            }
+        },
+        FsAction::ReadChunk(req) => {
+            // obtain read locks.
+            let rmanifest = manifest.read().await;
+            let rhash_index = hash_index.read().await;
+            let mut rlog = log.write().await;  // need mut for reading file, check
+        
+            // Find the file UUID from the file hash.
+            let file_uuid = match rhash_index.get(&req.file_hash) {
+                Some(uuid) => uuid,
+                None => panic!("temp")
+            };
+        
+            // Get the memory file.
+            let memfile = match rmanifest.get(&file_uuid) {
+                Some(file) => file,
+                None =>  panic!("temp")
+            };
+        
+            let mut data = Vec::new();
+        
+            for chunk in &memfile.chunks {
+                if chunk.chunk_range.1 < req.start {
+                    continue;  // chunk is entirely before the requested range
+                }
+        
+                if chunk.chunk_range.0 > (req.start + req.length - 1) {
+                    break;     // chunk is entirely after the requested range
+                }
+        
+                let chunk_data = get_chunk_data(&mut rlog, chunk.wal_position).await.unwrap();
+        
+                // Handle overlap: Identify which part of the chunk should be taken.
+                let chunk_start = chunk.chunk_range.0.max(req.start) - chunk.chunk_range.0;
+                let chunk_end = chunk.chunk_range.1.min(req.start + req.length - 1) - chunk.chunk_range.0 + 1;
+        
+                data.extend_from_slice(&chunk_data[chunk_start as usize..chunk_end as usize]);
+            }
+        
+            Payload {
+                json: Some(serde_json::to_value(FsResponse::ReadChunk(req.file_hash)).unwrap()),
+                bytes: Some(data),
+            }
         }
-
-        FsAction::ReadChunk(req) => {}
     };
 
     if is_expecting_response {
@@ -433,9 +525,9 @@ async fn append_to_wal(
     let entry_length = serialized_entry.len() as u64;
     let data_length = data.len() as u64;
 
-    log_file.write_all(&entry_length.to_le_bytes()).await?; // write the metadata length prefix
-    log_file.write_all(&serialized_entry).await?; // write the serialized metadata
-    log_file.write_all(&data_length.to_le_bytes()).await?; // write the data length
+    log_file.write_all(&entry_length.to_le_bytes()).await?;  // write the metadata length prefix
+    log_file.write_all(&serialized_entry).await?;            // write the serialized metadata
+    log_file.write_all(&data_length.to_le_bytes()).await?;   // write the data length
     log_file.write_all(data).await?; // write the data
 
     // return the location where the data starts in the WAL

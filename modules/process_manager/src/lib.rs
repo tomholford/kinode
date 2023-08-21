@@ -38,6 +38,7 @@ pub enum ProcessManagerCommand {
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcessManagerResponse {
+    Initialize,
     ListRunningProcesses { processes: Vec<String> },
 }
 
@@ -148,12 +149,29 @@ fn send_stop_to_loop(
     )
 }
 
-fn handle_message(
+fn persist_pm_state(our_name: &str, processes: &Processes) -> anyhow::Result<types::WitMessage> {
+    print_to_terminal(1, "process_manager: persist pm state");
+    process_lib::send_request_and_await_response(
+        our_name.into(),
+        "lfs".into(),
+        Some(FsAction::PmWrite),
+        types::WitPayloadBytes {
+            circumvent: types::WitCircumvent::False,
+            content: Some(bincode::serialize(processes)
+                .unwrap()),
+        },
+    )
+}
+
+fn handle_message (
     processes: &mut Processes,
     our_name: &str,
+    process_name: &str,
     reserved_process_names: &HashSet<String>,
 ) -> anyhow::Result<()> {
+    print_to_terminal(1, "pm: waiting on message");
     let (message, context) = bindings::await_next_message()?;
+    // print_to_terminal(1, format!("pm: got message {:?}", message.content).as_str());
     if our_name != message.source.node {
         return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
     }
@@ -165,20 +183,56 @@ fn handle_message(
 
                     match message.content.payload.bytes.content {
                         Some(bytes) => {
-                            //  rebooting -> load bytes in to memory
+                            //  rebooting -> load bytes in to memory & spin up processes
+                            *processes = bincode::deserialize(&bytes[..]).unwrap();
+
+                            for (key, val) in processes {
+                                let wasm_bytes_uri = val
+                                    .metadata
+                                    .wasm_bytes_uri
+                                    .clone();
+                                let send_on_panic = val
+                                    .metadata
+                                    .send_on_panic
+                                    .clone();
+                                let _ = process_lib::send_one_request(
+                                    false,
+                                    our_name.into(),
+                                    process_name.into(),
+                                    Some(ProcessManagerCommand::Start {
+                                        process_name: key.clone(),
+                                        wasm_bytes_uri,
+                                        send_on_panic,
+                                    }),
+                                    types::WitPayloadBytes {
+                                        circumvent: types::WitCircumvent::False,
+                                        content: None,
+                                    },
+                                    None::<FileSystemReadContext>,
+                                )?;
+                            }
+                            process_lib::send_response(
+                                Some(ProcessManagerResponse::Initialize),
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
+                                None::<FileSystemReadContext>,
+                            )?;
+                            print_to_terminal(0, "process manager: init reboot done");
                         },
                         None => {
                             //  starting from scratch -> set up persisted memory
-                            let response = process_lib::send_request_and_await_response(
-                                our_name.into(),
-                                "lfs".into(),
-                                Some(FsAction::PmWrite),
+                            let _response = persist_pm_state(our_name, processes);
+                            process_lib::send_response(
+                                Some(ProcessManagerResponse::Initialize),
                                 types::WitPayloadBytes {
                                     circumvent: types::WitCircumvent::False,
-                                    content: Some(bincode::serialize(processes)
-                                        .unwrap()),
+                                    content: None,
                                 },
+                                None::<FileSystemReadContext>,
                             )?;
+                            print_to_terminal(0, "process manager: init init boot done");
                         },
                     }
                 },
@@ -191,6 +245,21 @@ fn handle_message(
                             reserved_process_names.iter().collect::<Vec<_>>(),
                         ))
                     }
+
+                    //  store in memory until get KernelResponse::StartProcess
+                    processes.insert(
+                        process_name.clone(),
+                        Process {
+                            metadata: ProcessMetadata {
+                                our: ProcessNode {
+                                    node: our_name.into(),
+                                    process: process_name.clone(),
+                                },
+                                wasm_bytes_uri: wasm_bytes_uri.clone(),
+                                send_on_panic: send_on_panic.clone(),
+                            },
+                        },
+                    );
 
                     process_lib::send_one_request(
                         true,
@@ -217,6 +286,7 @@ fn handle_message(
                         .remove(&process_name)
                         .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
+                    let _response = persist_pm_state(our_name, processes);
                     send_stop_to_loop(our_name.into(), process_name, false)?;
 
                     println!("process manager: {:?}\r", processes.keys().collect::<Vec<_>>());
@@ -276,14 +346,12 @@ fn handle_message(
                     "kernel",
                     None,
                 ) => {
+                    print_to_terminal(1, "process manager: got kernel Response");
                     match process_lib::parse_message_json(message.content.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
-                            processes.insert(
-                                metadata.our.process.clone(),
-                                Process {
-                                    metadata: metadata.clone(),
-                                },
-                            );
+                            if processes.contains_key(&metadata.our.process) {
+                                let _response = persist_pm_state(&our_name, processes);
+                            }
                             process_lib::send_response(
                                 Some(KernelResponse::StartProcess(metadata)),
                                 types::WitPayloadBytes {
@@ -297,7 +365,7 @@ fn handle_message(
                             let removed = processes
                                 .remove(&process_name)
                                 .ok_or(anyhow::anyhow!("no process data found to remove"))?;
-
+                            let _response = persist_pm_state(&our_name, processes);
                             process_lib::send_one_request(
                                 true,
                                 &our_name,
@@ -342,6 +410,7 @@ impl bindings::MicrokernelProcess for Component {
             match handle_message(
                 &mut processes,
                 &our_name,
+                &process_name,
                 &reserved_process_names
             ) {
                 Ok(()) => {},

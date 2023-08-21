@@ -420,7 +420,7 @@ async fn get_and_send_specific_loop_message_to_process(
     contexts: &mut HashMap<u64, ProcessContext>,
     contexts_to_clean: &mut Vec<u64>,
 ) -> (WrappedMessage, Result<Result<wit::WitMessage, wit::WitUqbarError>>) {
-    clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
+    // clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     loop {
         let wrapped_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
@@ -466,6 +466,13 @@ async fn get_and_send_specific_loop_message_to_process(
         }
 
         message_queue.push_back(wrapped_message);
+        send_to_terminal
+            .send(Printout {
+                verbosity: 1,
+                content: format!("queue length now {}", message_queue.len()),
+            })
+            .await
+            .unwrap();
     }
 }
 
@@ -478,14 +485,31 @@ async fn get_and_send_loop_message_to_process(
 ) -> (WrappedMessage, Result<Result<(wit::WitMessage, String), wit::WitUqbarError>>) {
     clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
-    let wrapped_message = recv_in_process.recv().await.unwrap();
+    //
+    //  I think bug is here; somehow queueing messes up contexts (?)
+    //  I no longer think this, but contexts get messed up;
+    //  I think due to async-await
     let wrapped_message = match message_queue.pop_front() {
-        Some(m) => {
-            message_queue.push_back(wrapped_message);
-            m
+        Some(m) => m,
+        None => {
+            let wrapped_message = recv_in_process.recv().await.unwrap();
+            match message_queue.pop_front() {
+                Some(m) => {
+                    message_queue.push_back(wrapped_message);
+                    m
+                },
+                None => wrapped_message,
+            }
         },
-        None => wrapped_message,
     };
+    // let wrapped_message = recv_in_process.recv().await.unwrap();
+    // let wrapped_message = match message_queue.pop_front() {
+    //     Some(m) => {
+    //         message_queue.push_back(wrapped_message);
+    //         m
+    //     },
+    //     None => wrapped_message,
+    // };
 
     let to_loop = send_loop_message_to_process(
         wrapped_message,
@@ -642,7 +666,10 @@ async fn make_response_id_target(
                         send_to_terminal
                             .send(Printout {
                                 verbosity: 0,
-                                content: "couldn't find context to route response".into(),
+                                content: format!(
+                                    "couldn't find context to route response via prompt: {:?}",
+                                    prompting_message,
+                                ),
                             })
                             .await
                             .unwrap();
@@ -1113,8 +1140,9 @@ async fn send_process_response_to_loop(
                 .send(Printout {
                     verbosity: 1,
                     content: format!(
-                        "dropping Response: {:?}",
+                        "dropping Response: {:?}; contexts: {:?}",
                         payload.json,
+                        contexts,
                     ),
                 })
                 .await
@@ -1178,8 +1206,9 @@ async fn send_process_response_with_side_effect_request_to_loop(
                 .send(Printout {
                     verbosity: 1,
                     content: format!(
-                        "dropping Response: {:?}",
+                        "dropping Response: {:?}; contexts: {:?}",
                         payload.json,
+                        contexts,
                     ),
                 })
                 .await

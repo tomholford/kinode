@@ -219,7 +219,6 @@ async fn main() {
             Err(e) => panic!("failed to bootstrap from manifest to PM: {}", e),
         };
         //  start PM
-
         let process_wasm_path = fs::canonicalize(home_directory_path)
             .await
             .unwrap()
@@ -259,6 +258,46 @@ async fn main() {
             })
             .await
             .unwrap();
+
+        let process_wasm_path = fs::canonicalize(home_directory_path)
+            .await
+            .unwrap()
+            .join("sequentialize/sequentialize.wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path)
+            .await
+            .expect(format!("{:?}", &process_wasm_path).as_str());
+        kernel_message_sender
+            .send(WrappedMessage {
+                id: rand::random(),
+                target: ProcessNode{
+                    node: our_identity.name.clone(),
+                    process: "kernel".into()
+                },
+                rsvp: None,
+                message: Ok(Message {
+                    source: ProcessNode{
+                        node: our_identity.name.clone(),
+                        process: "kernel".into()
+                    },
+                    content: MessageContent {
+                        message_type: MessageType::Request(false),
+                        payload: Payload {
+                            json: Some(serde_json::to_value(KernelRequest::StartProcess {
+                                process_name: "sequentialize".into(),
+                                wasm_bytes_uri: "fs://sequentialize/sequentialize.wasm".into(),
+                                send_on_panic: SendOnPanic::None,
+                            }).unwrap()),
+                            bytes: PayloadBytes {
+                                circumvent: Circumvent::False,
+                                content: Some(process_wasm_bytes),
+                            },
+                        },
+                    },
+                }),
+            })
+            .await
+            .unwrap();
+
         //  load
         kernel_message_sender
             .send(WrappedMessage {
@@ -276,8 +315,9 @@ async fn main() {
                     content: MessageContent {
                         message_type: MessageType::Request(false),
                         payload: Payload {
-                            json: Some(serde_json::to_value(ProcessManagerCommand::Initialize)
-                                .unwrap()),
+                            json: Some(serde_json::to_value(ProcessManagerCommand::Initialize {
+                                jwt_secret_bytes: Some(jwt_secret_bytes.clone().to_vec()),
+                            }).unwrap()),
                             bytes: PayloadBytes {
                                 circumvent: Circumvent::False,
                                 content: Some(pm_bootstrap_bytes),
@@ -288,7 +328,6 @@ async fn main() {
             })
             .await
             .unwrap();
-
 
         (our_identity.clone(), networking_keypair, jwt_secret_bytes)
     } else {
@@ -460,9 +499,71 @@ async fn main() {
                 .unwrap();
         }
 
+        let our_kernel = ProcessNode {
+            node: our.name.clone(),
+            process: "kernel".into(),
+        };
+
+        // send jwt_secret to http_bindings
+        let set_jwt_secret_message = WrappedMessage {
+            id: rand::random(),
+            target: ProcessNode {
+                node: our.name.clone(),
+                process: "sequentialize".into(),
+            },
+            rsvp: None,
+            message: Ok(Message {
+                source: our_kernel.clone(),
+                content: MessageContent {
+                    message_type: MessageType::Request(false),
+                    payload: Payload {
+                        json: Some(serde_json::to_value(&SequentializeRequest::QueueMessage {
+                            target_node: Some(our.name.clone()),
+                            target_process: "http_bindings".into(),
+                            json: Some(serde_json::to_string(
+                                &serde_json::json!({"action": "set-jwt-secret"})
+                            ).unwrap()),
+                        }).unwrap()),
+                        bytes: PayloadBytes {
+                            circumvent: Circumvent::False,
+                            content: Some(jwt_secret_bytes.to_vec()),
+                        },
+                    },
+                },
+            }),
+        };
+        kernel_message_sender.send(set_jwt_secret_message).await.unwrap();
+
+        // run sequentialize queue -- from boot sequence
+        let run_sequentialize_queue = WrappedMessage {
+            id: rand::random(),
+            target: ProcessNode {
+                node: our.name.clone(),
+                process: "sequentialize".into(),
+            },
+            rsvp: None,
+            message: Ok(Message {
+                source: our_kernel.clone(),
+                content: MessageContent {
+                    message_type: MessageType::Request(false),
+                    payload: Payload {
+                        json: Some(
+                            serde_json::to_value(&SequentializeRequest::RunQueue).unwrap()
+                        ),
+                        bytes: PayloadBytes {
+                            circumvent: Circumvent::False,
+                            content: None,
+                        },
+                    },
+                },
+            }),
+        };
+        kernel_message_sender.send(run_sequentialize_queue).await.unwrap();
+
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)
     };
+
     let _ = kill_tx.send(true);
     let _ = print_sender
         .send(Printout {
@@ -481,67 +582,6 @@ async fn main() {
     fs::write(format!("{}/.user", home_directory_path), our.name.clone())
         .await
         .unwrap();
-
-    let our_kernel = ProcessNode {
-        node: our.name.clone(),
-        process: "kernel".into(),
-    };
-
-    // send jwt_secret to http_bindings
-    let set_jwt_secret_message = WrappedMessage {
-        id: rand::random(),
-        target: ProcessNode {
-            node: our.name.clone(),
-            process: "sequentialize".into(),
-        },
-        rsvp: None,
-        message: Ok(Message {
-            source: our_kernel.clone(),
-            content: MessageContent {
-                message_type: MessageType::Request(false),
-                payload: Payload {
-                    json: Some(serde_json::to_value(&SequentializeRequest::QueueMessage {
-                        target_node: Some(our.name.clone()),
-                        target_process: "http_bindings".into(),
-                        json: Some(serde_json::to_string(
-                            &serde_json::json!({"action": "set-jwt-secret"})
-                        ).unwrap()),
-                    }).unwrap()),
-                    bytes: PayloadBytes {
-                        circumvent: Circumvent::False,
-                        content: Some(jwt_secret_bytes.to_vec()),
-                    },
-                },
-            },
-        }),
-    };
-    kernel_message_sender.send(set_jwt_secret_message).await.unwrap();
-
-    // run sequentialize queue -- from boot sequence
-    let run_sequentialize_queue = WrappedMessage {
-        id: rand::random(),
-        target: ProcessNode {
-            node: our.name.clone(),
-            process: "sequentialize".into(),
-        },
-        rsvp: None,
-        message: Ok(Message {
-            source: our_kernel.clone(),
-            content: MessageContent {
-                message_type: MessageType::Request(false),
-                payload: Payload {
-                    json: Some(
-                        serde_json::to_value(&SequentializeRequest::RunQueue).unwrap()
-                    ),
-                    bytes: PayloadBytes {
-                        circumvent: Circumvent::False,
-                        content: None,
-                    },
-                },
-            },
-        }),
-    };
-    kernel_message_sender.send(run_sequentialize_queue).await.unwrap();
 
     /*  we are currently running 4 I/O modules:
      *      terminal,

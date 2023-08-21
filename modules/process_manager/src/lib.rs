@@ -27,10 +27,11 @@ pub enum SendOnPanic {
     Restart,
     Requests(Vec<RequestOnPanic>),
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
-    Initialize,
+    Initialize { jwt_secret_bytes: Option<Vec<u8>> },
     Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
     Stop { process_name: String },
     Restart { process_name: String },
@@ -131,6 +132,13 @@ struct FileSystemReadContext {
     send_on_panic: SendOnPanic,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SequentializeRequest {
+    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    RunQueue,
+}
+
 fn send_stop_to_loop(
     our_name: String,
     process_name: String,
@@ -157,10 +165,42 @@ fn persist_pm_state(our_name: &str, processes: &Processes) -> anyhow::Result<typ
         Some(FsAction::PmWrite),
         types::WitPayloadBytes {
             circumvent: types::WitCircumvent::False,
-            content: Some(bincode::serialize(processes)
-                .unwrap()),
+            content: Some(bincode::serialize(processes)?),
         },
     )
+}
+
+fn queue_reboot_message(
+    our_name: &str,
+    our_process_name: &str,
+    sequentialize_process_name: &str,
+    process_name: &str,
+    process: &Process,
+) -> anyhow::Result<()> {
+    let wasm_bytes_uri = process.metadata.wasm_bytes_uri.clone();
+    let send_on_panic = process.metadata.send_on_panic.clone();
+    let _ = process_lib::send_one_request(
+        false,
+        our_name.into(),
+        sequentialize_process_name.into(),
+        Some(SequentializeRequest::QueueMessage {
+            target_node: Some(our_name.into()),
+            target_process: our_process_name.into(),
+            json: Some(serde_json::to_string(
+                &ProcessManagerCommand::Start {
+                    process_name: process_name.into(),
+                    wasm_bytes_uri,
+                    send_on_panic,
+                }
+            )?),
+        }),
+        types::WitPayloadBytes {
+            circumvent: types::WitCircumvent::False,
+            content: None,
+        },
+        None::<FileSystemReadContext>,
+    )?;
+    Ok(())
 }
 
 fn handle_message (
@@ -178,47 +218,71 @@ fn handle_message (
     match message.content.message_type {
         types::WitMessageType::Request(_is_expecting_response) => {
             match process_lib::parse_message_json(message.content.payload.json)? {
-                ProcessManagerCommand::Initialize => {
+                ProcessManagerCommand::Initialize{ jwt_secret_bytes } => {
                     print_to_terminal(0, "process manager: init");
 
                     match message.content.payload.bytes.content {
                         Some(bytes) => {
                             //  rebooting -> load bytes in to memory & spin up processes
-                            *processes = bincode::deserialize(&bytes[..]).unwrap();
+                            let Some(jwt_secret_bytes) = jwt_secret_bytes else {
+                                return Err(anyhow::anyhow!("reboot requires jwt input"));
+                            };
+                            *processes = bincode::deserialize(&bytes[..])?;
+
+                            let key = "http_bindings";
+                            match processes.remove(key) {
+                                None => {},
+                                Some(val) => {
+                                    queue_reboot_message(
+                                        our_name,
+                                        process_name,
+                                        "sequentialize",
+                                        key,
+                                        &val,
+                                    )?;
+                                },
+                            }
 
                             for (key, val) in processes {
-                                let wasm_bytes_uri = val
-                                    .metadata
-                                    .wasm_bytes_uri
-                                    .clone();
-                                let send_on_panic = val
-                                    .metadata
-                                    .send_on_panic
-                                    .clone();
-                                let _ = process_lib::send_one_request(
-                                    false,
-                                    our_name.into(),
-                                    process_name.into(),
-                                    Some(ProcessManagerCommand::Start {
-                                        process_name: key.clone(),
-                                        wasm_bytes_uri,
-                                        send_on_panic,
-                                    }),
-                                    types::WitPayloadBytes {
-                                        circumvent: types::WitCircumvent::False,
-                                        content: None,
-                                    },
-                                    None::<FileSystemReadContext>,
+                                queue_reboot_message(
+                                    our_name,
+                                    process_name,
+                                    "sequentialize",
+                                    key,
+                                    val,
                                 )?;
                             }
-                            process_lib::send_response(
-                                Some(ProcessManagerResponse::Initialize),
+
+                            let _ = process_lib::send_one_request(
+                                false,
+                                our_name.into(),
+                                "sequentialize".into(),
+                                Some(SequentializeRequest::QueueMessage {
+                                    target_node: Some(our_name.into()),
+                                    target_process: "http_bindings".into(),
+                                    json: Some(serde_json::to_string(
+                                        &serde_json::json!({"action": "set-jwt-secret"})
+                                    )?),
+                                }),
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: Some(jwt_secret_bytes),
+                                },
+                                None::<FileSystemReadContext>,
+                            )?;
+
+                            let _ = process_lib::send_one_request(
+                                false,
+                                our_name.into(),
+                                "sequentialize".into(),
+                                Some(SequentializeRequest::RunQueue),
                                 types::WitPayloadBytes {
                                     circumvent: types::WitCircumvent::False,
                                     content: None,
                                 },
                                 None::<FileSystemReadContext>,
                             )?;
+
                             print_to_terminal(0, "process manager: init reboot done");
                         },
                         None => {
@@ -323,6 +387,7 @@ fn handle_message (
                     "filesystem",
                     Some(wasm_bytes),
                 ) => {
+                    print_to_terminal(1, "process manager: got filesystem Response");
                     let context: FileSystemReadContext = serde_json::from_str(&context)?;
 
                     process_lib::send_one_request(

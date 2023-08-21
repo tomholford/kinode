@@ -394,22 +394,24 @@ async fn clean_contexts(
     contexts_to_clean: &mut Vec<u64>,
 ) {
     for id in contexts_to_clean.drain(..) {
+        // send_to_terminal.send(Printout {
+        //     verbosity: 1,
+        //     content: format!(
+        //         "cleaned up context {}",
+        //         id,
+        //     ),
+        // }).await.unwrap();
+        let _ = contexts.remove(&id);
+    }
+    if contexts.len() > 0 {
         send_to_terminal.send(Printout {
             verbosity: 1,
             content: format!(
-                "cleaned up context {}",
-                id,
+                "contexts now reads: {:?}",
+                contexts,
             ),
         }).await.unwrap();
-        let _ = contexts.remove(&id);
     }
-    send_to_terminal.send(Printout {
-        verbosity: 1,
-        content: format!(
-            "contexts now reads: {:?}",
-            contexts,
-        ),
-    }).await.unwrap();
 }
 
 async fn get_and_send_specific_loop_message_to_process(
@@ -490,7 +492,17 @@ async fn get_and_send_loop_message_to_process(
     //  I no longer think this, but contexts get messed up;
     //  I think due to async-await
     let wrapped_message = match message_queue.pop_front() {
-        Some(m) => m,
+        Some(m) => {
+            send_to_terminal
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!("queue length now {}", message_queue.len()),
+                })
+                .await
+                .unwrap();
+            m
+        },
+        // Some(m) => m,
         None => {
             let wrapped_message = recv_in_process.recv().await.unwrap();
             match message_queue.pop_front() {
@@ -840,27 +852,27 @@ async fn insert_or_increment_context(
         match contexts.remove(&id) {
             Some(mut existing_context) => {
                 existing_context.number_outstanding_requests += 1;
-                send_to_terminal.send(Printout {
-                    verbosity: 1,
-                    content: format!(
-                        "context for {} inc to {}; {:?}",
-                        id,
-                        existing_context.number_outstanding_requests,
-                        existing_context,
-                    ),
-                }).await.unwrap();
+                // send_to_terminal.send(Printout {
+                //     verbosity: 1,
+                //     content: format!(
+                //         "context for {} inc to {}; {:?}",
+                //         id,
+                //         existing_context.number_outstanding_requests,
+                //         existing_context,
+                //     ),
+                // }).await.unwrap();
                 contexts.insert(id, existing_context);
             },
             None => {
-                send_to_terminal.send(Printout {
-                    verbosity: 1,
-                    content: format!(
-                        "context for {} inc to {}; {:?}",
-                        id,
-                        1,
-                        context,
-                    ),
-                }).await.unwrap();
+                // send_to_terminal.send(Printout {
+                //     verbosity: 1,
+                //     content: format!(
+                //         "context for {} inc to {}; {:?}",
+                //         id,
+                //         1,
+                //         context,
+                //     ),
+                // }).await.unwrap();
                 contexts.insert(id, context);
             }
         }
@@ -880,14 +892,14 @@ async fn decrement_context(
                 //  remove context upon receiving next message
                 contexts_to_clean.push(id.clone());
             }
-            send_to_terminal.send(Printout {
-                verbosity: 1,
-                content: format!(
-                    "context for {} dec to {}",
-                    id,
-                    context.number_outstanding_requests,
-                ),
-            }).await.unwrap();
+            // send_to_terminal.send(Printout {
+            //     verbosity: 1,
+            //     content: format!(
+            //         "context for {} dec to {}",
+            //         id,
+            //         context.number_outstanding_requests,
+            //     ),
+            // }).await.unwrap();
         },
         None => {
             send_to_terminal.send(Printout {
@@ -1351,13 +1363,12 @@ async fn make_process_loop(
                 &linker
             ).await.unwrap();
 
-            //  process loop happens inside the WASM component process -- if desired
-            match bindings.call_run_process(
+            let is_error = match bindings.call_run_process(
                 &mut store,
                 &our_name,
                 &process_name,
             ).await {
-                Ok(()) => {},
+                Ok(()) => false,
                 Err(e) => {
                     let _ = send_to_terminal
                         .send(Printout {
@@ -1369,6 +1380,7 @@ async fn make_process_loop(
                             ),
                         })
                         .await;
+                    true
                 }
             };
 
@@ -1408,59 +1420,61 @@ async fn make_process_loop(
                 .await
                 .unwrap();
 
-            match send_on_panic {
-                SendOnPanic::None => {},
-                SendOnPanic::Restart => {
-                    send_to_loop
-                        .send(WrappedMessage {
-                            id: rand::random(),
-                            target: our_pm,
-                            rsvp: None,
-                            message: Ok(Message {
-                                source: our_kernel,
-                                content: MessageContent {
-                                    message_type: MessageType::Request(false),
-                                    payload: Payload {
-                                        json: Some(
-                                            serde_json::to_value(ProcessManagerCommand::Start {
-                                                process_name,
-                                                wasm_bytes_uri,
-                                                send_on_panic,
-                                            }).unwrap()
-                                        ),
-                                        bytes: PayloadBytes {
-                                            circumvent: Circumvent::False,
-                                            content: None
-                                        },
-                                    },
-                                },
-                            }),
-                        })
-                        .await
-                        .unwrap();
-                },
-                SendOnPanic::Requests(requests) => {
-                    for request in requests {
+            if is_error {
+                match send_on_panic {
+                    SendOnPanic::None => {},
+                    SendOnPanic::Restart => {
                         send_to_loop
                             .send(WrappedMessage {
                                 id: rand::random(),
-                                target: request.target,
+                                target: our_pm,
                                 rsvp: None,
                                 message: Ok(Message {
-                                    source: ProcessNode {
-                                        node: our_name.clone(),
-                                        process: process_name.clone(),
-                                    },
+                                    source: our_kernel,
                                     content: MessageContent {
                                         message_type: MessageType::Request(false),
-                                        payload: request.payload,
+                                        payload: Payload {
+                                            json: Some(
+                                                serde_json::to_value(ProcessManagerCommand::Start {
+                                                    process_name,
+                                                    wasm_bytes_uri,
+                                                    send_on_panic,
+                                                }).unwrap()
+                                            ),
+                                            bytes: PayloadBytes {
+                                                circumvent: Circumvent::False,
+                                                content: None
+                                            },
+                                        },
                                     },
                                 }),
                             })
                             .await
                             .unwrap();
-                    }
-                },
+                    },
+                    SendOnPanic::Requests(requests) => {
+                        for request in requests {
+                            send_to_loop
+                                .send(WrappedMessage {
+                                    id: rand::random(),
+                                    target: request.target,
+                                    rsvp: None,
+                                    message: Ok(Message {
+                                        source: ProcessNode {
+                                            node: our_name.clone(),
+                                            process: process_name.clone(),
+                                        },
+                                        content: MessageContent {
+                                            message_type: MessageType::Request(false),
+                                            payload: request.payload,
+                                        },
+                                    }),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                    },
+                }
             }
             Ok(())
         }

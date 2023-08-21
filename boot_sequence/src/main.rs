@@ -67,7 +67,6 @@ async fn save_bytes(process: &str) -> BinSerializableWrappedMessage {
 
 fn start_process_via_pm(process: &str) -> BinSerializableWrappedMessage {
     let wasm_bytes_uri = format!("fs://sequentialize/{}.wasm", process);  //  TODO: how to get wasm files to top-level?
-    // let wasm_bytes_uri = format!("fs://{}.wasm", process);
     make_sequentialize_bswm(BinSerializablePayload {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
@@ -105,7 +104,9 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
             target_process: "process_manager".into(),
-            json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize).unwrap()),
+            json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize {
+                jwt_secret_bytes: None,
+            }).unwrap()),
         }).unwrap()),
         bytes: None,
     }));

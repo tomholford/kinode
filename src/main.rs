@@ -21,6 +21,7 @@ use crate::types::*;
 mod filesystem;
 mod http_client;
 mod http_server;
+mod eth_rpc;
 mod microkernel;
 mod net;
 mod lfs;
@@ -35,6 +36,7 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
+const ETH_RPC_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -106,6 +108,8 @@ async fn main() {
         MessageSender,
         MessageReceiver,
     ) = mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    let (eth_rpc_sender, eth_rpc_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(ETH_RPC_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -483,6 +487,7 @@ async fn main() {
         lfs_message_sender,
         http_server_sender,
         http_client_message_sender,
+        eth_rpc_sender,
     ));
     let net_handle = tokio::spawn(net::networking(
         our.clone(),
@@ -525,6 +530,12 @@ async fn main() {
         http_client_message_receiver,
         print_sender.clone(),
     ));
+    let eth_rpc_handle = tokio::spawn(eth_rpc::eth_rpc(
+        our.name.clone(),
+        kernel_message_sender.clone(),
+        eth_rpc_receiver,
+        print_sender.clone(),
+    ));
     let quit = tokio::select! {
         //  TODO: spin terminal::terminal out into its own task;
         //        get error due to it not being `Send`
@@ -545,6 +556,7 @@ async fn main() {
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},
         _ = http_client_handle => {"".into()},
+        _ = eth_rpc_handle => {"".into()},
         _ = lfs_handle => {"".into()},
     };
     let _ = crossterm::terminal::disable_raw_mode();

@@ -1618,6 +1618,7 @@ async fn make_event_loop(
     send_to_lfs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
+    send_to_eth_rpc: MessageSender,
     send_to_terminal: PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -1627,6 +1628,7 @@ async fn make_event_loop(
             senders.insert("filesystem".to_string(), send_to_fs);
             senders.insert("http_server".to_string(), send_to_http_server.clone());
             senders.insert("http_client".to_string(), send_to_http_client);
+            senders.insert("eth_rpc".to_string(), send_to_eth_rpc);
             senders.insert("lfs".to_string(), send_to_lfs);
 
             let mut process_handles: ProcessHandles = HashMap::new();
@@ -1743,6 +1745,7 @@ pub async fn kernel(
     send_to_lfs: MessageSender,
     send_to_http_server: MessageSender,
     send_to_http_client: MessageSender,
+    send_to_eth_rpc: MessageSender,
 ) {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1762,6 +1765,7 @@ pub async fn kernel(
             send_to_lfs,
             send_to_http_server,
             send_to_http_client,
+            send_to_eth_rpc,
             send_to_terminal.clone(),
             engine,
         ).await

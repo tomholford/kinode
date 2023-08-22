@@ -67,7 +67,6 @@ async fn save_bytes(process: &str) -> BinSerializableWrappedMessage {
 
 fn start_process_via_pm(process: &str) -> BinSerializableWrappedMessage {
     let wasm_bytes_uri = format!("fs://sequentialize/{}.wasm", process);  //  TODO: how to get wasm files to top-level?
-    // let wasm_bytes_uri = format!("fs://{}.wasm", process);
     make_sequentialize_bswm(BinSerializablePayload {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
@@ -92,6 +91,7 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
         "apps_home",
         "http_proxy",
         "file_transfer",
+        "persist",
     ];
 
     let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
@@ -99,6 +99,18 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
     //  start by messaging kernel directly
     boot_sequence.push(start_process_via_kernel("process_manager").await);
     boot_sequence.push(start_process_via_kernel("sequentialize").await);
+
+    //  initialize boot sequence
+    boot_sequence.push(make_sequentialize_bswm(BinSerializablePayload {
+        json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
+            target_node: None,
+            target_process: "process_manager".into(),
+            json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize {
+                jwt_secret_bytes: None,
+            }).unwrap()),
+        }).unwrap()),
+        bytes: None,
+    }));
 
     //  copy wasm bytes into home dir
     for process in &processes_to_start {

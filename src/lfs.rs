@@ -415,6 +415,14 @@ async fn handle_request(
         },
         // specific process manager write:
         FsAction::PmWrite => {
+            if "process_manager" != source.process {
+                return Err(
+                    FileSystemError::LFSError {
+                        error: "Only process_manager can write to PmWrite".into()
+                    }
+                );
+            }
+
             let Some(data) = content.payload.bytes.content.clone() else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
@@ -485,7 +493,7 @@ async fn handle_request(
             message: Ok(Message {
                 source: ProcessNode {
                     node: our_name.clone(),
-                    process: "filesystem".into(),
+                    process: "lfs".into(),
                 },
                 content: MessageContent {
                     message_type: MessageType::Response,
@@ -672,7 +680,7 @@ fn make_error_message(
         message: Err(UqbarError {
             source: ProcessNode {
                 node: our_name,
-                process: "filesystem".into(),
+                process: "lfs".into(),
             },
             timestamp: get_current_unix_time().unwrap(),       //  TODO: handle error?
             content: UqbarErrorContent {
@@ -701,7 +709,7 @@ pub async fn pm_bootstrap(
     let mut log_file = fs::OpenOptions::new()
         .append(true)
         .read(true)
-        .create(true)
+        // .create(true)  //  do not create if DNE
         .open(&log_file_path)
         .await
         .map_err(|_| FileSystemError::LFSError { error: "failed to open log file".into() })?;

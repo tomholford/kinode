@@ -133,6 +133,16 @@ impl bindings::MicrokernelProcess for Component {
                                 },
                             };
                         }
+                        bindings::send_response(Ok((
+                            &types::WitPayload {
+                                json: None,
+                                bytes: types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
+                            },
+                            "".into(),
+                        )));
                     } else if action == "bind-app" && path != "" && app != "" {
                         let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                         if app != "apps_home" && (path_segments.is_empty() || path_segments[0] != app.clone().replace("_", "-")) {

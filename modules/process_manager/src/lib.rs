@@ -36,11 +36,13 @@ pub enum ProcessManagerCommand {
     Stop { process_name: String },
     Restart { process_name: String },
     ListRunningProcesses,
+    PersistState,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcessManagerResponse {
     Initialize,
     ListRunningProcesses { processes: Vec<String> },
+    PersistState([u8; 32]),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,16 +122,21 @@ pub struct ProcessMetadata {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Process {
     metadata: ProcessMetadata,
-    //  persistent_state: Vec[u8]
+    persisted_state_handle: Option<[u8; 32]>,
 }
 
 type Processes = HashMap<String, Process>;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FileSystemReadContext {
-    process_name: String,
-    wasm_bytes_uri: String,
-    send_on_panic: SendOnPanic,
+enum Context {
+    FileSystemRead {
+        process_name: String,
+        wasm_bytes_uri: String,
+        send_on_panic: SendOnPanic,
+    },
+    Persist {
+        process_name: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -153,7 +160,7 @@ fn send_stop_to_loop(
             circumvent: types::WitCircumvent::False,
             content: None,
         },
-        None::<FileSystemReadContext>,
+        None::<Context>,
     )
 }
 
@@ -198,7 +205,7 @@ fn queue_reboot_message(
             circumvent: types::WitCircumvent::False,
             content: None,
         },
-        None::<FileSystemReadContext>,
+        None::<Context>,
     )?;
     Ok(())
 }
@@ -268,7 +275,7 @@ fn handle_message (
                                     circumvent: types::WitCircumvent::False,
                                     content: Some(jwt_secret_bytes),
                                 },
-                                None::<FileSystemReadContext>,
+                                None::<Context>,
                             )?;
 
                             let _ = process_lib::send_one_request(
@@ -280,7 +287,7 @@ fn handle_message (
                                     circumvent: types::WitCircumvent::False,
                                     content: None,
                                 },
-                                None::<FileSystemReadContext>,
+                                None::<Context>,
                             )?;
 
                             print_to_terminal(0, "process manager: init reboot done");
@@ -294,7 +301,7 @@ fn handle_message (
                                     circumvent: types::WitCircumvent::False,
                                     content: None,
                                 },
-                                None::<FileSystemReadContext>,
+                                None::<Context>,
                             )?;
                             print_to_terminal(0, "process manager: init init boot done");
                         },
@@ -322,6 +329,7 @@ fn handle_message (
                                 wasm_bytes_uri: wasm_bytes_uri.clone(),
                                 send_on_panic: send_on_panic.clone(),
                             },
+                            persisted_state_handle: None,
                         },
                     );
 
@@ -337,7 +345,7 @@ fn handle_message (
                             circumvent: types::WitCircumvent::False,
                             content: None,
                         },
-                        Some(FileSystemReadContext {
+                        Some(Context::FileSystemRead {
                             process_name,
                             wasm_bytes_uri,
                             send_on_panic,
@@ -371,7 +379,17 @@ fn handle_message (
                             circumvent: types::WitCircumvent::False,
                             content: None,
                         },
-                        None::<FileSystemReadContext>,
+                        None::<Context>,
+                    )?;
+                },
+                ProcessManagerCommand::PersistState => {
+                    process_lib::send_one_request(
+                        true,
+                        our_name,
+                        "lfs",
+                        Some(FileSystemAction::Write),
+                        message.content.payload.bytes,
+                        Some(Context::Persist { process_name: message.source.process }),
                     )?;
                 },
             }
@@ -388,22 +406,34 @@ fn handle_message (
                     Some(wasm_bytes),
                 ) => {
                     print_to_terminal(1, "process manager: got filesystem Response");
-                    let context: FileSystemReadContext = serde_json::from_str(&context)?;
+                    let Context::FileSystemRead {
+                        process_name,
+                        wasm_bytes_uri,
+                        send_on_panic,
+                    } = serde_json::from_str(&context)? else {
+                        return Err(
+                            anyhow::anyhow!(
+                                "got filesystem Response with incorrect context. Response: {:?}. Context: {}",
+                                message.content.payload.json,
+                                context,
+                            )
+                        );
+                    };
 
                     process_lib::send_one_request(
                         true,
                         &our_name,
                         "kernel",
                         Some(KernelRequest::StartProcess {
-                            process_name: context.process_name,
-                            wasm_bytes_uri: context.wasm_bytes_uri,
-                            send_on_panic: context.send_on_panic,
+                            process_name,
+                            wasm_bytes_uri,
+                            send_on_panic,
                         }),
                         types::WitPayloadBytes {
                             circumvent: types::WitCircumvent::False,
                             content: Some(wasm_bytes),
                         },
-                        None::<FileSystemReadContext>,
+                        None::<Context>,
                     )?;
                 },
                 (
@@ -423,7 +453,7 @@ fn handle_message (
                                     circumvent: types::WitCircumvent::False,
                                     content: None,
                                 },
-                                None::<FileSystemReadContext>,
+                                None::<Context>,
                             )?;
                         },
                         KernelResponse::StopProcess { process_name } => {
@@ -444,8 +474,45 @@ fn handle_message (
                                     circumvent: types::WitCircumvent::False,
                                     content: None,
                                 },
-                                None::<FileSystemReadContext>,
+                                None::<Context>,
                             )?;
+                        },
+                    }
+                },
+                (
+                    our_name,
+                    "lfs",
+                    None,
+                ) => {
+                    match process_lib::parse_message_json(message.content.payload.json)? {
+                        FsResponse::Write(handle) => {
+                            let Context::Persist { process_name } = serde_json::from_str(&context)? else {
+                                return Err(
+                                    anyhow::anyhow!(
+                                        "got lfs Response with incorrect context. Context: {}",
+                                        context,
+                                    )
+                                );
+                            };
+                            let process = processes.get_mut(&process_name)
+                                .ok_or(anyhow::anyhow!(
+                                    "did not find process corresponding to lfs Write"
+                                ))?;
+                            process.persisted_state_handle = Some(handle);
+
+                            let _response = persist_pm_state(&our_name, processes);
+
+                            process_lib::send_response(
+                                Some(ProcessManagerResponse::PersistState(handle)),
+                                types::WitPayloadBytes {
+                                    circumvent: types::WitCircumvent::False,
+                                    content: None,
+                                },
+                                None::<Context>,
+                            )?;
+                        },
+                        _ => {
+                            return Err(anyhow::anyhow!("unexpected LFS Response case"))
                         },
                     }
                 },

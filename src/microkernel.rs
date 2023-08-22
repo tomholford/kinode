@@ -394,13 +394,6 @@ async fn clean_contexts(
     contexts_to_clean: &mut Vec<u64>,
 ) {
     for id in contexts_to_clean.drain(..) {
-        // send_to_terminal.send(Printout {
-        //     verbosity: 1,
-        //     content: format!(
-        //         "cleaned up context {}",
-        //         id,
-        //     ),
-        // }).await.unwrap();
         let _ = contexts.remove(&id);
     }
     if contexts.len() > 0 {
@@ -487,41 +480,10 @@ async fn get_and_send_loop_message_to_process(
 ) -> (WrappedMessage, Result<Result<(wit::WitMessage, String), wit::WitUqbarError>>) {
     clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
-    //
-    //  I think bug is here; somehow queueing messes up contexts (?)
-    //  I no longer think this, but contexts get messed up;
-    //  I think due to async-await
     let wrapped_message = match message_queue.pop_front() {
-        Some(m) => {
-            send_to_terminal
-                .send(Printout {
-                    verbosity: 1,
-                    content: format!("queue length now {}", message_queue.len()),
-                })
-                .await
-                .unwrap();
-            m
-        },
-        // Some(m) => m,
-        None => {
-            let wrapped_message = recv_in_process.recv().await.unwrap();
-            match message_queue.pop_front() {
-                Some(m) => {
-                    message_queue.push_back(wrapped_message);
-                    m
-                },
-                None => wrapped_message,
-            }
-        },
+        Some(message_from_queue) => message_from_queue,
+        None => recv_in_process.recv().await.unwrap(),
     };
-    // let wrapped_message = recv_in_process.recv().await.unwrap();
-    // let wrapped_message = match message_queue.pop_front() {
-    //     Some(m) => {
-    //         message_queue.push_back(wrapped_message);
-    //         m
-    //     },
-    //     None => wrapped_message,
-    // };
 
     let to_loop = send_loop_message_to_process(
         wrapped_message,
@@ -845,34 +807,15 @@ async fn insert_or_increment_context(
     is_expecting_response: bool,
     id: u64,
     context: ProcessContext,
-    send_to_terminal: &PrintSender,
     contexts: &mut HashMap<u64, ProcessContext>,
 ) {
     if is_expecting_response {
         match contexts.remove(&id) {
             Some(mut existing_context) => {
                 existing_context.number_outstanding_requests += 1;
-                // send_to_terminal.send(Printout {
-                //     verbosity: 1,
-                //     content: format!(
-                //         "context for {} inc to {}; {:?}",
-                //         id,
-                //         existing_context.number_outstanding_requests,
-                //         existing_context,
-                //     ),
-                // }).await.unwrap();
                 contexts.insert(id, existing_context);
             },
             None => {
-                // send_to_terminal.send(Printout {
-                //     verbosity: 1,
-                //     content: format!(
-                //         "context for {} inc to {}; {:?}",
-                //         id,
-                //         1,
-                //         context,
-                //     ),
-                // }).await.unwrap();
                 contexts.insert(id, context);
             }
         }
@@ -892,14 +835,6 @@ async fn decrement_context(
                 //  remove context upon receiving next message
                 contexts_to_clean.push(id.clone());
             }
-            // send_to_terminal.send(Printout {
-            //     verbosity: 1,
-            //     content: format!(
-            //         "context for {} dec to {}",
-            //         id,
-            //         context.number_outstanding_requests,
-            //     ),
-            // }).await.unwrap();
         },
         None => {
             send_to_terminal.send(Printout {
@@ -1055,7 +990,6 @@ async fn handle_request(
         is_expecting_response,
         wrapped_message.id,
         process_context,
-        &send_to_terminal,
         contexts,
     ).await;
 
@@ -1140,7 +1074,6 @@ async fn send_process_response_to_loop(
     };
 
     let payload = response.0;
-    // let new_context: Option<serde_json::Value> = serde_json::from_str(&response.1).ok();
     let (id, target) = match make_response_id_target(
         &prompting_message,
         contexts,

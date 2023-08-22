@@ -265,10 +265,13 @@ pub enum ProcessManagerCommand {
     Stop { process_name: String },
     Restart { process_name: String },
     ListRunningProcesses,
+    PersistState,
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcessManagerResponse {
+    Initialize,
     ListRunningProcesses { processes: Vec<String> },
+    PersistState([u8; 32]),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

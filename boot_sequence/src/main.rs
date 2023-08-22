@@ -91,6 +91,7 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
         "apps_home",
         "http_proxy",
         "file_transfer",
+        "persist",
     ];
 
     let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();

@@ -177,7 +177,7 @@ fn persist_pm_state(our_name: &str, processes: &Processes) -> anyhow::Result<typ
     )
 }
 
-fn queue_reboot_message(
+fn queue_reboot_messages(
     our_name: &str,
     our_process_name: &str,
     sequentialize_process_name: &str,
@@ -207,6 +207,46 @@ fn queue_reboot_message(
         },
         None::<Context>,
     )?;
+
+    if let Some(handle) = process.persisted_state_handle {
+        let response = process_lib::send_request_and_await_response(
+            our_name.into(),
+            "lfs".into(),
+            Some(FsAction::Read(handle)),
+            types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: None,
+            },
+        )?;
+
+        match process_lib::parse_message_json(response.content.payload.json)? {
+            FsResponse::Read(_) => {
+                let _ = process_lib::send_one_request(
+                    false,
+                    our_name.into(),
+                    sequentialize_process_name.into(),
+                    Some(SequentializeRequest::QueueMessage {
+                        target_node: Some(our_name.into()),
+                        target_process: process_name.into(),
+                        json: Some(
+                            serde_json::to_string(&serde_json::json!({"Initialize": null}))?
+                        ),
+                    }),
+                    types::WitPayloadBytes {
+                        circumvent: types::WitCircumvent::False,
+                        content: response.content.payload.bytes.content,
+                    },
+                    None::<Context>,
+                )?;
+            },
+            _ => {
+                return Err(
+                    anyhow::anyhow!("got unexpected Fs Response while reading persisted state")
+                );
+            },
+        }
+    };
+
     Ok(())
 }
 
@@ -240,7 +280,7 @@ fn handle_message (
                             match processes.remove(key) {
                                 None => {},
                                 Some(val) => {
-                                    queue_reboot_message(
+                                    queue_reboot_messages(
                                         our_name,
                                         process_name,
                                         "sequentialize",
@@ -251,7 +291,7 @@ fn handle_message (
                             }
 
                             for (key, val) in processes {
-                                queue_reboot_message(
+                                queue_reboot_messages(
                                     our_name,
                                     process_name,
                                     "sequentialize",

@@ -71,7 +71,7 @@ fn persist_state(our_name: &str, state: &State) -> anyhow::Result<types::WitMess
         "process_manager".into(),
         Some(ProcessManagerCommand::PersistState),
         types::WitPayloadBytes {
-            circumvent: types::WitCircumvent::False,
+            circumvent: types::WitCircumvent::Send,
             content: Some(bincode::serialize(state)?),
         },
     )

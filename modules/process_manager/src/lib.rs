@@ -546,12 +546,19 @@ fn handle_message (
                         },
                     }
 
+                    let types::WitPayloadBytes { circumvent: types::WitCircumvent::Circumvented, content: None } =  message.content.payload.bytes else {
+                        return Err(anyhow::anyhow!("must Circumvent::Send to persist state"));
+                    };
+
                     process_lib::send_one_request(
                         true,
                         our_name,
                         "lfs",
                         Some(FileSystemAction::Write),
-                        message.content.payload.bytes,
+                        types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::Receive,
+                            content: None,
+                        },
                         Some(Context::Persist {
                             identifier: de_wit_process_identifier(&message.source.identifier)
                         }),

@@ -5,11 +5,13 @@ use std::sync::Arc;
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::core::utils::Anvil;
 use ethers::middleware::SignerMiddleware;
+use ethers::abi::Token;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum EthRpcAction {
     Call(EthRpcCall),
-    DeployContract
+    SendTransaction(EthRpcCall),
+    DeployContract,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,7 +24,7 @@ struct EthRpcCall {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeployContract {
-    bytecode: String,
+    constructor_args: Token,
     // gas
     // gas_price
     // wallet_address: String // implicit in the provider
@@ -39,7 +41,11 @@ pub async fn eth_rpc(
     let anvil = Anvil::new().spawn();
 
     let wallet: LocalWallet = anvil.keys()[0].clone().into();
-    let wallet2: LocalWallet = anvil.keys()[1].clone().into();
+    
+    print_tx.send(Printout {
+        verbosity: 0,
+        content: format!("eth_rpc: wallet: {:?}", wallet.address()),
+    }).await;
 
     // connect to the network
     let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
@@ -139,6 +145,51 @@ async fn handle_message(
                                 bytes: PayloadBytes{
                                     circumvent: Circumvent::False,
                                     content: Some(call_result.as_ref().to_vec()),
+                                },
+                            },
+                        },
+                    }),
+                }
+            ).await.unwrap();
+        }
+        EthRpcAction::SendTransaction(eth_rpc_call) => {
+            let address: Address = eth_rpc_call.contract_address.parse().unwrap(); // TODO unwrap
+
+            let call_request = TypedTransaction::Legacy(
+                TransactionRequest::new()
+                .to(address)
+                .data(call_data));
+        
+        
+            print_tx.send(Printout {
+                verbosity: 0,
+                content: format!("eth_rpc: tx_request: {:?}", call_request),
+            }).await;
+        
+            let pending = client.send_transaction(call_request, None).await.unwrap(); // TODO unwrap
+            let Some(rx) = pending.await.unwrap() else { panic!("foo")}; // TODO unwrap
+            print_tx.send(Printout {
+                verbosity: 0,
+                content: format!("eth_rpc: tx_result: {:?}", rx.transaction_hash),
+            }).await;
+        
+            send_to_loop.send(
+                WrappedMessage {
+                    id: id.clone(),
+                    target: target,
+                    rsvp: None,
+                    message: Ok(Message {
+                        source: ProcessNode {
+                            node: our,
+                            process: "eth_rpc".to_string(),
+                        },
+                        content: MessageContent {
+                            message_type: MessageType::Response,
+                            payload: Payload {
+                                json: None,
+                                bytes: PayloadBytes{
+                                    circumvent: Circumvent::False,
+                                    content: None, // Some(rx.as_ref().to_vec()),
                                 },
                             },
                         },

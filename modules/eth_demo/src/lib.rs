@@ -18,11 +18,11 @@ const ERC20_COMPILED: &str = include_str!("TestERC20.json");
 struct Component;
 
 // examples
-// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method": "TotalSupply"}
-// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"BalanceOf":"6C679f91954594F0A24E179D6114a2859B2A3a65"}}
-// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method": "TotalSupply"}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"BalanceOf":"8bbe911710c9e592487dde0735db76f83dc44cfd"}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Erc20Action {
@@ -98,52 +98,64 @@ impl bindings::MicrokernelProcess for Component {
 
             let message_from_loop: Erc20Action = serde_json::from_str(message_from_loop_string.as_str()).unwrap();
 
-            let call_data: Vec<u8> = match message_from_loop.method {
+            let (json, call_data): (serde_json::Value, Vec<u8>) = match message_from_loop.method {
                 // views
                 //
-                Erc20Method::TotalSupply => totalSupplyCall{}.encode(),
+                Erc20Method::TotalSupply => {
+                    (
+                        json!({"Call": {"contract_address": message_from_loop.token}}),
+                        totalSupplyCall{}.encode()
+                    )
+                },
                 Erc20Method::BalanceOf(addr) => {
                     let adr: Address = addr.as_str().parse().unwrap();
-                    balanceOfCall{
-                        account: adr
-                    }.encode()
+                    (
+                        json!({"Call": {"contract_address": message_from_loop.token}}),
+                        balanceOfCall{
+                            account: adr
+                        }.encode()
+                    )
                 },
                 // writes
                 //
                 Erc20Method::Transfer(transfer) => {
                     let rec: Address = transfer.recipient.as_str().parse().unwrap();
-                    transferCall{
-                        recipient: rec,
-                        amount: U256::from(transfer.amount) // TODO probably need to think about bignumber stuff here
-                    }.encode()
+                    (
+                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        transferCall{
+                            recipient: rec,
+                            amount: U256::from(transfer.amount) // TODO probably need to think about bignumber stuff here
+                        }.encode()
+                    )
                 },
                 Erc20Method::Approve(approve) => {
                     let addr: Address = approve.spender.as_str().parse().unwrap();
-                    approveCall{
-                        spender: addr,
-                        amount: U256::from(approve.amount) // TODO probably need to think about bignumber stuff here
-                    }.encode()
+                    (
+                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        approveCall{
+                            spender: addr,
+                            amount: U256::from(approve.amount) // TODO probably need to think about bignumber stuff here
+                        }.encode()
+                    )
                 },
                 Erc20Method::TransferFrom(transfer_from) => {
                     let snd: Address = transfer_from.sender.as_str().parse().unwrap();
                     let rec: Address = transfer_from.recipient.as_str().parse().unwrap();
-
-                    transferFromCall{
-                        sender: snd,
-                        recipient: rec,
-                        amount: U256::from(transfer_from.amount) // TODO probably need to think about bignumber stuff here
-                    }.encode()
+                    (
+                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        transferFromCall{
+                            sender: snd,
+                            recipient: rec,
+                            amount: U256::from(transfer_from.amount) // TODO probably need to think about bignumber stuff here
+                        }.encode()
+                    )
                 },
             };
             bindings::print_to_terminal(0, format!("call_data: {:?}", call_data).as_str());
             let res = process_lib::send_request_and_await_response(
                 our.clone(),
                 "eth_rpc".to_string(),
-                Some(json!({
-                    "Call": {
-                        "contract_address": message_from_loop.token,
-                    }
-                })),
+                Some(json),
                 types::WitPayloadBytes {
                     circumvent: types::WitCircumvent::False,
                     content: Some(call_data)

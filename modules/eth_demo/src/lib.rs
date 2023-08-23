@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 mod process_lib;
 
+const ERC20_COMPILED: &str = include_str!("TestERC20.json");
+
 struct Component;
 
 // examples
@@ -70,6 +72,22 @@ impl bindings::MicrokernelProcess for Component {
     fn run_process(our: String, dap: String) {
         bindings::print_to_terminal(0, "eth-demo: start");
 
+        let compiled: serde_json::Value =
+            serde_json::from_str(ERC20_COMPILED).unwrap();
+        let bc: &str = compiled["bytecode"].as_str().unwrap();
+
+        let deployment_res = process_lib::send_request_and_await_response(
+            our.clone(),
+            "eth_rpc".to_string(),
+            Some(json!("DeployContract")),
+            types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: Some(bc.into())
+            },
+        );
+
+        bindings::print_to_terminal(0, format!("asdf: {:?}", deployment_res).as_str());
+
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
             let Some(message_from_loop_string) = message.content.payload.json else {
@@ -120,7 +138,9 @@ impl bindings::MicrokernelProcess for Component {
                 our.clone(),
                 "eth_rpc".to_string(),
                 Some(json!({
-                    "contract_address": message_from_loop.token,
+                    "Call": {
+                        "contract_address": message_from_loop.token,
+                    }
                 })),
                 types::WitPayloadBytes {
                     circumvent: types::WitCircumvent::False,

@@ -242,6 +242,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "cargo-component-bindings",
+ "hex",
  "serde",
  "serde_json",
  "thiserror",

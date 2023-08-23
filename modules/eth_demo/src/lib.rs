@@ -9,6 +9,7 @@ use serde_json::json;
 use alloy_primitives::{address, Address, U256};
 use alloy_sol_types::{sol, SolEnum, SolType, SolCall};
 use serde::{Deserialize, Serialize};
+use hex;
 
 mod process_lib;
 
@@ -17,11 +18,11 @@ const ERC20_COMPILED: &str = include_str!("TestERC20.json");
 struct Component;
 
 // examples
-// !message tuna eth_demo {"token":"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "method": "TotalSupply"}
-// !message tuna eth_demo {"token":"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "method":{"BalanceOf":"8bbe911710c9e592487dde0735db76f83dc44cfd"}}
-// !message tuna eth_demo {"token":"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method": "TotalSupply"}
+// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"BalanceOf":"6C679f91954594F0A24E179D6114a2859B2A3a65"}}
+// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"9fe46736679d2d9a65f0992f2272de9f3c7fa6e0", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Erc20Action {
@@ -74,7 +75,9 @@ impl bindings::MicrokernelProcess for Component {
 
         let compiled: serde_json::Value =
             serde_json::from_str(ERC20_COMPILED).unwrap();
-        let bc: &str = compiled["bytecode"].as_str().unwrap();
+
+        // NOTE I stripped off the 0x in the bytecode...should probably find a way to just strip that off
+        let bc: Vec<u8> = hex::decode(compiled["bytecode"].as_str().unwrap()).unwrap();
 
         let deployment_res = process_lib::send_request_and_await_response(
             our.clone(),
@@ -86,7 +89,7 @@ impl bindings::MicrokernelProcess for Component {
             },
         );
 
-        bindings::print_to_terminal(0, format!("asdf: {:?}", deployment_res).as_str());
+        bindings::print_to_terminal(0, format!("ERC20 address: {:?}", hex::encode(deployment_res.unwrap().content.payload.bytes.content.unwrap())).as_str());
 
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly

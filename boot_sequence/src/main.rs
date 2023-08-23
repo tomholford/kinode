@@ -18,7 +18,7 @@ fn make_sequentialize_bswm(payload: BinSerializablePayload) -> BinSerializableWr
     }
 }
 
-async fn start_process_via_kernel(process: &str) -> BinSerializableWrappedMessage {
+async fn start_process_via_kernel(process: &str, id: u64) -> BinSerializableWrappedMessage {
     let wasm_bytes_uri = format!("fs://sequentialize/{}.wasm", process);
     let process_wasm_path =
         format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
@@ -35,7 +35,8 @@ async fn start_process_via_kernel(process: &str) -> BinSerializableWrappedMessag
                 payload: BinSerializablePayload {
                     json: Some(serde_json::to_vec(
                         &KernelRequest::StartProcess {
-                            process_name: (*process).into(),
+                            id,
+                            name: Some((*process).into()),
                             wasm_bytes_uri,
                             send_on_panic: SendOnPanic::None,  //  TODO: enable Restart
                         }
@@ -55,7 +56,7 @@ async fn save_bytes(process: &str) -> BinSerializableWrappedMessage {
     make_sequentialize_bswm(BinSerializablePayload {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
-            target_process: "filesystem".into(),
+            target_process: ProcessIdentifier::Name("filesystem".into()),
             json: Some(serde_json::to_string(&FileSystemRequest {
                 uri_string,
                 action: FileSystemAction::Write,
@@ -70,9 +71,9 @@ fn start_process_via_pm(process: &str) -> BinSerializableWrappedMessage {
     make_sequentialize_bswm(BinSerializablePayload {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
-            target_process: "process_manager".into(),
+            target_process: ProcessIdentifier::Name("process_manager".into()),
             json: Some(serde_json::to_string(&ProcessManagerCommand::Start {
-                process_name: (*process).into(),
+                name: Some((*process).into()),
                 wasm_bytes_uri,
                 send_on_panic: SendOnPanic::Restart,
             }).unwrap()),
@@ -90,21 +91,21 @@ pub async fn pill() -> Vec<BinSerializableWrappedMessage> {
         "http_bindings",
         "apps_home",
         "http_proxy",
-        "file_transfer",
+        // "file_transfer",
         "persist",
     ];
 
     let mut boot_sequence: Vec<BinSerializableWrappedMessage> = Vec::new();
 
     //  start by messaging kernel directly
-    boot_sequence.push(start_process_via_kernel("process_manager").await);
-    boot_sequence.push(start_process_via_kernel("sequentialize").await);
+    boot_sequence.push(start_process_via_kernel("process_manager", PROCESS_MANAGER_ID).await);
+    boot_sequence.push(start_process_via_kernel("sequentialize", rand::random()).await);
 
     //  initialize boot sequence
     boot_sequence.push(make_sequentialize_bswm(BinSerializablePayload {
         json: Some(serde_json::to_vec(&SequentializeRequest::QueueMessage {
             target_node: None,
-            target_process: "process_manager".into(),
+            target_process: ProcessIdentifier::Name("process_manager".into()),
             json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize {
                 jwt_secret_bytes: None,
             }).unwrap()),

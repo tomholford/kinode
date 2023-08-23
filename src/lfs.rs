@@ -124,7 +124,7 @@ pub async fn fs_sender(
             continue;
         };
 
-        let source_process = &source.process;
+        let source_identifier = &source.identifier;
         if our_name != source.node {
             println!(
                 "fs: request must come from our_name={}, got: {}",
@@ -137,7 +137,7 @@ pub async fn fs_sender(
         let hash_index_clone = hash_index.clone();
 
         let our_name = our_name.clone();
-        let source_process = source_process.into();
+        let source_identifier = source_identifier.clone();
         let id = id.clone();
         let send_to_loop = send_to_loop.clone();
         let send_to_terminal = send_to_terminal.clone();
@@ -155,7 +155,7 @@ pub async fn fs_sender(
             .await
             {
                 send_to_loop
-                    .send(make_error_message(our_name.into(), id, source_process, e))
+                    .send(make_error_message(our_name.into(), id, source_identifier, e))
                     .await
                     .unwrap();
             }
@@ -170,7 +170,7 @@ async fn handle_request(
     manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>>,
     hash_index: Arc<RwLock<HashMap<[u8; 32], u128>>>,
     send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
+    _send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
     let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
             = wrapped_message else {
@@ -252,7 +252,7 @@ async fn handle_request(
                         wal_position,
                     };
 
-                    let mut new_file = InMemoryFile {
+                    let new_file = InMemoryFile {
                         hasher: hasher,
                         chunks: vec![memory_chunk],
                     };
@@ -415,10 +415,17 @@ async fn handle_request(
         },
         // specific process manager write:
         FsAction::PmWrite => {
-            if "process_manager" != source.process {
+            let ProcessIdentifier::Name(ref source_process) = source.identifier else {
                 return Err(
                     FileSystemError::LFSError {
-                        error: "Only process_manager can write to PmWrite".into()
+                        error: "Only process_manager can write to PmWrite 0".into()
+                    }
+                );
+            };
+            if "process_manager" != source_process {
+                return Err(
+                    FileSystemError::LFSError {
+                        error: "Only process_manager can write to PmWrite 1".into()
                     }
                 );
             }
@@ -459,7 +466,7 @@ async fn handle_request(
                         wal_position,
                     };
 
-                    let mut new_file = InMemoryFile {
+                    let new_file = InMemoryFile {
                         hasher: hasher,
                         chunks: vec![memory_chunk],
                     };
@@ -485,15 +492,15 @@ async fn handle_request(
     if is_expecting_response {
         let response = WrappedMessage {
             id,
-            target: ProcessNode {
+            target: ProcessReference {
                 node: our_name.clone(),
-                process: source.process.clone(),
+                identifier: source.identifier.clone(),
             },
             rsvp,
             message: Ok(Message {
-                source: ProcessNode {
+                source: ProcessReference {
                     node: our_name.clone(),
-                    process: "lfs".into(),
+                    identifier: ProcessIdentifier::Name("lfs".into()),
                 },
                 content: MessageContent {
                     message_type: MessageType::Response,
@@ -571,7 +578,7 @@ async fn load_wal(
         log_file.read_exact(&mut data_buffer).await?;
 
         match chunk_entry_metadata {
-            Ok(mut entry) => {
+            Ok(entry) => {
 
                 // Calculate the wal_position for the data
                 let memory_chunk = MemoryChunk {
@@ -667,20 +674,20 @@ async fn get_chunk_data(log_file: &mut fs::File, wal_position: u64) -> Result<Ve
 fn make_error_message(
     our_name: String,
     id: u64,
-    source_process: String,
+    source_identifier: ProcessIdentifier,
     error: FileSystemError,
 ) -> WrappedMessage {
     WrappedMessage {
         id,
-        target: ProcessNode {
+        target: ProcessReference {
             node: our_name.clone(),
-            process: source_process,
+            identifier: source_identifier,
         },
         rsvp: None,
         message: Err(UqbarError {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our_name,
-                process: "lfs".into(),
+                identifier: ProcessIdentifier::Name("lfs".into()),
             },
             timestamp: get_current_unix_time().unwrap(),       //  TODO: handle error?
             content: UqbarErrorContent {

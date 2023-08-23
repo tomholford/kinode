@@ -53,7 +53,7 @@ async fn create_dir_if_dne(path: &str) -> Result<(), FileSystemError> {
 
 async fn to_absolute_path(
     home_directory_path: &str,
-    source_process: &str,
+    _source_process: &str,
     uri_string: &str
 ) -> Result<String, FileSystemError> {
     let uri = match uri_string.parse::<Uri>() {
@@ -196,15 +196,15 @@ fn make_error_message(
 ) -> WrappedMessage {
     WrappedMessage {
         id,
-        target: ProcessNode {
+        target: ProcessReference {
             node: our_name.clone(),
-            process: source_process,
+            identifier: ProcessIdentifier::Name(source_process),
         },
         rsvp: None,
         message: Err(UqbarError {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our_name,
-                process: "filesystem".into(),
+                identifier: ProcessIdentifier::Name("filesystem".into()),
             },
             timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
             content: UqbarErrorContent {
@@ -244,7 +244,14 @@ pub async fn fs_sender(
             panic!("filesystem: unexpected Error")  //  TODO: implement error handling
         };
 
-        let source_process = &source.process;
+        let ProcessIdentifier::Name(source_process) = &source.identifier else {
+            panic!("filesystem: require source identifier contain process name")
+            // return Err(FileSystemError::FsError {
+            //     what: "to_absolute_path".into(),
+            //     path: "home_directory_path".into(),
+            //     error: "need source process name".into(),
+            // })
+        };
         if our_name != source.node {
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
@@ -372,7 +379,15 @@ async fn handle_request(
         },
     };
 
-    let source_process = &source.process;
+    // let source_process = &source.process;
+    let ProcessIdentifier::Name(source_process) = &source.identifier else {
+        // panic!("filesystem: require source identifier contain process name")
+        return Err(FileSystemError::FsError {
+            what: "to_absolute_path".into(),
+            path: "home_directory_path".into(),
+            error: "need source process name".into(),
+        })
+    };
     // let file_path = get_file_path(&request.uri_string).await;
     let file_path = to_absolute_path(
         &home_directory_path,
@@ -832,15 +847,15 @@ async fn handle_request(
     if is_expecting_response {
         let response = WrappedMessage {
             id,
-            target: ProcessNode {
+            target: ProcessReference {
                 node: our_name.clone(),
-                process: source.process.clone(),
+                identifier: source.identifier.clone(),
             },
             rsvp,
             message: Ok(Message {
-                source: ProcessNode {
+                source: ProcessReference {
                     node: our_name.clone(),
-                    process: "filesystem".into(),
+                    identifier: ProcessIdentifier::Name("filesystem".into()),
                 },
                 content: MessageContent {
                     message_type: MessageType::Response,

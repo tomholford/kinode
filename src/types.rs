@@ -4,6 +4,13 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use ring::digest;
 
+pub const PROCESS_MANAGER_ID: u64 = 0;
+pub const KERNEL_ID: u64 = 1;
+pub const FILESYSTEM_ID: u64 = 57005;
+pub const HTTP_SERVER_ID: u64 = 48879;
+pub const HTTP_CLIENT_ID: u64 = 51966;
+pub const LFS_ID: u64 = 47806;
+
 pub type MessageSender = tokio::sync::mpsc::Sender<WrappedMessage>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
 
@@ -43,9 +50,20 @@ pub struct IdentityTransaction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessNode {
+pub struct ProcessReference {
     pub node: String,
-    pub process: String,
+    pub identifier: ProcessIdentifier,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessAddress {
+    pub node: String,
+    pub id: u64,
+    pub name: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,14 +89,16 @@ pub enum Circumvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WrappedMessage {
     pub id: u64,
-    pub target: ProcessNode,
+    // pub target: ProcessNode,
+    pub target: ProcessReference,
     pub rsvp: Rsvp,
     pub message: Result<Message, UqbarError>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UqbarError {
-    pub source: ProcessNode,
+    // pub source: ProcessNode,
+    pub source: ProcessReference,
     pub timestamp: u64,
     pub content: UqbarErrorContent,
 }
@@ -93,11 +113,12 @@ pub struct UqbarErrorContent {
 //  kernel sets in case, e.g.,
 //   A requests response from B does not request response from C
 //   -> kernel sets `Some(A) = Rsvp` for B's request to C
-pub type Rsvp = Option<ProcessNode>;
+// pub type Rsvp = Option<ProcessNode>;
+pub type Rsvp = Option<ProcessReference>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
-    pub source: ProcessNode,
+    pub source: ProcessReference,
     pub content: MessageContent,
 }
 
@@ -151,13 +172,13 @@ pub enum NetworkingError {
     #[error("Some bug in the networking code")]
     NetworkingBug,
 }
-impl std::fmt::Display for ProcessNode {
+impl std::fmt::Display for ProcessReference {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "{{ node: {}, process: {} }}",
+            "{{ node: {}, identifier: {:?} }}",
             self.node,
-            self.process,
+            self.identifier,
         )
     }
 }
@@ -248,7 +269,7 @@ pub struct Printout {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestOnPanic {
-    pub target: ProcessNode,
+    pub target: ProcessReference,
     pub payload: Payload,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -261,32 +282,42 @@ pub enum SendOnPanic {
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
     Initialize { jwt_secret_bytes: Option<Vec<u8>> },
-    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    Stop { process_name: String },
-    Restart { process_name: String },
-    ListRunningProcesses,
+    Start { name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { id: u64 },
+    Restart { id: u64 },
+    ListRegisteredProcesses,
     PersistState,
+    RebootStart { id: u64, name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },  //  TODO: remove
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcessManagerResponse {
     Initialize,
+    Start { id: u64, name: Option<String> },
     ListRunningProcesses { processes: Vec<String> },
     PersistState([u8; 32]),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelRequest {
-    StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    StopProcess { process_name: String },
+    StartProcess {
+        id: u64,
+        name: Option<String>,
+        wasm_bytes_uri: String,
+        send_on_panic: SendOnPanic,
+    },
+    StopProcess { id: u64 },
+    RegisterProcess { id: u64, name: String },
+    UnregisterProcess { id: u64 },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelResponse {
     StartProcess(ProcessMetadata),
-    StopProcess { process_name: String },
+    StopProcess { id: u64 },
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
-    pub our: ProcessNode,
+    pub our: ProcessAddress,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     pub send_on_panic: SendOnPanic,
 }
@@ -410,6 +441,10 @@ pub type DiskKey = [u8; CREDENTIAL_LEN];
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    QueueMessage {
+        target_node: Option<String>,
+        target_process: ProcessIdentifier,
+        json: Option<String>,
+    },
     RunQueue,
 }

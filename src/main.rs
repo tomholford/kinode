@@ -229,21 +229,22 @@ async fn main() {
         kernel_message_sender
             .send(WrappedMessage {
                 id: rand::random(),
-                target: ProcessNode{
+                target: ProcessReference {
                     node: our_identity.name.clone(),
-                    process: "kernel".into()
+                    identifier: ProcessIdentifier::Name("kernel".into()),
                 },
                 rsvp: None,
                 message: Ok(Message {
-                    source: ProcessNode{
+                    source: ProcessReference {
                         node: our_identity.name.clone(),
-                        process: "kernel".into()
+                        identifier: ProcessIdentifier::Name("kernel".into()),
                     },
                     content: MessageContent {
                         message_type: MessageType::Request(false),
                         payload: Payload {
                             json: Some(serde_json::to_value(KernelRequest::StartProcess {
-                                process_name: "process_manager".into(),
+                                id: PROCESS_MANAGER_ID,
+                                name: Some("process_manager".into()),
                                 wasm_bytes_uri: "fs://sequentialize/process_manager.wasm"
                                     .into(),  //  TODO: stop cheating
                                 send_on_panic: SendOnPanic::None,  //  TODO: enable Restart
@@ -269,21 +270,22 @@ async fn main() {
         kernel_message_sender
             .send(WrappedMessage {
                 id: rand::random(),
-                target: ProcessNode{
+                target: ProcessReference {
                     node: our_identity.name.clone(),
-                    process: "kernel".into()
+                    identifier: ProcessIdentifier::Name("kernel".into()),
                 },
                 rsvp: None,
                 message: Ok(Message {
-                    source: ProcessNode{
+                    source: ProcessReference {
                         node: our_identity.name.clone(),
-                        process: "kernel".into()
+                        identifier: ProcessIdentifier::Name("kernel".into()),
                     },
                     content: MessageContent {
                         message_type: MessageType::Request(false),
                         payload: Payload {
                             json: Some(serde_json::to_value(KernelRequest::StartProcess {
-                                process_name: "sequentialize".into(),
+                                id: rand::random(),
+                                name: Some("sequentialize".into()),
                                 wasm_bytes_uri: "fs://sequentialize/sequentialize.wasm".into(),
                                 send_on_panic: SendOnPanic::None,
                             }).unwrap()),
@@ -302,15 +304,15 @@ async fn main() {
         kernel_message_sender
             .send(WrappedMessage {
                 id: rand::random(),
-                target: ProcessNode{
+                target: ProcessReference {
                     node: our_identity.name.clone(),
-                    process: "process_manager".into()
+                    identifier: ProcessIdentifier::Name("process_manager".into()),
                 },
                 rsvp: None,
                 message: Ok(Message {
-                    source: ProcessNode{
+                    source: ProcessReference {
                         node: our_identity.name.clone(),
-                        process: "kernel".into()
+                        identifier: ProcessIdentifier::Name("kernel".into()),
                     },
                     content: MessageContent {
                         message_type: MessageType::Request(false),
@@ -465,15 +467,15 @@ async fn main() {
             kernel_message_sender
                 .send(WrappedMessage {
                     id: bin_message.id,
-                    target: ProcessNode {
+                    target: ProcessReference {
                         node: our.name.clone(),
-                        process: bin_message.target_process,
+                        identifier: ProcessIdentifier::Name(bin_message.target_process),
                     },
                     rsvp: None,
                     message: Ok(Message {
-                        source: ProcessNode {
+                        source: ProcessReference {
                             node: our.name.clone(),
-                            process: "kernel".into(),
+                            identifier: ProcessIdentifier::Name("kernel".into()),
                         },
                         content: MessageContent {
                             message_type: bin_message.message.content.message_type,
@@ -499,17 +501,17 @@ async fn main() {
                 .unwrap();
         }
 
-        let our_kernel = ProcessNode {
+        let our_kernel = ProcessReference {
             node: our.name.clone(),
-            process: "kernel".into(),
+            identifier: ProcessIdentifier::Name("kernel".into()),
         };
 
         // send jwt_secret to http_bindings
         let set_jwt_secret_message = WrappedMessage {
             id: rand::random(),
-            target: ProcessNode {
+            target: ProcessReference {
                 node: our.name.clone(),
-                process: "sequentialize".into(),
+                identifier: ProcessIdentifier::Name("sequentialize".into()),
             },
             rsvp: None,
             message: Ok(Message {
@@ -519,7 +521,7 @@ async fn main() {
                     payload: Payload {
                         json: Some(serde_json::to_value(&SequentializeRequest::QueueMessage {
                             target_node: Some(our.name.clone()),
-                            target_process: "http_bindings".into(),
+                            target_process: ProcessIdentifier::Name("http_bindings".into()),
                             json: Some(serde_json::to_string(
                                 &serde_json::json!({"action": "set-jwt-secret"})
                             ).unwrap()),
@@ -537,9 +539,9 @@ async fn main() {
         // run sequentialize queue -- from boot sequence
         let run_sequentialize_queue = WrappedMessage {
             id: rand::random(),
-            target: ProcessNode {
+            target: ProcessReference {
                 node: our.name.clone(),
-                process: "sequentialize".into(),
+                identifier: ProcessIdentifier::Name("sequentialize".into()),
             },
             rsvp: None,
             message: Ok(Message {

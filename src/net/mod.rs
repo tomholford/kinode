@@ -496,18 +496,18 @@ fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, Networkin
 fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -> WrappedMessage {
     WrappedMessage {
         id: wm.id,
-        target: ProcessNode {
+        target: ProcessReference {
             node: our.name.clone(),
-            process: match wm.message {
-                Ok(m) => m.source.process,
-                Err(e) => e.source.process,
+            identifier: match wm.message {
+                Ok(m) => m.source.identifier,
+                Err(e) => e.source.identifier,
             },
         },
         rsvp: None,
         message: Ok(Message {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our.name.clone(),
-                process: "net".into(),
+                identifier: ProcessIdentifier::Name("net".into()),
             },
             content: MessageContent {
                 message_type: MessageType::Response,

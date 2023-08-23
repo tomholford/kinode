@@ -18,7 +18,7 @@ struct Payload {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestOnPanic {
-    target: ProcessNode,
+    target: ProcessReference,
     payload: Payload,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,16 +32,18 @@ pub enum SendOnPanic {
 #[serde(tag = "type")]
 pub enum ProcessManagerCommand {
     Initialize { jwt_secret_bytes: Option<Vec<u8>> },
-    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    Stop { process_name: String },
-    Restart { process_name: String },
-    ListRunningProcesses,
+    Start { name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { id: u64 },
+    Restart { id: u64 },
+    ListRegisteredProcesses,
     PersistState,
+    RebootStart { id: u64, name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },  //  TODO: remove
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcessManagerResponse {
     Initialize,
-    ListRunningProcesses { processes: Vec<String> },
+    Start { id: u64, name: Option<String> },
+    ListRegisteredProcesses { processes: Vec<String> },
     PersistState([u8; 32]),
 }
 
@@ -97,24 +99,41 @@ pub struct ReadChunkRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelRequest {
-    StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    StopProcess { process_name: String },
+    StartProcess {
+        id: u64,
+        name: Option<String>,
+        wasm_bytes_uri: String,
+        send_on_panic: SendOnPanic,
+    },
+    StopProcess { id: u64 },
+    RegisterProcess { id: u64, name: String },
+    UnregisterProcess { id: u64 },
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelResponse {
     StartProcess(ProcessMetadata),
-    StopProcess { process_name: String },
+    StopProcess { id: u64 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessNode {
+pub struct ProcessReference {
     pub node: String,
-    pub process: String,
+    pub identifier: ProcessIdentifier,
 }
-
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessAddress {
+    pub node: String,
+    pub id: u64,
+    pub name: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
-    pub our: ProcessNode,
+    pub our: ProcessAddress,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     send_on_panic: SendOnPanic,
 }
@@ -125,37 +144,43 @@ pub struct Process {
     persisted_state_handle: Option<[u8; 32]>,
 }
 
-type Processes = HashMap<String, Process>;
+type Names = HashMap<String, u64>;
+type Processes = HashMap<u64, Process>;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Context {
     FileSystemRead {
-        process_name: String,
+        id: u64,
+        name: Option<String>,
         wasm_bytes_uri: String,
         send_on_panic: SendOnPanic,
     },
     Persist {
-        process_name: String,
+        identifier: ProcessIdentifier,
     },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    QueueMessage {
+        target_node: Option<String>,
+        target_process: ProcessIdentifier,
+        json: Option<String>,
+    },
     RunQueue,
 }
 
 fn send_stop_to_loop(
     our_name: String,
-    process_name: String,
+    process_id: u64,
     is_expecting_response: bool,
 ) -> anyhow::Result<()> {
     process_lib::send_one_request(
         is_expecting_response,
         &our_name,
         "kernel",
-        Some(KernelRequest::StopProcess { process_name }),
+        Some(KernelRequest::StopProcess { id: process_id }),
         types::WitPayloadBytes {
             circumvent: types::WitCircumvent::False,
             content: None,
@@ -177,11 +202,115 @@ fn persist_pm_state(our_name: &str, processes: &Processes) -> anyhow::Result<typ
     )
 }
 
+fn derive_names(processes: &Processes) -> Names {
+    processes
+        .iter()
+        .filter_map(|(key, process)| {
+            match process.metadata.our.name {
+                None => None,
+                Some(ref name) => Some((name.clone(), *key)),
+            }
+        })
+        .collect()
+}
+
+fn de_wit_process_identifier(wit: &types::WitProcessIdentifier) -> ProcessIdentifier {
+    match wit {
+        types::WitProcessIdentifier::Id(id) => ProcessIdentifier::Id(id.clone()),
+        types::WitProcessIdentifier::Name(name) => ProcessIdentifier::Name(name.clone()),
+    }
+}
+
+fn remove_process(
+    id: u64,
+    processes: &mut Processes,
+    names: &mut Names,
+) -> anyhow::Result<Process> {
+    let removed = processes
+        .remove(&id)
+        .ok_or(anyhow::anyhow!("no process data found to remove"))?;
+    match removed.metadata.our.name {
+        None => {},
+        Some(ref name) => {
+            let _ = names.remove(name);
+        },
+    }
+
+    Ok(removed)
+}
+
+fn begin_start_process(
+    id: u64,
+    name: Option<String>,
+    wasm_bytes_uri: String,
+    send_on_panic: SendOnPanic,
+    our_name: &str,
+    reserved_process_names: &HashSet<String>,
+    processes: &mut Processes,
+    names: &mut Names,
+) -> anyhow::Result<()> {
+    print_to_terminal(1, "process manager: start");
+    match name {
+        None => {},
+        Some(ref name) => {
+            if reserved_process_names.contains(name) {
+                return Err(anyhow::anyhow!(
+                    "cannot add process {} with name amongst {:?}",
+                    name,
+                    reserved_process_names.iter().collect::<Vec<_>>(),
+                ))
+            }
+        },
+    }
+
+    //  store in memory until get KernelResponse::StartProcess
+    processes.insert(
+        id.clone(),
+        Process {
+            metadata: ProcessMetadata {
+                our: ProcessAddress {
+                    node: our_name.into(),
+                    id: id.clone(),
+                    name: name.clone(),
+                },
+                wasm_bytes_uri: wasm_bytes_uri.clone(),
+                send_on_panic: send_on_panic.clone(),
+            },
+            persisted_state_handle: None,
+        },
+    );
+    if let Some(ref n) = name {
+        names.insert(n.clone(), id.clone());
+    }
+
+    process_lib::send_one_request(
+        true,
+        &our_name,
+        "filesystem",
+        Some(FileSystemRequest {
+            uri_string: wasm_bytes_uri.clone(),
+            action: FileSystemAction::Read,
+        }),
+        types::WitPayloadBytes {
+            circumvent: types::WitCircumvent::False,
+            content: None,
+        },
+        Some(Context::FileSystemRead {
+            id,
+            name,
+            wasm_bytes_uri,
+            send_on_panic,
+        }),
+    )?;
+
+    Ok(())
+}
+
 fn queue_reboot_messages(
     our_name: &str,
     our_process_name: &str,
     sequentialize_process_name: &str,
-    process_name: &str,
+    process_id: &u64,
     process: &Process,
 ) -> anyhow::Result<()> {
     let wasm_bytes_uri = process.metadata.wasm_bytes_uri.clone();
@@ -192,10 +321,11 @@ fn queue_reboot_messages(
         sequentialize_process_name.into(),
         Some(SequentializeRequest::QueueMessage {
             target_node: Some(our_name.into()),
-            target_process: our_process_name.into(),
+            target_process: ProcessIdentifier::Name(our_process_name.into()),
             json: Some(serde_json::to_string(
-                &ProcessManagerCommand::Start {
-                    process_name: process_name.into(),
+                &ProcessManagerCommand::RebootStart {
+                    id: process.metadata.our.id.clone(),
+                    name: process.metadata.our.name.clone(),
                     wasm_bytes_uri,
                     send_on_panic,
                 }
@@ -227,7 +357,7 @@ fn queue_reboot_messages(
                     sequentialize_process_name.into(),
                     Some(SequentializeRequest::QueueMessage {
                         target_node: Some(our_name.into()),
-                        target_process: process_name.into(),
+                        target_process: ProcessIdentifier::Id(process_id.clone()),
                         json: Some(
                             serde_json::to_string(&serde_json::json!({"Initialize": null}))?
                         ),
@@ -252,6 +382,7 @@ fn queue_reboot_messages(
 
 fn handle_message (
     processes: &mut Processes,
+    names: &mut Names,
     our_name: &str,
     process_name: &str,
     reserved_process_names: &HashSet<String>,
@@ -275,28 +406,38 @@ fn handle_message (
                                 return Err(anyhow::anyhow!("reboot requires jwt input"));
                             };
                             *processes = bincode::deserialize(&bytes[..])?;
+                            *names = derive_names(processes);
 
-                            let key = "http_bindings";
-                            match processes.remove(key) {
-                                None => {},
-                                Some(val) => {
+                            let name = "http_bindings";
+                            let id = names
+                                .get(name)
+                                .ok_or(anyhow::anyhow!(
+                                    "must have registered http_bindings to reboot"
+                                ))?;
+                            match processes.remove(id) {
+                                None => {
+                                    return Err(anyhow::anyhow!(
+                                        "must have registered http_bindings to reboot"
+                                    ));
+                                },
+                                Some(process) => {
                                     queue_reboot_messages(
                                         our_name,
                                         process_name,
                                         "sequentialize",
-                                        key,
-                                        &val,
+                                        id,
+                                        &process,
                                     )?;
                                 },
                             }
 
-                            for (key, val) in processes {
+                            for (id, process) in processes {
                                 queue_reboot_messages(
                                     our_name,
                                     process_name,
                                     "sequentialize",
-                                    key,
-                                    val,
+                                    id,
+                                    process,
                                 )?;
                             }
 
@@ -306,7 +447,9 @@ fn handle_message (
                                 "sequentialize".into(),
                                 Some(SequentializeRequest::QueueMessage {
                                     target_node: Some(our_name.into()),
-                                    target_process: "http_bindings".into(),
+                                    target_process: ProcessIdentifier::Name(
+                                        "http_bindings".into()
+                                    ),
                                     json: Some(serde_json::to_string(
                                         &serde_json::json!({"action": "set-jwt-secret"})
                                     )?),
@@ -347,71 +490,39 @@ fn handle_message (
                         },
                     }
                 },
-                ProcessManagerCommand::Start { process_name, wasm_bytes_uri, send_on_panic } => {
-                    print_to_terminal(1, "process manager: start");
-                    if reserved_process_names.contains(&process_name) {
-                        return Err(anyhow::anyhow!(
-                            "cannot add process {} with name amongst {:?}",
-                            &process_name,
-                            reserved_process_names.iter().collect::<Vec<_>>(),
-                        ))
-                    }
-
-                    //  store in memory until get KernelResponse::StartProcess
-                    processes.insert(
-                        process_name.clone(),
-                        Process {
-                            metadata: ProcessMetadata {
-                                our: ProcessNode {
-                                    node: our_name.into(),
-                                    process: process_name.clone(),
-                                },
-                                wasm_bytes_uri: wasm_bytes_uri.clone(),
-                                send_on_panic: send_on_panic.clone(),
-                            },
-                            persisted_state_handle: None,
-                        },
-                    );
-
-                    process_lib::send_one_request(
-                        true,
-                        &our_name,
-                        "filesystem",
-                        Some(FileSystemRequest {
-                            uri_string: wasm_bytes_uri.clone(),
-                            action: FileSystemAction::Read,
-                        }),
-                        types::WitPayloadBytes {
-                            circumvent: types::WitCircumvent::False,
-                            content: None,
-                        },
-                        Some(Context::FileSystemRead {
-                            process_name,
-                            wasm_bytes_uri,
-                            send_on_panic,
-                        }),
+                ProcessManagerCommand::Start { name, wasm_bytes_uri, send_on_panic } => {
+                    let id = bindings::get_insecure_uniform_u64();
+                    begin_start_process(
+                        id,
+                        name,
+                        wasm_bytes_uri,
+                        send_on_panic,
+                        our_name,
+                        &reserved_process_names,
+                        processes,
+                        names,
                     )?;
                 },
-                ProcessManagerCommand::Stop { process_name } => {
+                ProcessManagerCommand::Stop { id } => {
                     print_to_terminal(1, "process manager: stop");
                     let _ = processes
-                        .remove(&process_name)
+                        .remove(&id)
                         .ok_or(anyhow::anyhow!("no process data found to remove"))?;
 
                     let _response = persist_pm_state(our_name, processes);
-                    send_stop_to_loop(our_name.into(), process_name, false)?;
+                    send_stop_to_loop(our_name.into(), id, false)?;
 
                     println!("process manager: {:?}\r", processes.keys().collect::<Vec<_>>());
                 },
-                ProcessManagerCommand::Restart { process_name } => {
+                ProcessManagerCommand::Restart { id } => {
                     print_to_terminal(1, "process manager: restart");
 
-                    send_stop_to_loop(our_name.into(), process_name, true)?;
+                    send_stop_to_loop(our_name.into(), id, true)?;
                 },
-                ProcessManagerCommand::ListRunningProcesses => {
+                ProcessManagerCommand::ListRegisteredProcesses => {
                     process_lib::send_response(
-                        Some(ProcessManagerResponse::ListRunningProcesses {
-                            processes: processes.iter()
+                        Some(ProcessManagerResponse::ListRegisteredProcesses {
+                            processes: names.iter()
                                 .map(|(key, _value)| key.clone())
                                 .collect()
                         }),
@@ -423,21 +534,50 @@ fn handle_message (
                     )?;
                 },
                 ProcessManagerCommand::PersistState => {
+                    match message.source.identifier {
+                        types::WitProcessIdentifier::Id(_) => {},
+                        types::WitProcessIdentifier::Name(ref name) => {
+                            if !names.contains_key(name) {
+                                return Err(anyhow::anyhow!(
+                                    "cannot PersistState: '{}' not registered",
+                                    name,
+                                ));
+                            }
+                        },
+                    }
+
                     process_lib::send_one_request(
                         true,
                         our_name,
                         "lfs",
                         Some(FileSystemAction::Write),
                         message.content.payload.bytes,
-                        Some(Context::Persist { process_name: message.source.process }),
+                        Some(Context::Persist {
+                            identifier: de_wit_process_identifier(&message.source.identifier)
+                        }),
+                    )?;
+                },
+                ProcessManagerCommand::RebootStart { id, name, wasm_bytes_uri, send_on_panic } => {
+                    begin_start_process(
+                        id,
+                        name,
+                        wasm_bytes_uri,
+                        send_on_panic,
+                        our_name,
+                        &reserved_process_names,
+                        processes,
+                        names,
                     )?;
                 },
             }
         },
         types::WitMessageType::Response => {
+            let types::WitProcessIdentifier::Name(process) = message.source.identifier else {
+                return Err(anyhow::anyhow!("Response case must have name identifier"))
+            };
             match (
                 message.source.node,
-                message.source.process.as_str(),
+                process.as_str(),
                 message.content.payload.bytes.content,
             ) {
                 (
@@ -447,7 +587,8 @@ fn handle_message (
                 ) => {
                     print_to_terminal(1, "process manager: got filesystem Response");
                     let Context::FileSystemRead {
-                        process_name,
+                        id,
+                        name,
                         wasm_bytes_uri,
                         send_on_panic,
                     } = serde_json::from_str(&context)? else {
@@ -465,7 +606,8 @@ fn handle_message (
                         &our_name,
                         "kernel",
                         Some(KernelRequest::StartProcess {
-                            process_name,
+                            id,
+                            name,
                             wasm_bytes_uri,
                             send_on_panic,
                         }),
@@ -484,7 +626,7 @@ fn handle_message (
                     print_to_terminal(1, "process manager: got kernel Response");
                     match process_lib::parse_message_json(message.content.payload.json)? {
                         KernelResponse::StartProcess(metadata) => {
-                            if processes.contains_key(&metadata.our.process) {
+                            if processes.contains_key(&metadata.our.id) {
                                 let _response = persist_pm_state(&our_name, processes);
                             }
                             process_lib::send_response(
@@ -496,17 +638,18 @@ fn handle_message (
                                 None::<Context>,
                             )?;
                         },
-                        KernelResponse::StopProcess { process_name } => {
-                            let removed = processes
-                                .remove(&process_name)
-                                .ok_or(anyhow::anyhow!("no process data found to remove"))?;
+                        KernelResponse::StopProcess { id } => {
+                            let removed = remove_process(id, processes, names)?;
+                            // let removed = processes
+                            //     .remove(&id)
+                            //     .ok_or(anyhow::anyhow!("no process data found to remove"))?;
                             let _response = persist_pm_state(&our_name, processes);
                             process_lib::send_one_request(
                                 true,
                                 &our_name,
                                 &process_name,
                                 Some(ProcessManagerCommand::Start {
-                                    process_name: removed.metadata.our.process,
+                                    name: removed.metadata.our.name,
                                     wasm_bytes_uri: removed.metadata.wasm_bytes_uri,
                                     send_on_panic: removed.metadata.send_on_panic,
                                 }),
@@ -526,7 +669,7 @@ fn handle_message (
                 ) => {
                     match process_lib::parse_message_json(message.content.payload.json)? {
                         FsResponse::Write(handle) => {
-                            let Context::Persist { process_name } = serde_json::from_str(&context)? else {
+                            let Context::Persist { identifier } = serde_json::from_str(&context)? else {
                                 return Err(
                                     anyhow::anyhow!(
                                         "got lfs Response with incorrect context. Context: {}",
@@ -534,7 +677,17 @@ fn handle_message (
                                     )
                                 );
                             };
-                            let process = processes.get_mut(&process_name)
+                            let id = match identifier {
+                                ProcessIdentifier::Id(ref id) => id,
+                                ProcessIdentifier::Name(name) => {
+                                    names
+                                        .get(&name)
+                                        .ok_or(anyhow::anyhow!(
+                                            "did not find Persist context name"
+                                        ))?
+                                },
+                            };
+                            let process = processes.get_mut(id)
                                 .ok_or(anyhow::anyhow!(
                                     "did not find process corresponding to lfs Write"
                                 ))?;
@@ -567,21 +720,29 @@ fn handle_message (
 }
 
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
+    fn run_process(our: types::WitProcessAddress) {
+    // fn run_process(our_name: String, process_name: String) {
         print_to_terminal(1, "process_manager: begin");
+
+        let Some(process_name) = our.name else {
+            bindings::print_to_terminal(0, "process_manager: require our.name set");
+            panic!();
+        };
 
         let reserved_process_names = vec![
             "filesystem".to_string(),
-            our_name.clone(),
+            process_name.clone(),
         ];
         let reserved_process_names: HashSet<String> = reserved_process_names
             .into_iter()
             .collect();
         let mut processes: Processes = HashMap::new();
+        let mut names: Names = HashMap::new();
         loop {
             match handle_message(
                 &mut processes,
-                &our_name,
+                &mut names,
+                &our.node,
                 &process_name,
                 &reserved_process_names
             ) {

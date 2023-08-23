@@ -76,8 +76,7 @@ impl bindings::MicrokernelProcess for Component {
         let compiled: serde_json::Value =
             serde_json::from_str(ERC20_COMPILED).unwrap();
 
-        // NOTE I stripped off the 0x in the bytecode...should probably find a way to just strip that off
-        let bc: Vec<u8> = hex::decode(compiled["bytecode"].as_str().unwrap()).unwrap();
+        let bc: Vec<u8> = decode_hex(compiled["bytecode"].as_str().unwrap()).unwrap();
 
         let deployment_res = process_lib::send_request_and_await_response(
             our.clone(),
@@ -153,4 +152,16 @@ impl bindings::MicrokernelProcess for Component {
             bindings::print_to_terminal(0, format!("response: {:?}", res).as_str());
         }
     }
+}
+
+
+// helpers
+fn decode_hex(s: &str) -> Result<Vec<u8>, hex::FromHexError> {
+    // If the string starts with "0x", skip the prefix
+    let hex_part = if s.starts_with("0x") {
+        &s[2..]
+    } else {
+        s
+    };
+    hex::decode(hex_part)
 }

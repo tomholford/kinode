@@ -21,7 +21,7 @@ use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketSt
 mod connections;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const META_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+// const META_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -89,61 +89,6 @@ pub async fn networking(
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = Arc::new(keypair);
 
-    let s_keypair = keypair.clone();
-    let s_our = our.clone();
-    let s_peers = peers.clone();
-    let s_our_ip = our_ip.clone();
-    let s_pki = pki.clone();
-    let s_kernel_message_tx = kernel_message_tx.clone();
-    let s_print_tx = print_tx.clone();
-    let sender = tokio::spawn(async move {
-        while let Some(wm) = message_rx.recv().await {
-            if wm.target.node == s_our.name {
-                handle_incoming_message(&s_our, wm.message, s_peers.clone(), s_print_tx.clone())
-                    .await;
-                continue;
-            }
-            let start = std::time::Instant::now();
-            // TODO can we move this into its own task? absolutely..
-            let result = timeout(
-                META_TIMEOUT,
-                message_to_peer(
-                    s_our.clone(),
-                    s_our_ip.clone(),
-                    s_keypair.clone(),
-                    s_pki.clone(),
-                    s_peers.clone(),
-                    wm.clone(),
-                    s_kernel_message_tx.clone(),
-                ),
-            )
-            .await;
-
-            let end = std::time::Instant::now();
-            let elapsed = end.duration_since(start);
-            let _ = s_print_tx
-                .send(Printout {
-                    verbosity: 1,
-                    content: format!("message_to_peer e2e took {:?}", elapsed),
-                })
-                .await;
-
-            match result {
-                Ok(Ok(())) => continue,
-                Ok(Err(e)) => {
-                    let _ = s_kernel_message_tx
-                        .send(make_kernel_response(&s_our, wm, e))
-                        .await;
-                }
-                Err(_) => {
-                    let _ = s_kernel_message_tx
-                        .send(make_kernel_response(&s_our, wm, NetworkError::Timeout))
-                        .await;
-                }
-            }
-        }
-    });
-
     tokio::select! {
         _listener = async {
             // if listener dies, attempt to rebuild it
@@ -180,7 +125,64 @@ pub async fn networking(
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
         } => (),
-        _sender = sender => (),
+        _sender = async {
+            while let Some(wm) = message_rx.recv().await {
+                tokio::spawn(sender(
+                    our.clone(),
+                    our_ip.clone(),
+                    keypair.clone(),
+                    pki.clone(),
+                    peers.clone(),
+                    kernel_message_tx.clone(),
+                    print_tx.clone(),
+                    wm,
+                ));
+            }
+        } => (),
+    }
+}
+
+async fn sender(
+    our: Identity,
+    our_ip: String,
+    keypair: Arc<Ed25519KeyPair>,
+    pki: OnchainPKI,
+    peers: Peers,
+    kernel_message_tx: MessageSender,
+    print_tx: PrintSender,
+    wm: WrappedMessage,
+) {
+    if wm.target.node == our.name {
+        handle_incoming_message(&our, wm.message, peers.clone(), print_tx.clone()).await;
+        return;
+    }
+    let start = std::time::Instant::now();
+    let result = message_to_peer(
+        our.clone(),
+        our_ip.clone(),
+        keypair.clone(),
+        pki.clone(),
+        peers.clone(),
+        wm.clone(),
+        kernel_message_tx.clone(),
+    )
+    .await;
+    let end = std::time::Instant::now();
+    let elapsed = end.duration_since(start);
+    let _ = print_tx
+        .send(Printout {
+            verbosity: 0,
+            content: format!("message to {} took {:?}", wm.target.node, elapsed),
+        })
+        .await;
+
+    match result {
+        Ok(()) => return,
+        Err(e) => {
+            let _ = kernel_message_tx
+                .send(make_kernel_response(&our, wm, e))
+                .await;
+        }
     }
 }
 
@@ -198,32 +200,29 @@ async fn connect_to_routers(
 
     loop {
         for router_name in &our.allowed_routers {
-            let peer_read = peers.read().await;
-            if let Some(router_peer) = peer_read.get(router_name) {
-                let router_peer = router_peer.clone();
-                drop(peer_read);
-                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                if let Ok(()) = router_peer
-                    .sender
-                    .send((NetworkMessage::Keepalive, Some(result_tx)))
-                {
-                    if let Ok(Ok(Ok(_))) = timeout(TIMEOUT, result_rx).await {
-                        continue;
-                    } else {
-                        let _ = print_tx
-                            .send(Printout {
-                                verbosity: 0,
-                                content: format!(
-                                    "lost connection to {router_name}!"
-                                ),
-                            })
-                            .await;
-                        let _ = router_peer.destructor.send(());
-                        peers.write().await.remove(router_name);
-                    }
-                }
+            if peers.read().await.contains_key(router_name) {
+                continue;
+                // let router_peer = router_peer.clone();
+                // drop(peer_read);
+                // let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                // if let Ok(()) = router_peer
+                //     .sender
+                //     .send((NetworkMessage::Keepalive, Some(result_tx)))
+                // {
+                //     if let Ok(Ok(_)) = result_rx.await {
+                //         continue;
+                //     } else {
+                //         let _ = print_tx
+                //             .send(Printout {
+                //                 verbosity: 0,
+                //                 content: format!("lost connection to {router_name}!"),
+                //             })
+                //             .await;
+                //         let _ = router_peer.destructor.send(());
+                //         peers.write().await.remove(router_name);
+                //     }
+                // }
             } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
-                drop(peer_read);
                 if let Some((ip, port)) = &router_id.ws_routing {
                     // println!("trying to connect to {router_name}\r");
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
@@ -246,22 +245,32 @@ async fn connect_to_routers(
                                 let _ = print_tx
                                     .send(Printout {
                                         verbosity: 0,
-                                        content: format!(
-                                            "(re)connected to router: {router_name}\r"
-                                        ),
+                                        content: format!("(re)connected to router: {router_name}"),
                                     })
                                     .await;
                                 routers.spawn(active_peer);
+                                continue;
                             }
                         }
                     }
                 }
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("failed to connect to router: {router_name}"),
+                    })
+                    .await;
             }
         }
-        if routers.is_empty() {
-            break;
+        if let Some(Ok(Ok(_dead_router))) = routers.join_next().await {
+            // let _ = print_tx
+            //     .send(Printout {
+            //         verbosity: 0,
+            //         content: format!("dead router: {dead_router}"),
+            //     })
+            //     .await;
         }
-        tokio::time::sleep(TIMEOUT).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 

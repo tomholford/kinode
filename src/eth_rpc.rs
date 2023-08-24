@@ -17,16 +17,17 @@ enum EthRpcAction {
 #[derive(Debug, Serialize, Deserialize)]
 struct EthRpcCall {
     contract_address: String,
-    // gas
-    // gas_price
+    gas: Option<u64>, // TODO bignumber
+    gas_price: Option<u64>, // TODO bignumber
+    // transaction_type // EIP1559, EIP2930, Optimism
     // wallet_address: String // implicit in the provider
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeployContract {
-    constructor_args: Token,
-    // gas
-    // gas_price
+    constructor_args: Token, // TODO for some reason Tokens aren't json serializable? fix this
+    gas: Option<u64>, // TODO bignumber
+    gas_price: Option<u64>, // TODO bignumber
     // wallet_address: String // implicit in the provider
 }
 
@@ -40,6 +41,7 @@ pub async fn eth_rpc(
     // TODO: use a real chain
     let anvil = Anvil::new().spawn();
 
+    // TODO allow arbitrary wallets, not just [0]. Also arbitrary seeds, external wallets, etc.
     let wallet: LocalWallet = anvil.keys()[0].clone().into();
     
     print_tx.send(Printout {
@@ -110,24 +112,22 @@ async fn handle_message(
         EthRpcAction::Call(eth_rpc_call) => {
             let address: Address = eth_rpc_call.contract_address.parse().unwrap(); // TODO unwrap
 
-            let call_request = TypedTransaction::Legacy(
-                TransactionRequest::new()
+            let mut call_request = TransactionRequest::new()
                 .to(address)
-                .data(call_data));
-        
-        
-            print_tx.send(Printout {
-                verbosity: 0,
-                content: format!("eth_rpc: call_request: {:?}", call_request),
-            }).await;
-        
-            let call_result = client.call(&call_request, None).await.unwrap(); // TODO unwrap
+                .data(call_data);
+            // gas limit
+            call_request = match eth_rpc_call.gas {
+                Some(gas) => call_request.gas(gas),
+                None => call_request
+            };
+            // gas price
+            call_request = match eth_rpc_call.gas_price {
+                Some(gas_price) => call_request.gas_price(gas_price),
+                None => call_request
+            };
 
-            print_tx.send(Printout {
-                verbosity: 0,
-                content: format!("eth_rpc: call_result: {:?}", call_result),
-            }).await;
-        
+            let call_result = client.call(&TypedTransaction::Legacy(call_request), None).await.unwrap(); // TODO unwrap
+
             send_to_loop.send(
                 WrappedMessage {
                     id: id.clone(),
@@ -155,24 +155,23 @@ async fn handle_message(
         EthRpcAction::SendTransaction(eth_rpc_call) => {
             let address: Address = eth_rpc_call.contract_address.parse().unwrap(); // TODO unwrap
 
-            let call_request = TypedTransaction::Legacy(
-                TransactionRequest::new()
+            let mut call_request = TransactionRequest::new()
                 .to(address)
-                .data(call_data));
-        
-        
-            print_tx.send(Printout {
-                verbosity: 0,
-                content: format!("eth_rpc: tx_request: {:?}", call_request),
-            }).await;
-        
-            let pending = client.send_transaction(call_request, None).await.unwrap(); // TODO unwrap
+                .data(call_data);
+            // gas limit
+            call_request = match eth_rpc_call.gas {
+                Some(gas) => call_request.gas(gas),
+                None => call_request
+            };
+            // gas price
+            call_request = match eth_rpc_call.gas_price {
+                Some(gas_price) => call_request.gas_price(gas_price),
+                None => call_request
+            };
+
+            let pending = client.send_transaction(TypedTransaction::Legacy(call_request), None).await.unwrap(); // TODO unwrap
             let Some(rx) = pending.await.unwrap() else { panic!("foo")}; // TODO unwrap
-            print_tx.send(Printout {
-                verbosity: 0,
-                content: format!("eth_rpc: tx_result: {:?}", rx.transaction_hash),
-            }).await;
-        
+
             send_to_loop.send(
                 WrappedMessage {
                     id: id.clone(),
@@ -189,7 +188,7 @@ async fn handle_message(
                                 json: None,
                                 bytes: PayloadBytes{
                                     circumvent: Circumvent::False,
-                                    content: None, // Some(rx.as_ref().to_vec()),
+                                    content: Some(rx.transaction_hash.as_ref().to_vec()), // TODO we should pass back all relevant tx info 
                                 },
                             },
                         },
@@ -200,7 +199,8 @@ async fn handle_message(
         EthRpcAction::DeployContract => {
             let factory = ContractFactory::new(Default::default(), call_data.into(), client.clone().into());
             let contract = factory
-                .deploy(()).unwrap() // TODO should pass these in from json arguments
+                .deploy(())  // TODO should pass these in from json arguments
+                .unwrap()
                 .send()
                 .await
                 .unwrap();

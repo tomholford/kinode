@@ -103,14 +103,22 @@ impl bindings::MicrokernelProcess for Component {
                 //
                 Erc20Method::TotalSupply => {
                     (
-                        json!({"Call": {"contract_address": message_from_loop.token}}),
+                        json!({"Call": {
+                            "contract_address": message_from_loop.token,
+                            "gas": null,
+                            "gas_price": null,
+                        }}),
                         totalSupplyCall{}.encode()
                     )
                 },
                 Erc20Method::BalanceOf(addr) => {
                     let adr: Address = addr.as_str().parse().unwrap();
                     (
-                        json!({"Call": {"contract_address": message_from_loop.token}}),
+                        json!({"Call": {
+                            "contract_address": message_from_loop.token,
+                            "gas": null,
+                            "gas_price": null,
+                        }}),
                         balanceOfCall{
                             account: adr
                         }.encode()
@@ -121,7 +129,11 @@ impl bindings::MicrokernelProcess for Component {
                 Erc20Method::Transfer(transfer) => {
                     let rec: Address = transfer.recipient.as_str().parse().unwrap();
                     (
-                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        json!({"SendTransaction": {
+                            "contract_address": message_from_loop.token,
+                            "gas": null,
+                            "gas_price": null,
+                        }}),
                         transferCall{
                             recipient: rec,
                             amount: U256::from(transfer.amount) // TODO probably need to think about bignumber stuff here
@@ -131,7 +143,11 @@ impl bindings::MicrokernelProcess for Component {
                 Erc20Method::Approve(approve) => {
                     let addr: Address = approve.spender.as_str().parse().unwrap();
                     (
-                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        json!({"SendTransaction": {
+                            "contract_address": message_from_loop.token,
+                            "gas": null,
+                            "gas_price": null,
+                        }}),
                         approveCall{
                             spender: addr,
                             amount: U256::from(approve.amount) // TODO probably need to think about bignumber stuff here
@@ -142,7 +158,11 @@ impl bindings::MicrokernelProcess for Component {
                     let snd: Address = transfer_from.sender.as_str().parse().unwrap();
                     let rec: Address = transfer_from.recipient.as_str().parse().unwrap();
                     (
-                        json!({"SendTransaction": {"contract_address": message_from_loop.token}}),
+                        json!({"SendTransaction": {
+                            "contract_address": message_from_loop.token,
+                            "gas": null,
+                            "gas_price": null,
+                        }}),
                         transferFromCall{
                             sender: snd,
                             recipient: rec,

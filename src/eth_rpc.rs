@@ -17,18 +17,16 @@ enum EthRpcAction {
 #[derive(Debug, Serialize, Deserialize)]
 struct EthRpcCall {
     contract_address: String,
-    gas: Option<u64>, // TODO bignumber
-    gas_price: Option<u64>, // TODO bignumber
+    gas: Option<U256>,
+    gas_price: Option<U256>,
     // transaction_type // EIP1559, EIP2930, Optimism
-    // wallet_address: String // implicit in the provider
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeployContract {
     constructor_args: Token, // TODO for some reason Tokens aren't json serializable? fix this
-    gas: Option<u64>, // TODO bignumber
-    gas_price: Option<u64>, // TODO bignumber
-    // wallet_address: String // implicit in the provider
+    gas: Option<U256>,
+    gas_price: Option<U256>,
 }
 
 pub async fn eth_rpc(

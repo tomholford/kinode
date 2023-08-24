@@ -19,10 +19,11 @@ struct Component;
 
 // examples
 // !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method": "TotalSupply"}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"BalanceOf":"f39fd6e51aad88f6f4ce6ab8827279cfffb92266"}}
 // !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"BalanceOf":"8bbe911710c9e592487dde0735db76f83dc44cfd"}}
-// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
-// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":100}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Transfer":{"recipient": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":"fff"}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"Approve":{"spender": "8bbe911710c9e592487dde0735db76f83dc44cfd","amount":"fff"}}}
+// !message tuna eth_demo {"token":"5fbdb2315678afecb367f032d93f642f64180aa3", "method":{"TransferFrom":{"sender": "8bbe911710c9e592487dde0735db76f83dc44cfd","recipient":"8bbe911710c9e592487dde0735db76f83dc44cfd","amount":"fff"}}}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Erc20Action {
@@ -43,21 +44,21 @@ enum Erc20Method {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Transfer {
-    recipient: String,
-    amount: u64, // TODO bignumber
+    recipient: String, // no 0x prefix on any of these types
+    amount: String, // hex encoded
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Approve {
     spender: String,
-    amount: u64, // TODO bignumber
+    amount: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TransferFrom {
     sender: String,
     recipient: String,
-    amount: u64, // TODO bignumber
+    amount: String,
 }
 
 sol! {
@@ -127,7 +128,6 @@ impl bindings::MicrokernelProcess for Component {
                 // writes
                 //
                 Erc20Method::Transfer(transfer) => {
-                    let rec: Address = transfer.recipient.as_str().parse().unwrap();
                     (
                         json!({"SendTransaction": {
                             "contract_address": message_from_loop.token,
@@ -135,13 +135,12 @@ impl bindings::MicrokernelProcess for Component {
                             "gas_price": null,
                         }}),
                         transferCall{
-                            recipient: rec,
-                            amount: U256::from(transfer.amount) // TODO probably need to think about bignumber stuff here
+                            recipient: transfer.recipient.as_str().parse().unwrap(),
+                            amount: U256::from_str_radix(&transfer.amount, 16).unwrap()
                         }.encode()
                     )
                 },
                 Erc20Method::Approve(approve) => {
-                    let addr: Address = approve.spender.as_str().parse().unwrap();
                     (
                         json!({"SendTransaction": {
                             "contract_address": message_from_loop.token,
@@ -149,14 +148,12 @@ impl bindings::MicrokernelProcess for Component {
                             "gas_price": null,
                         }}),
                         approveCall{
-                            spender: addr,
-                            amount: U256::from(approve.amount) // TODO probably need to think about bignumber stuff here
+                            spender: approve.spender.as_str().parse().unwrap(),
+                            amount: U256::from_str_radix(&approve.amount, 16).unwrap()
                         }.encode()
                     )
                 },
                 Erc20Method::TransferFrom(transfer_from) => {
-                    let snd: Address = transfer_from.sender.as_str().parse().unwrap();
-                    let rec: Address = transfer_from.recipient.as_str().parse().unwrap();
                     (
                         json!({"SendTransaction": {
                             "contract_address": message_from_loop.token,
@@ -164,9 +161,9 @@ impl bindings::MicrokernelProcess for Component {
                             "gas_price": null,
                         }}),
                         transferFromCall{
-                            sender: snd,
-                            recipient: rec,
-                            amount: U256::from(transfer_from.amount) // TODO probably need to think about bignumber stuff here
+                            sender: transfer_from.sender.as_str().parse().unwrap(),
+                            recipient: transfer_from.recipient.as_str().parse().unwrap(),
+                            amount: U256::from_str_radix(&transfer_from.amount, 16).unwrap()
                         }.encode()
                     )
                 },

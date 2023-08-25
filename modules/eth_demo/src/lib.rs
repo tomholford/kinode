@@ -126,7 +126,6 @@ impl bindings::MicrokernelProcess for Component {
                 bindings::print_to_terminal(0, "eth demo requires json payload");
                 return
             };
-            bindings::print_to_terminal(0, "c");
 
             if let Ok(message_from_loop) = serde_json::from_str::<AllActions>(message_from_loop_string.as_str()) {
                 match message_from_loop {
@@ -135,7 +134,6 @@ impl bindings::MicrokernelProcess for Component {
                             // views
                             //
                             Erc20Method::TotalSupply => {
-                                bindings::print_to_terminal(0, "e");
                                 (
                                     json!({"Call": {
                                         "contract_address": action.token,
@@ -146,7 +144,6 @@ impl bindings::MicrokernelProcess for Component {
                                 )
                             },
                             Erc20Method::BalanceOf(addr) => {
-                                bindings::print_to_terminal(0, "f");
                                 (
                                     json!({"Call": {
                                         "contract_address": action.token,
@@ -161,7 +158,6 @@ impl bindings::MicrokernelProcess for Component {
                             // writes
                             //
                             Erc20Method::Transfer(transfer) => {
-                                bindings::print_to_terminal(0, "g");
                                 (
                                     json!({"SendTransaction": {
                                         "contract_address": action.token,
@@ -218,17 +214,7 @@ impl bindings::MicrokernelProcess for Component {
                         bindings::print_to_terminal(0, format!("response: {:?}", res).as_str());        
                     },
                     AllActions::Subscription(subscription) => {
-                        bindings::print_to_terminal(0, "f");
-                        bindings::print_to_terminal(0, "GOT A SUBSCRIPTION");
                         bindings::print_to_terminal(0, format!("subscription: {:?}", subscription).as_str());
-                        process_lib::send_response(
-                            Some(json!({})),
-                            types::WitPayloadBytes {
-                                circumvent: types::WitCircumvent::False,
-                                content: None
-                            },
-                            None::<()>
-                        );
                     }
                 }
             } else {

@@ -478,13 +478,9 @@ async fn get_and_send_loop_message_to_process(
 ) -> (WrappedMessage, Result<Result<(wit::WitMessage, String), wit::WitUqbarError>>) {
     clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
-    let wrapped_message = recv_in_process.recv().await.unwrap();
     let wrapped_message = match message_queue.pop_front() {
-        Some(m) => {
-            message_queue.push_back(wrapped_message);
-            m
-        },
-        None => wrapped_message,
+        Some(message_from_queue) => message_from_queue,
+        None => recv_in_process.recv().await.unwrap(),
     };
 
     let to_loop = send_loop_message_to_process(

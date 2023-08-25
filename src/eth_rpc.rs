@@ -279,10 +279,6 @@ async fn handle_message(
                 // until they cancel
     
                 while let Some(block) = stream.next().await {
-                    print_tx.send(Printout {
-                        verbosity: 0,
-                        content: format!("eth_rpc: got block, sending to : {:?}", target),
-                    }).await;
                     send_to_loop.send(
                         WrappedMessage {
                             id: rand::random(),
@@ -294,12 +290,12 @@ async fn handle_message(
                                     process: "eth_rpc".to_string(),
                                 },
                                 content: MessageContent {
-                                    message_type: MessageType::Request(true),
+                                    message_type: MessageType::Request(false),
                                     payload: Payload {
                                         // TODO figure out a json format for subscriptions
                                         json: Some(json!({
                                             "Subscription": {
-                                                "id":"asdf"
+                                                "id": rand::random::<u64>().to_string(),
                                             }
                                         })),
                                         bytes: PayloadBytes{
@@ -310,14 +306,14 @@ async fn handle_message(
                                 },
                             }),
                         }
-                    ).await.unwrap()
+                    ).await.unwrap();
                 }
             }
         }
     } else {
         print_tx.send(Printout {
             verbosity: 0,
-            content: format!("eth_rpc: assuming this is an ack: {:?}", json),
+            content: format!("eth_rpc: couldn't parse json message: {:?}", json),
         }).await;
     }
 }

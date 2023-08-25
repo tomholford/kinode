@@ -48,7 +48,7 @@ pub enum NetworkMessage {
         id: u64,
         contents: Vec<u8>,
     },
-    Raw(WrappedMessage),
+    Raw(KernelMessage),
     Handshake {
         id: u64,
         handshake: Handshake,
@@ -97,9 +97,9 @@ pub async fn networking(
     let s_kernel_message_tx = kernel_message_tx.clone();
     let s_print_tx = print_tx.clone();
     let sender = tokio::spawn(async move {
-        while let Some(wm) = message_rx.recv().await {
-            if wm.target.node == s_our.name {
-                handle_incoming_message(&s_our, wm.message, s_peers.clone(), s_print_tx.clone())
+        while let Some(km) = message_rx.recv().await {
+            if km.target.node == s_our.name {
+                handle_incoming_message(&s_our, km.message, s_peers.clone(), s_print_tx.clone())
                     .await;
                 continue;
             }
@@ -113,7 +113,7 @@ pub async fn networking(
                     s_keypair.clone(),
                     s_pki.clone(),
                     s_peers.clone(),
-                    wm.clone(),
+                    km.clone(),
                     s_kernel_message_tx.clone(),
                 ),
             )
@@ -132,12 +132,12 @@ pub async fn networking(
                 Ok(Ok(())) => continue,
                 Ok(Err(e)) => {
                     let _ = s_kernel_message_tx
-                        .send(make_kernel_response(&s_our, wm, e))
+                        .send(make_kernel_response(&s_our, km, e))
                         .await;
                 }
                 Err(_) => {
                     let _ = s_kernel_message_tx
-                        .send(make_kernel_response(&s_our, wm, NetworkError::Timeout))
+                        .send(make_kernel_response(&s_our, km, NetworkError::Timeout))
                         .await;
                 }
             }
@@ -305,10 +305,10 @@ async fn message_to_peer(
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
-    wm: WrappedMessage,
+    km: KernelMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkError> {
-    let target = &wm.target.node;
+    let target = &km.target.node;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
         // println!("sending message to known peer\r");
@@ -316,7 +316,7 @@ async fn message_to_peer(
         let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
         let _ = peer
             .sender
-            .send((NetworkMessage::Raw(wm.clone()), Some(result_tx)));
+            .send((NetworkMessage::Raw(km.clone()), Some(result_tx)));
         drop(peers_write);
 
         match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
@@ -372,7 +372,7 @@ async fn message_to_peer(
                                 keypair.clone(),
                                 pki.clone(),
                                 peers,
-                                wm,
+                                km,
                                 kernel_message_tx,
                             )
                             .await;
@@ -395,7 +395,7 @@ async fn message_to_peer(
                             our_ip.clone(),
                             keypair.clone(),
                             router.clone(),
-                            (wm.clone(), Some(result_tx)),
+                            (km.clone(), Some(result_tx)),
                             pki.clone(),
                             peers.clone(),
                             kernel_message_tx.clone(),
@@ -423,7 +423,7 @@ async fn message_to_peer(
 
 async fn handle_incoming_message(
     our: &Identity,
-    message: Result<Message, UqbarError>,
+    message: Result<TransitMessage, UqbarError>,
     peers: Peers,
     print_tx: PrintSender,
 ) {
@@ -431,42 +431,42 @@ async fn handle_incoming_message(
         return;  //  TODO: handle error?
     };
 
-    if message.source.node != our.name {
+    let payload = match message {
+        TransitMessage::Request(request) => request.payload,
+        TransitMessage::Response(payload) => payload,
+    };
+
+    if payload.source.node != our.name {
         let _ = print_tx
             .send(Printout {
                 verbosity: 0,
                 content: format!(
                     "\x1b[3;32m{}: {}\x1b[0m",
-                    message.source.node,
-                    message
-                        .content
-                        .payload
+                    payload.source.node,
+                    // payload.json,
+                    payload
                         .json
                         .as_ref()
-                        .unwrap_or(&serde_json::Value::Null),
+                        .unwrap_or(&"".to_string()),
                 ),
             })
             .await;
     } else {
         // available commands: peers
-        match message
-            .content
-            .payload
+        match payload
             .json
-            .as_ref()
-            .unwrap_or(&serde_json::Value::Null)
+            .unwrap_or("".to_string())
+            .as_str()
         {
-            serde_json::Value::String(s) => {
-                if s == "peers" {
-                    let peer_read = peers.read().await;
-                    let _ = print_tx
-                        .send(Printout {
-                            verbosity: 0,
-                            content: format!("{:?}", peer_read.keys()),
-                        })
-                        .await;
-                }
-            }
+            "peers" => {
+                let peer_read = peers.read().await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("{:?}", peer_read.keys()),
+                    })
+                    .await;
+            },
             _ => {
                 let _ = print_tx
                     .send(Printout {
@@ -493,33 +493,30 @@ fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, Networkin
     }
 }
 
-fn make_kernel_response(our: &Identity, wm: WrappedMessage, err: NetworkError) -> WrappedMessage {
-    WrappedMessage {
-        id: wm.id,
+fn make_kernel_response(our: &Identity, km: KernelMessage, err: NetworkError) -> KernelMessage {
+    KernelMessage {
+        id: km.id,
         target: ProcessReference {
             node: our.name.clone(),
-            identifier: match wm.message {
-                Ok(m) => m.source.identifier,
+            identifier: match km.message {
                 Err(e) => e.source.identifier,
+                Ok(m) => {
+                    match m {
+                        TransitMessage::Request(request) => request.payload.source.identifier,
+                        TransitMessage::Response(payload) => payload.source.identifier,
+                    }
+                },
             },
         },
         rsvp: None,
-        message: Ok(Message {
+        message: Ok(TransitMessage::Response(TransitPayload {
             source: ProcessReference {
                 node: our.name.clone(),
                 identifier: ProcessIdentifier::Name("net".into()),
             },
-            content: MessageContent {
-                message_type: MessageType::Response,
-                payload: Payload {
-                    json: Some(serde_json::to_value(err).unwrap_or("".into())),
-                    bytes: PayloadBytes {
-                        circumvent: Circumvent::False,
-                        content: None,
-                    },
-                },
-            },
-        }),
+            json: Some(serde_json::to_string(&err).unwrap_or("".into())),
+            bytes: TransitPayloadBytes::None,
+        })),
     }
 }
 

@@ -114,12 +114,23 @@ pub async fn fs_sender(
     let log_file = Arc::new(RwLock::new(log_file));
 
     //  into main loop
-    while let Some(wrapped_message) = recv_in_fs.recv().await {
-        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { ref source, content: _ }), }
-                = wrapped_message else {
+    while let Some(kernel_message) = recv_in_fs.recv().await {
+        let KernelMessage {
+            ref id,
+            target: _,
+            rsvp: _,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response: _,
+                payload: TransitPayload {
+                    ref source,
+                    json: _,
+                    bytes: _,
+                }
+            })),
+        } = kernel_message else {
             println!(
                 "fs: got weird message from {}: {}",
-                our_name, &wrapped_message,
+                our_name, &kernel_message,
             );
             continue;
         };
@@ -128,7 +139,7 @@ pub async fn fs_sender(
         if our_name != source.node {
             println!(
                 "fs: request must come from our_name={}, got: {}",
-                our_name, &wrapped_message,
+                our_name, &kernel_message,
             );
             continue;
         }
@@ -145,7 +156,7 @@ pub async fn fs_sender(
         tokio::spawn(async move {
             if let Err(e) = handle_request(
                 our_name.clone(),
-                wrapped_message,
+                kernel_message,
                 log_clone,
                 manifest_clone,
                 hash_index_clone,
@@ -165,44 +176,46 @@ pub async fn fs_sender(
 
 async fn handle_request(
     our_name: String,
-    wrapped_message: WrappedMessage,
+    kernel_message: KernelMessage,
     log: Arc<RwLock<fs::File>>,
     manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>>,
     hash_index: Arc<RwLock<HashMap<[u8; 32], u128>>>,
     send_to_loop: MessageSender,
     _send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
-    let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
-            = wrapped_message else {
-        return Err(FileSystemError::LFSError { error: "got weird message".to_string() });
-    };
-    let Some(value) = content.payload.json.clone() else {
+    let KernelMessage {
+        ref id,
+        target: _,
+        rsvp,
+        message,
+    } = kernel_message;
+    let Ok(TransitMessage::Request(TransitRequest {
+        is_expecting_response,
+        payload: TransitPayload {
+            ref source,
+            json: Some(ref json),
+            ref bytes,
+        },
+    })) = message else {
         return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "missing payload".into(),
+            json: "".into(),
+            error: "not a Request with payload".into(),
         })
     };
 
-    let MessageType::Request(is_expecting_response) = content.message_type else {
-        return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "not a Request".into(),
-        })
-    };
-
-    let action: FsAction = match serde_json::from_value(value) {
+    let action: FsAction = match serde_json::from_str(json) {
         Ok(r) => r,
         Err(e) => {
             return Err(FileSystemError::BadJson {
-                json: content.payload.json,
+                json: json.into(),
                 error: format!("parse failed: {:?}", e),
             })
         }
     };
 
-    let response_payload = match action {
+    let (json, bytes) = match action {
         FsAction::Write => {
-            let Some(data) = content.payload.bytes.content.clone() else {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -210,7 +223,7 @@ async fn handle_request(
 
             //  hashing: note chunks[]
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&data);
+            hasher.update(data);
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
 
@@ -238,7 +251,7 @@ async fn handle_request(
             let wal_result;
             {
                 let mut wlog = log.write().await;
-                wal_result = append_to_wal(&mut wlog, &entry, &data).await;
+                wal_result = append_to_wal(&mut wlog, &entry, data).await;
             }
 
             match wal_result {
@@ -253,7 +266,7 @@ async fn handle_request(
                     };
 
                     let new_file = InMemoryFile {
-                        hasher: hasher,
+                        hasher,
                         chunks: vec![memory_chunk],
                     };
 
@@ -264,14 +277,10 @@ async fn handle_request(
                     return Err(FileSystemError::LFSError { error: format!("wal append failed: {}", e)} );
                 }
             }
-
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Write(hash_array)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Write(hash_array)).unwrap()),
+                TransitPayloadBytes::None,
+            )
         }
         FsAction::Read(file_hash) => {
             // obtain read locks.
@@ -293,16 +302,13 @@ async fn handle_request(
                 data.extend_from_slice(&bytes);
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Read(file_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: Some(data),
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Read(file_hash)).unwrap()),
+                TransitPayloadBytes::Some(data),
+            )
         },
         FsAction::Append(file_hash) => {
-            let Some(data) = content.payload.bytes.content.clone() else {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -316,7 +322,7 @@ async fn handle_request(
 
             // compute hash of the data chunk
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&data);
+            hasher.update(data);
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
 
@@ -340,7 +346,7 @@ async fn handle_request(
             let wal_position;
             {
                 let mut wlog = log.write().await;
-                wal_position = append_to_wal(&mut wlog, &entry, &data).await.unwrap();
+                wal_position = append_to_wal(&mut wlog, &entry, data).await.unwrap();
             }
 
             {
@@ -352,20 +358,17 @@ async fn handle_request(
                         wal_position,
                     };
 
-                    memfile.hasher.update(&data);       // update file's hash with the new data chunk
+                    memfile.hasher.update(data);       // update file's hash with the new data chunk
                     memfile.chunks.push(memory_chunk);
                 } else {
                     return Err(FileSystemError::BadUri { uri: "".to_string(), bad_part_name: "".to_string(), bad_part:None });
                 }
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Append(file_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Append(file_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
         },
         FsAction::ReadChunk(req) => {
             // obtain read locks.
@@ -405,13 +408,10 @@ async fn handle_request(
                 data.extend_from_slice(&chunk_data[chunk_start as usize..chunk_end as usize]);
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::ReadChunk(req.file_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: Some(data),
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::ReadChunk(req.file_hash)).unwrap()),
+                TransitPayloadBytes::Some(data),
+            )
         },
         // specific process manager write:
         FsAction::PmWrite => {
@@ -430,7 +430,7 @@ async fn handle_request(
                 );
             }
 
-            let Some(data) = content.payload.bytes.content.clone() else {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -439,7 +439,7 @@ async fn handle_request(
 
             //  hashing: note chunks[]
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&data);
+            hasher.update(data);
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
 
@@ -452,7 +452,7 @@ async fn handle_request(
             let wal_result;
             {
                 let mut wlog = log.write().await;
-                wal_result = append_to_wal(&mut wlog, &entry, &data).await;
+                wal_result = append_to_wal(&mut wlog, &entry, data).await;
             }
 
             match wal_result {
@@ -467,7 +467,7 @@ async fn handle_request(
                     };
 
                     let new_file = InMemoryFile {
-                        hasher: hasher,
+                        hasher,
                         chunks: vec![memory_chunk],
                     };
 
@@ -479,34 +479,29 @@ async fn handle_request(
                 }
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Write(hash_array)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Write(hash_array)).unwrap()),
+                TransitPayloadBytes::None,
+            )
         }
     };
 
     if is_expecting_response {
-        let response = WrappedMessage {
-            id,
+        let response = KernelMessage {
+            id: id.clone(),
             target: ProcessReference {
                 node: our_name.clone(),
                 identifier: source.identifier.clone(),
             },
             rsvp,
-            message: Ok(Message {
+            message: Ok(TransitMessage::Response(TransitPayload {
                 source: ProcessReference {
                     node: our_name.clone(),
                     identifier: ProcessIdentifier::Name("lfs".into()),
                 },
-                content: MessageContent {
-                    message_type: MessageType::Response,
-                    payload: response_payload,
-                },
-            }),
+                json,
+                bytes,
+            })),
         };
 
         let _ = send_to_loop.send(response).await;
@@ -676,8 +671,8 @@ fn make_error_message(
     id: u64,
     source_identifier: ProcessIdentifier,
     error: FileSystemError,
-) -> WrappedMessage {
-    WrappedMessage {
+) -> KernelMessage {
+    KernelMessage {
         id,
         target: ProcessReference {
             node: our_name.clone(),
@@ -689,11 +684,11 @@ fn make_error_message(
                 node: our_name,
                 identifier: ProcessIdentifier::Name("lfs".into()),
             },
-            timestamp: get_current_unix_time().unwrap(),       //  TODO: handle error?
-            content: UqbarErrorContent {
+            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
+            payload: UqbarErrorPayload {
                 kind: error.kind().into(),
                 // message: format!("{}", error),
-                message: serde_json::to_value(error).unwrap(), //  TODO: handle error?
+                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
                 context: serde_json::to_value("").unwrap(),
             },
         }),

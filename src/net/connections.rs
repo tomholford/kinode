@@ -16,7 +16,7 @@ pub async fn build_routed_connection(
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     router: String,
-    initial_message: (WrappedMessage, ErrorShuttle),
+    initial_message: (KernelMessage, ErrorShuttle),
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
@@ -591,7 +591,7 @@ async fn peer_handler(
         _ = async {
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
-                    if let Ok(message) = serde_json::from_slice::<WrappedMessage>(&decrypted) {
+                    if let Ok(message) = serde_json::from_slice::<KernelMessage>(&decrypted) {
                         let _ = kernel_message_tx.send(message).await;
                         continue;
                     }

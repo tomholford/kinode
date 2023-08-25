@@ -6,7 +6,6 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use bindings::print_to_terminal;
 use bindings::component::microkernel_process::types;
-// use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
 
 struct Component;
 
@@ -568,7 +567,7 @@ fn handle_next_message(
         };
         print_to_terminal(1, format!("BODY: {}", body_json_string).as_str());
         let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
-      
+
         bindings::send_response_with_side_effect_request(Ok(
             &types::WitProtoresponseWithSideEffectProtorequest {
                 response: (

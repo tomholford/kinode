@@ -543,7 +543,7 @@ pub async fn terminal(
                                     cursor_col = prompt_len.try_into().unwrap();
                                     line_col = prompt_len;
                                     let _err = event_loop.send(
-                                        WrappedMessage {
+                                        KernelMessage {
                                             id: rand::random(),
                                             target: ProcessReference {
                                                 node: our.name.clone(),
@@ -552,24 +552,19 @@ pub async fn terminal(
                                                 ),
                                             },
                                             rsvp: None,
-                                            message: Ok(Message {
-                                                source: ProcessReference {
-                                                    node: our.name.clone(),
-                                                    identifier: ProcessIdentifier::Name(
-                                                        "terminal".into()
-                                                    ),
-                                                },
-                                                content: MessageContent {
-                                                    message_type: MessageType::Request(false),
-                                                    payload: Payload {
-                                                        json: None,
-                                                        bytes: PayloadBytes {
-                                                            circumvent: Circumvent::False,
-                                                            content: bincode::serialize(&command).ok()
-                                                        },
+                                            message: Ok(TransitMessage::Request(TransitRequest {
+                                                is_expecting_response: false,
+                                                payload: TransitPayload {
+                                                    source: ProcessReference {
+                                                        node: our.name.clone(),
+                                                        identifier: ProcessIdentifier::Name(
+                                                            "terminal".into()
+                                                        ),
                                                     },
+                                                    json: None,
+                                                    bytes: TransitPayloadBytes::Some(bincode::serialize(&command).unwrap())  //  TODO: handle?
                                                 },
-                                            })
+                                            }))
                                         }
                                     ).await;
                                 },

@@ -2,40 +2,47 @@
 
 use super::bindings::component::microkernel_process::types;
 
-pub fn make_request<T>(
+pub fn make_request<T, U>(
     is_expecting_response: bool,
-    node: &str,
-    process: &str,
-    payload: types::WitPayload,
-    context: Option<T>,
-) -> anyhow::Result<(Vec<types::WitProtorequest>, String)>
+    target_node: &str,
+    target_process: types::ProcessIdentifier,
+    json_struct: Option<T>,
+    bytes: types::OutboundPayloadBytes,
+    context: Option<U>,
+) -> anyhow::Result<types::JoinedRequests>
 where
-    T: serde::Serialize
+    T: serde::Serialize,
+    U: serde::Serialize,
 {
-    Ok((
-        vec![types::WitProtorequest {
-            is_expecting_response,
-            target: types::WitProcessReference {
-                node: node.into(),
-                identifier: types::WitProcessIdentifier::Name(process.into()),
-            },
-            payload,
-        }],
-        match context {
-            None => "".into(),
-            Some(c) => serde_json::to_string(&c)?,
+    let payload = make_payload(json_struct, bytes)?;
+    let request = types::OutboundRequest {
+        is_expecting_response,
+        target: types::ProcessReference {
+            node: target_node.into(),
+            identifier: target_process,
         },
-    ))
+        payload,
+    };
+    let context = match context {
+        None => "".into(),
+        Some(c) => serde_json::to_string(&c)?,
+    };
+    let joined_requests = (
+        vec![request],
+        context,
+    );
+
+    Ok(joined_requests)
 }
 
 pub fn make_payload<T>(
     json_struct: Option<T>,
-    bytes: types::WitPayloadBytes,
-) -> anyhow::Result<types::WitPayload>
+    bytes: types::OutboundPayloadBytes,
+) -> anyhow::Result<types::OutboundPayload>
 where
      T: serde::Serialize
 {
-    Ok(types::WitPayload {
+    Ok(types::OutboundPayload {
         json: match json_struct {
             None => None,
             Some(j) => Some(serde_json::to_string(&j)?),
@@ -55,43 +62,50 @@ where
     Ok(parsed)
 }
 
+pub fn make_outbound_bytes_from_noncircumvented_inbound(
+    bytes: types::InboundPayloadBytes,
+) -> anyhow::Result<types::OutboundPayloadBytes> {
+    match bytes {
+        types::InboundPayloadBytes::None => Ok(types::OutboundPayloadBytes::None),
+        types::InboundPayloadBytes::Some(bytes) => {
+            Ok(types::OutboundPayloadBytes::Some(bytes))
+        },
+        types::InboundPayloadBytes::Circumvented => {
+            Err(anyhow::anyhow!("inbound bytes are Circumvented"))
+        },
+    }
+}
+
 pub fn send_one_request<T, U>(
     is_expecting_response: bool,
     target_node: &str,
-    target_process: &str,
+    target_process: types::ProcessIdentifier,
     json_struct: Option<T>,
-    bytes: types::WitPayloadBytes,
+    bytes: types::OutboundPayloadBytes,
     context: Option<U>,
 ) -> anyhow::Result<()>
 where
      T: serde::Serialize,
      U: serde::Serialize,
 {
-    let payload = make_payload(json_struct, bytes)?;
-    let protorequest = vec![types::WitProtorequest {
+    let joined_requests = make_request(
         is_expecting_response,
-        target: types::WitProcessReference {
-            node: target_node.into(),
-            identifier: types::WitProcessIdentifier::Name(target_process.into()),
-        },
-        payload,
-    }];
-    let context = match context {
-        None => "".into(),
-        Some(c) => serde_json::to_string(&c)?,
-    };
-    let request = (
-        protorequest.as_slice(),
-        context.as_str(),
-    );
-    super::bindings::send_requests(Ok(request));
+        target_node,
+        target_process,
+        json_struct,
+        bytes,
+        context,
+    )?;
+
+    let outbound_message = types::OutboundMessage::Requests(vec![joined_requests]);
+    super::bindings::send(Ok(&outbound_message));
 
     Ok(())
 }
 
 pub fn send_response<T, U>(
     json_struct: Option<T>,
-    bytes: types::WitPayloadBytes,
+    bytes: types::OutboundPayloadBytes,
     context: Option<U>,  //  ?
 ) -> anyhow::Result<()>
 where
@@ -104,32 +118,30 @@ where
         Some(c) => serde_json::to_string(&c)?,
     };
     let response = (
-        &payload,
-        context.as_str(),
+        payload,
+        context,
     );
-    super::bindings::send_response(Ok(response));
+    let outbound_message = types::OutboundMessage::Response(response);
+    super::bindings::send(Ok(&outbound_message));
 
     Ok(())
 }
 
-pub fn send_request_and_await_response<T>(
+pub fn send_and_await_receive<T>(
     target_node: String,
-    target_process: String,
+    target_process: types::ProcessIdentifier,
     json_struct: Option<T>,
-    bytes: types::WitPayloadBytes,
-) -> anyhow::Result<types::WitMessage>
+    bytes: types::OutboundPayloadBytes,
+) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>>
 where
      T: serde::Serialize,
 {
     let payload = make_payload(json_struct, bytes)?;
-    match super::bindings::send_request_and_await_response(
-        &types::WitProcessReference {
+    Ok(super::bindings::send_and_await_receive(
+        &types::ProcessReference {
             node: target_node,
-            identifier: types::WitProcessIdentifier::Name(target_process),
+            identifier: target_process,
         },
         &payload,
-    ) {
-        Ok(r) => Ok(r),
-        Err(e) => Err(anyhow::anyhow!("{}", e)),
-    }
+    ))
 }

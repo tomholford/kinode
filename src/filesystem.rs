@@ -193,8 +193,8 @@ fn make_error_message(
     id: u64,
     source_process: String,
     error: FileSystemError,
-) -> WrappedMessage {
-    WrappedMessage {
+) -> KernelMessage {
+    KernelMessage {
         id,
         target: ProcessReference {
             node: our_name.clone(),
@@ -207,7 +207,7 @@ fn make_error_message(
                 identifier: ProcessIdentifier::Name("filesystem".into()),
             },
             timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-            content: UqbarErrorContent {
+            payload: UqbarErrorPayload {
                 kind: error.kind().into(),
                 // message: format!("{}", error),
                 message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
@@ -238,9 +238,20 @@ pub async fn fs_sender(
         HashMap::new();
 
     //  TODO: store or back up in DB/kv?
-    while let Some(wrapped_message) = recv_in_fs.recv().await {
-        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { ref source, content: _ }), }
-                = wrapped_message else {
+    while let Some(kernel_message) = recv_in_fs.recv().await {
+        let KernelMessage {
+            ref id,
+            target: _,
+            rsvp: _,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response: _,
+                payload: TransitPayload {
+                    ref source,
+                    json: _,
+                    bytes: _,
+                }
+            })),
+        } = kernel_message else {
             panic!("filesystem: unexpected Error")  //  TODO: implement error handling
         };
 
@@ -256,7 +267,7 @@ pub async fn fs_sender(
             println!(
                 "filesystem: request must come from our_name={}, got: {}",
                 our_name,
-                &wrapped_message,
+                &kernel_message,
             );
             continue;
         }
@@ -322,7 +333,7 @@ pub async fn fs_sender(
             if let Err(e) = handle_request(
                 our_name.clone(),
                 home_directory_path,
-                wrapped_message,
+                kernel_message,
                 open_files,
                 send_to_loop.clone(),
                 send_to_terminal,
@@ -347,33 +358,36 @@ pub async fn fs_sender(
 async fn handle_request(
     our_name: String,
     home_directory_path: String,
-    wrapped_message: WrappedMessage,
+    kernel_message: KernelMessage,
     open_files: Arc<Mutex<HashMap<FileRef, fs::File>>>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
-    let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
-            = wrapped_message else {
-        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
-    };
-    let Some(value) = content.payload.json.clone() else {
+    let KernelMessage {
+        ref id,
+        target: _,
+        rsvp,
+        message,
+    } = kernel_message;
+    let Ok(TransitMessage::Request(TransitRequest {
+        is_expecting_response,
+        payload: TransitPayload {
+            ref source,
+            json: Some(ref json),
+            ref bytes,
+        },
+    })) = message else {
         return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "missing payload".into(),
-        })
-    };
-    let MessageType::Request(is_expecting_response) = content.message_type else {
-        return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "not a Request".into(),
+            json: "".into(),
+            error: "not a Request with payload".into(),
         })
     };
 
-    let request: FileSystemRequest = match serde_json::from_value(value) {
+    let request: FileSystemRequest = match serde_json::from_str(json) {
         Ok(r) => r,
         Err(e) => {
             return Err(FileSystemError::BadJson {
-                json: content.payload.json,
+                json: json.into(),
                 error: format!("parse failed: {:?}", e),
             })
         },
@@ -416,7 +430,7 @@ async fn handle_request(
         }
     }
 
-    let response_payload = match request.action {
+    let (json, bytes) = match request.action {
         FileSystemAction::Read => {
             //  TODO: use read_exact()?
             let file_contents = match fs::read(&file_path).await {
@@ -441,42 +455,36 @@ async fn handle_request(
                 }
             ).await;
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(
-                        FileSystemResponse::Read(FileSystemUriHash {
+            (
+                Some(
+                    serde_json::to_string(
+                        &FileSystemResponse::Read(FileSystemUriHash {
                             uri_string: request.uri_string,
                             hash,
                         })
                     ).unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: Some(file_contents),
-                },
-            }
+                TransitPayloadBytes::Some(file_contents),
+            )
         },
         FileSystemAction::Write => {
-            let Some(payload_bytes) = content.payload.bytes.content.clone() else {
+            let TransitPayloadBytes::Some(ref payload_bytes) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
-            if let Err(e) = fs::write(&file_path, &payload_bytes).await {
+            if let Err(e) = fs::write(&file_path, payload_bytes).await {
                 return Err(FileSystemError::WriteFailed {
                     path: file_path,
                     error: format!("{}", e),
                 })
             };
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(FileSystemResponse::Write(request.uri_string))
+            (
+                Some(
+                    serde_json::to_string(&FileSystemResponse::Write(request.uri_string))
                         .unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         },
         FileSystemAction::GetMetadata => {
             //  TODO: use read_exact()?
@@ -506,10 +514,10 @@ async fn handle_request(
 
             let hash = compute_truncated_hash_reader(&file_path, file).await?;
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(
-                        FileSystemResponse::GetMetadata(FileSystemMetadata {
+            (
+                Some(
+                    serde_json::to_string(
+                        &FileSystemResponse::GetMetadata(FileSystemMetadata {
                             uri_string: request.uri_string,
                             hash: Some(hash),
                             entry_type: get_entry_type(
@@ -521,11 +529,8 @@ async fn handle_request(
                         })
                     ).unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         },
         FileSystemAction::ReadDir => {
             let mut entries = match fs::read_dir(&file_path).await {
@@ -596,15 +601,12 @@ async fn handle_request(
                 })
             }
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(FileSystemResponse::ReadDir(metadatas)).unwrap()
+            (
+                Some(
+                    serde_json::to_string(&FileSystemResponse::ReadDir(metadatas)).unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         }
         FileSystemAction::Open(mode) => {
             let file_ref = FileRef {
@@ -658,20 +660,17 @@ async fn handle_request(
                         open_files_lock.insert(file_ref, file);
                     }
 
-                    Payload {
-                        json: Some(
-                            serde_json::to_value(
-                                FileSystemResponse::Open {
+                    (
+                        Some(
+                            serde_json::to_string(
+                                &FileSystemResponse::Open {
                                     uri_string: request.uri_string,
                                     mode,
                                 }
                             ).unwrap()
                         ),
-                        bytes: PayloadBytes {
-                            circumvent: Circumvent::False,
-                            content: None,
-                        },
-                    }
+                        TransitPayloadBytes::None,
+                    )
                 },
                 Err(e) => {
                     return Err(FileSystemError::OpenFailed {
@@ -689,20 +688,17 @@ async fn handle_request(
             };
             let mut open_files_lock = open_files.lock().await;
             open_files_lock.remove(&file_ref);
-            Payload {
-                json: Some(
-                    serde_json::to_value(
-                        FileSystemResponse::Close {
+            (
+                Some(
+                    serde_json::to_string(
+                        &FileSystemResponse::Close {
                             uri_string: request.uri_string,
                             mode,
                         }
                     ).unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         }
         FileSystemAction::Append => {
             let file_ref = FileRef {
@@ -720,29 +716,23 @@ async fn handle_request(
                     })
                 },
             };
-            let payload_bytes = match content.payload.bytes.content {
-                Some(b) => b.clone(),
-                None =>  {
-                    return Err(FileSystemError::BadBytes { action: "Append".into() })
-                }
+            let TransitPayloadBytes::Some(bytes) = bytes else {
+                return Err(FileSystemError::BadBytes { action: "Append".into() })
             };
-            if let Err(e) = file.write_all_buf(&mut Bytes::from(payload_bytes)).await {
+            if let Err(e) = file.write_all_buf(&mut Bytes::from(bytes.clone())).await {
                 return Err(FileSystemError::WriteFailed {
                     path: file_path,
                     error: format!("{}", e),
                 })
             }
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(FileSystemResponse::Append(request.uri_string))
+            (
+                Some(
+                    serde_json::to_string(&FileSystemResponse::Append(request.uri_string))
                         .unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         },
         FileSystemAction::ReadChunkFromOpen(number_bytes) => {
             let file_ref = FileRef {
@@ -779,21 +769,18 @@ async fn handle_request(
                 })
             }
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(
-                        FileSystemResponse::ReadChunkFromOpen(FileSystemUriHash {
+            (
+                Some(
+                    serde_json::to_string(
+                        &FileSystemResponse::ReadChunkFromOpen(FileSystemUriHash {
                             uri_string: request.uri_string,
                             hash: compute_truncated_hash_bytes(&file_contents),
                         })
                     )
                         .unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: Some(file_contents),
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         },
         FileSystemAction::SeekWithinOpen(seek_from) => {
             let file_ref = FileRef {
@@ -831,37 +818,32 @@ async fn handle_request(
                 })
             }
 
-            Payload {
-                json: Some(
-                    serde_json::to_value(FileSystemResponse::SeekWithinOpen(request.uri_string))
+            (
+                Some(
+                    serde_json::to_string(&FileSystemResponse::SeekWithinOpen(request.uri_string))
                         .unwrap()
                 ),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+                TransitPayloadBytes::None,
+            )
         },
     };
 
     if is_expecting_response {
-        let response = WrappedMessage {
-            id,
+        let response = KernelMessage {
+            id: *id,
             target: ProcessReference {
                 node: our_name.clone(),
                 identifier: source.identifier.clone(),
             },
             rsvp,
-            message: Ok(Message {
+            message: Ok(TransitMessage::Response(TransitPayload {
                 source: ProcessReference {
                     node: our_name.clone(),
                     identifier: ProcessIdentifier::Name("filesystem".into()),
                 },
-                content: MessageContent {
-                    message_type: MessageType::Response,
-                    payload: response_payload,
-                },
-            }),
+                json,
+                bytes,
+            })),
         };
 
         let _ = send_to_loop.send(response).await;

@@ -1,5 +1,5 @@
 [package]
-name = "file_transfer_one_off"
+name = "ft_client_worker"
 version = "0.1.0"
 edition = "2021"
 

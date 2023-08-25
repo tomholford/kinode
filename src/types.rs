@@ -81,7 +81,6 @@ pub struct TransitRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransitPayload {
     pub source: ProcessReference,
-    // pub json: Option<serde_json::Value>,
     pub json: Option<String>,
     pub bytes: TransitPayloadBytes,
 }
@@ -90,7 +89,6 @@ pub struct TransitPayload {
 pub enum TransitPayloadBytes {
     None,
     Some(Vec<u8>),
-    // AttachCircumvented,
     Circumvent(Vec<u8>),
 }
 

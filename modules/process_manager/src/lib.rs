@@ -11,14 +11,16 @@ mod process_lib;
 struct Component;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Payload {
-    json: Option<serde_json::Value>,
-    bytes: Option<Vec<u8>>,
+pub enum TransitPayloadBytes {
+    None,
+    Some(Vec<u8>),
+    Circumvent(Vec<u8>),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestOnPanic {
-    target: ProcessReference,
-    payload: Payload,
+    pub target: ProcessReference,
+    pub json: Option<String>,
+    pub bytes: TransitPayloadBytes,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SendOnPanic {
@@ -647,7 +649,10 @@ fn handle_message (
                                 let _response = persist_pm_state(&our_name, processes);
                             }
                             process_lib::send_response(
-                                Some(KernelResponse::StartProcess(metadata)),
+                                Some(ProcessManagerResponse::Start {
+                                    id: metadata.our.id,
+                                    name: metadata.our.name,
+                                }),
                                 types::OutboundPayloadBytes::None,
                                 None::<Context>,
                             )?;

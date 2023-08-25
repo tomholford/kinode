@@ -1,5 +1,3 @@
-//  TODO: rewrite lib, given new bindgen behavior
-
 use super::bindings::component::microkernel_process::types;
 
 pub fn make_request<T, U>(
@@ -74,6 +72,65 @@ pub fn make_outbound_bytes_from_noncircumvented_inbound(
             Err(anyhow::anyhow!("inbound bytes are Circumvented"))
         },
     }
+}
+
+pub fn get_source(message: &types::InboundMessage) -> types::ProcessReference {
+    match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                ref source,
+                json: _,
+                bytes: _,
+            },
+        }) => source.clone(),
+        types::InboundMessage::Response(types::InboundPayload {
+            ref source,
+            json: _,
+            bytes: _,
+        }) => source.clone(),
+    }
+}
+
+pub fn get_json(message: &types::InboundMessage) -> anyhow::Result<String> {
+    let json = match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source: _,
+                ref json,
+                bytes: _,
+            },
+        }) => json,
+        types::InboundMessage::Response(types::InboundPayload {
+            source: _,
+            ref json,
+            bytes: _,
+        }) => json,
+    };
+    json.clone().ok_or(anyhow::anyhow!("json field is None"))
+}
+
+pub fn get_bytes(message: types::InboundMessage) -> anyhow::Result<Vec<u8>> {
+    let bytes = match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source: _,
+                json: _,
+                bytes,
+            },
+        }) => bytes,
+        types::InboundMessage::Response(types::InboundPayload {
+            source: _,
+            json: _,
+            bytes,
+        }) => bytes,
+    };
+    let types::InboundPayloadBytes::Some(bytes) = bytes else {
+        return Err(anyhow::anyhow!("bytes field is not Some"));
+    };
+    bytes
 }
 
 pub fn send_one_request<T, U>(

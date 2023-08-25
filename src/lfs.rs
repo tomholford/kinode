@@ -48,6 +48,7 @@ pub enum FsAction {
     Append([u8; 32]),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
+    Length([u8; 32]),
     PmWrite                  //  specific case for process manager persistance.
     // different backup add/remove requests
 }
@@ -59,6 +60,7 @@ pub enum FsResponse {
     ReadChunk([u8; 32]),
     Write([u8; 32]),
     Append([u8; 32]),   //  new file_hash [old too?]
+    Length(u64),
                         //  use FileSystemError
 }
 
@@ -320,6 +322,8 @@ async fn handle_request(
             let hash_result = hasher.finalize();
             let hash_array: [u8; 32] = *hash_result.as_bytes();
 
+            let new_hash: [u8; 32];
+
             // determine the new chunk range
             let previous_end_position: u64;
             {
@@ -354,13 +358,15 @@ async fn handle_request(
 
                     memfile.hasher.update(&data);       // update file's hash with the new data chunk
                     memfile.chunks.push(memory_chunk);
+                    new_hash = memfile.hasher.finalize().into();
                 } else {
                     return Err(FileSystemError::BadUri { uri: "".to_string(), bad_part_name: "".to_string(), bad_part:None });
                 }
             }
 
+
             Payload {
-                json: Some(serde_json::to_value(FsResponse::Append(file_hash)).unwrap()),
+                json: Some(serde_json::to_value(FsResponse::Append(new_hash)).unwrap()),
                 bytes: PayloadBytes {
                     circumvent: Circumvent::False,
                     content: None,
@@ -410,6 +416,32 @@ async fn handle_request(
                 bytes: PayloadBytes {
                     circumvent: Circumvent::False,
                     content: Some(data),
+                },
+            }
+        },
+        FsAction::Length(file_hash) => {
+            // obtain read locks.
+            let rmanifest = manifest.read().await;
+            let rhash_index = hash_index.read().await;
+
+            // Find the file UUID from the file hash.
+            let file_uuid = match rhash_index.get(&file_hash) {
+                Some(uuid) => uuid,
+                None => return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash)} )
+            };
+
+            // Get the memory file.
+            let memfile = match rmanifest.get(&file_uuid) {
+                Some(file) => file,
+                None =>  return Err(FileSystemError::LFSError { error: format!("no file found for hash: {:?}", file_hash)} )
+            };
+            let length = memfile.chunks.last().unwrap().chunk_range.1 + 1;
+
+            Payload {
+                json: Some(serde_json::to_value(FsResponse::Length(length)).unwrap()),
+                bytes: PayloadBytes {
+                    circumvent: Circumvent::False,
+                    content: None,
                 },
             }
         },

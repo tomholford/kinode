@@ -6,12 +6,15 @@ use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::core::utils::Anvil;
 use ethers::middleware::SignerMiddleware;
 use ethers::abi::Token;
+use ethers_providers::Ws;
+use serde_json::json;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum EthRpcAction {
     Call(EthRpcCall),
     SendTransaction(EthRpcCall),
     DeployContract,
+    Subscribe // TODO
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -49,6 +52,7 @@ pub async fn eth_rpc(
 
     // connect to the network
     let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
+    let subscriptions = Provider::<Ws>::connect(anvil.ws_endpoint()).await.unwrap();
 
     // connect the wallet to the provider
     let client = SignerMiddleware::new(provider, wallet.with_chain_id(anvil.chain_id()));
@@ -58,6 +62,7 @@ pub async fn eth_rpc(
             our_name.clone(),
             send_to_loop.clone(),
             message,
+            subscriptions.clone(),
             client.clone(),
             print_tx.clone(),
         ));
@@ -68,6 +73,7 @@ async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
     wm: WrappedMessage,
+    subscriptions: Provider<Ws>,
     client: SignerMiddleware<Provider<Http>, LocalWallet>,
     print_tx: PrintSender,
 ) {
@@ -104,7 +110,7 @@ async fn handle_message(
         Err(e) => panic!("eth_rpc: failed to parse request: {:?}", e),
     };
 
-    let call_data = content.payload.bytes.content.clone().unwrap();
+    let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
 
     match action {
         EthRpcAction::Call(eth_rpc_call) => {
@@ -233,6 +239,76 @@ async fn handle_message(
                     }),
                 }
             ).await.unwrap();
+        }
+        EthRpcAction::Subscribe => {
+            print_tx.send(Printout {
+                verbosity: 0,
+                content: "eth_rpc: subscribing to blocks".to_string(),
+            }).await;
+
+            // have to send this empty response to make process happy
+            send_to_loop.send(
+                WrappedMessage {
+                    id: id.clone(),
+                    target: target.clone(),
+                    rsvp: None,
+                    message: Ok(Message {
+                        source: ProcessNode {
+                            node: our.clone(),
+                            process: "eth_rpc".to_string(),
+                        },
+                        content: MessageContent {
+                            message_type: MessageType::Response,
+                            payload: Payload {
+                                json: None,
+                                bytes: PayloadBytes{
+                                    circumvent: Circumvent::False,
+                                    content: Some(vec![]),
+                                },
+                            },
+                        },
+                    }),
+                }
+            ).await.unwrap();
+
+            let mut stream = subscriptions.subscribe_blocks().await.unwrap().take(1);
+
+            // send to target
+            // until they cancel
+
+            while let Some(block) = stream.next().await {
+                send_to_loop.send(
+                    WrappedMessage {
+                        id: id.clone(),
+                        target: target.clone(),
+                        rsvp: None,
+                        message: Ok(Message {
+                            source: ProcessNode {
+                                node: our.clone(),
+                                process: "eth_rpc".to_string(),
+                            },
+                            content: MessageContent {
+                                message_type: MessageType::Response,
+                                payload: Payload {
+                                    // TODO figure out a json format for subscriptions
+                                    json: Some(json!({
+                                        "token":"0x123",
+                                        "method": "Subscription"
+                                    })),
+                                    bytes: PayloadBytes{
+                                        circumvent: Circumvent::False,
+                                        content: Some(block.hash.unwrap().as_ref().to_vec()),
+                                    },
+                                },
+                            },
+                        }),
+                    }
+                ).await.unwrap()
+                // print_tx.send(Printout {
+                //     verbosity: 0,
+                //     content: format!("eth_rpc: got block: {:?}", block),
+                // }).await;
+            }
         }
     }
 }

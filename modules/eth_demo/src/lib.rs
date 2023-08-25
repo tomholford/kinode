@@ -40,6 +40,8 @@ enum Erc20Method {
     Transfer(Transfer),
     Approve(Approve),
     TransferFrom(TransferFrom),
+    // subscriptions (events)
+    Subscription,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,6 +92,18 @@ impl bindings::MicrokernelProcess for Component {
         );
 
         bindings::print_to_terminal(0, format!("ERC20 address: {:?}", hex::encode(deployment_res.unwrap().content.payload.bytes.content.unwrap())).as_str());
+
+        let sub_res = process_lib::send_request_and_await_response(
+            our.clone(),
+            "eth_rpc".to_string(),
+            Some(json!("Subscribe")),
+            types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: Some(vec![])
+            },
+        );
+
+        bindings::print_to_terminal(0, "eth-demo: subscribed to events");
 
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
@@ -167,6 +181,13 @@ impl bindings::MicrokernelProcess for Component {
                         }.encode()
                     )
                 },
+                Erc20Method::Subscription => {
+                    panic!("eth-demo: ITS OVER")
+                },
+                _ => {
+                    bindings::print_to_terminal(0, "eth-demo: this is probably a subscription message");
+                    panic!("eth demo requires json payload")
+                }
             };
             bindings::print_to_terminal(0, format!("call_data: {:?}", call_data).as_str());
             let res = process_lib::send_request_and_await_response(

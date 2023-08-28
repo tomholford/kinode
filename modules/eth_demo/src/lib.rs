@@ -159,6 +159,10 @@ impl bindings::MicrokernelProcess for Component {
             Some(json!({
                 "SubscribeEvents": {
                     "addresses": ["5fbdb2315678afecb367f032d93f642f64180aa3"],
+                    "event": null, // "Transfer(address,address,uint256)",
+                    "topic1": null, // "f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+                    "topic2": null, // "8bbe911710c9e592487dde0735db76f83dc44cfd",
+                    "topic3": null,
                 }})),
             types::WitPayloadBytes {
                 circumvent: types::WitCircumvent::False,

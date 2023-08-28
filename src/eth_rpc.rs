@@ -37,12 +37,10 @@ struct DeployContract {
 #[derive(Debug, Serialize, Deserialize)]
 struct EthEventSubscription {
     addresses: Option<Vec<String>>,
-    // event: Option<String>,
-    // events?
-    // topic0: Option<U256>,
-    // topic1: Option<U256>,
-    // topic2: Option<U256>,
-    // topic3: Option<U256>,
+    event: Option<String>, // aka topic0. TODO events (plural) might be useful too...
+    topic1: Option<U256>,
+    topic2: Option<U256>,
+    topic3: Option<U256>,
 }
 
 pub async fn eth_rpc(
@@ -317,7 +315,7 @@ async fn handle_message(
             EthRpcAction::SubscribeEvents(sub) => {
                 print_tx.send(Printout {
                     verbosity: 0,
-                    content: "eth_rpc: subscribing to events".to_string(),
+                    content: format!("eth_rpc: subscribing to events: {:?}", sub),
                 }).await;
 
                 // have to send this empty response to make process happy
@@ -353,6 +351,20 @@ async fn handle_message(
                             .map(|s| s.parse().unwrap())
                             .collect()
                     ));
+                }
+
+                // TODO is there a cleaner way to do all of this?
+                if let Some(event) = sub.event {
+                    filter = filter.event(&event);
+                }
+                if let Some(topic1) = sub.topic1 {
+                    filter = filter.topic1(topic1);
+                }
+                if let Some(topic2) = sub.topic2 {
+                    filter = filter.topic2(topic2);
+                }
+                if let Some(topic3) = sub.topic3 {
+                    filter = filter.topic3(topic3);
                 }
 
                 let mut stream = subscriptions.subscribe_logs(&filter).await.unwrap();

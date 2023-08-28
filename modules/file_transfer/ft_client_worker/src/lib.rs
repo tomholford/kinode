@@ -24,7 +24,12 @@ fn handle_next_message(
             },
         }) => {
             match process_lib::parse_message_json(json)? {
-                ft_types::FileTransferRequest::GetFile { target_node, file_hash, chunk_size } => {
+                ft_types::FileTransferRequest::GetFile {
+                    target_node,
+                    file_hash,
+                    chunk_size,
+                    resume_file_hash,  //  TODO: resume if file exists
+                } => {
                     //  (1): Start transfer with ft_server
                     //  (2): iteratively GetPiece and Append until have acquired whole file
                     //  (3): clean up
@@ -53,17 +58,17 @@ fn handle_next_message(
                     let state = ft_types::ClientWorkerState {
                         metadata,
                         current_file_hash: None,
-                        number_pieces_received: 0,
+                        next_piece_number: 0,
                     };
 
                     //  (2)
-                    while state.metadata.number_pieces > state.number_pieces_received {
+                    while state.metadata.number_pieces > state.next_piece_number {
                         //  TODO: circumvent bytes?
                         let get_piece_response = process_lib::send_and_await_receive(
                             source.node.clone(),
                             source.identifier.clone(),
                             Some(&ft_types::FileTransferRequest::GetPiece {
-                                piece_number: state.number_pieces_received,
+                                piece_number: state.next_piece_number,
                             }),
                             types::OutboundPayloadBytes::None,
                         )?;
@@ -80,18 +85,28 @@ fn handle_next_message(
                             Some(&ft_types::FsAction::Append(state.current_file_hash)), // lfs interface will reflect this
                             types::OutboundPayloadBytes::None,
                         )?;
-                        state.current_file_hash = match append_response {
+                        let file_hash = match append_response {
                             Err(e) => Err(anyhow::anyhow!("couldn't Append file piece: {}", e)),
                             Ok(append_message) => {
                                 let append_json = process_lib::get_json(&append_message)?;
                                 match process_lib::parse_message_json(Some(append_json))? {
-                                    ft_types::FsResponse::Append(file_hash) => Ok(Some(file_hash)),
+                                    ft_types::FsResponse::Append(file_hash) => Ok(file_hash),
                                     _ => Err(anyhow::anyhow!("unexpected Response resulting from lfs Append")),
                                 }
                             },
                         }?;
+                        state.current_file_hash = Some(file_hash.clone());
 
-                        state.number_pieces_received += 1;
+                        let _ = process_lib::send_and_await_receive(
+                            our.node.clone(),
+                            types::ProcessIdentifier::Name("ft_client".into()),
+                            Some(&ft_types::FileTransferRequest::UpdateClientState {
+                                current_file_hash: file_hash,
+                            }),
+                            types::OutboundPayloadBytes::None,
+                        )?;
+
+                        state.next_piece_number += 1;
                     }
 
                     //  (3)
@@ -121,9 +136,7 @@ impl MicrokernelProcess for Component {
     fn run_process(our: types::ProcessAddress) {
         print_to_terminal(1, "ft_client_worker: begin");
 
-        match handle_next_message(
-            &our,
-        ) {
+        match handle_next_message(&our) {
             Ok(_) => { return; },
             Err(e) => {
                 print_to_terminal(0, &format!("ft_client_worker: error: {:?}", e));

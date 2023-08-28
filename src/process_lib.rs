@@ -1,5 +1,35 @@
 use super::bindings::component::microkernel_process::types;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TransitPayloadBytes {
+    None,
+    Some(Vec<u8>),
+    Circumvent(Vec<u8>),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestOnPanic {
+    pub target: ProcessReference,
+    pub json: Option<String>,
+    pub bytes: TransitPayloadBytes,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SendOnPanic {
+    None,
+    Restart,
+    Requests(Vec<RequestOnPanic>),
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProcessManagerCommand {
+    Initialize { jwt_secret_bytes: Option<Vec<u8>> },
+    Start { name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { id: u64 },
+    Restart { id: u64 },
+    ListRegisteredProcesses,
+    PersistState,
+    RebootStart { id: u64, name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },  //  TODO: remove
+}
+
 pub fn make_request<T, U>(
     is_expecting_response: bool,
     target_node: &str,
@@ -201,4 +231,19 @@ where
         },
         &payload,
     ))
+}
+
+pub fn persist_state<T>(
+    our_name: &str,
+    state: &T,
+) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>>
+where
+    T: serde::Serialize,
+{
+    send_and_await_receive(
+        our_name.into(),
+        types::ProcessIdentifier::Name("process_manager".into()),
+        Some(ProcessManagerCommand::PersistState),
+        types::OutboundPayloadBytes::Circumvent(bincode::serialize(state)?),
+    )
 }

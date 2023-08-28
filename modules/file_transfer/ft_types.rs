@@ -1,4 +1,5 @@
 use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessAddress {
@@ -109,12 +110,13 @@ pub struct FileTransferMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileTransferRequest {
-    GetFile { target_node: String, file_hash: [u8; 32], chunk_size: u64 },                  //  user to client to client_worker
-    DisplayOngoing,                                                                         //  user to client
-    Start { file_hash: [u8; 32], chunk_size: u64 },                                         //  client_worker to server
-    StartWorker { client_worker: ProcessReference, file_hash: [u8; 32], chunk_size: u64 },  //  server to server_worker
-    GetPiece { piece_number: u64 },                                                         //  client_worker to server_worker
-    Done,                                                                                   //  client_worker to server_worker
+    GetFile { target_node: String, file_hash: [u8; 32], chunk_size: u64, resume_file_hash: Option<[u8; 32]> },  //  user to client to client_worker
+    Start { file_hash: [u8; 32], chunk_size: u64 },                                                             //  client_worker to server
+    StartWorker { client_worker: ProcessReference, file_hash: [u8; 32], chunk_size: u64 },                      //  server to server_worker
+    GetPiece { piece_number: u64 },                                                                             //  client_worker to server_worker
+    Done,                                                                                                       //  client_worker to server_worker
+    DisplayOngoing,                                                                                             //  user to client
+    UpdateClientState { current_file_hash: [u8; 32] },                                                          //  client_worker to client
     // Cancel { key: FileTransferKey, is_cancel_both: bool, reason: String },
     // ReadDir { target_node: String, uri_string: String, }  //  from user to requester to server
 }
@@ -123,17 +125,23 @@ pub enum FileTransferRequest {
 pub enum FileTransferResponse {
     Start(FileTransferMetadata),     //  server_worker to client_worker
     GetPiece { piece_number: u64 },  //  server_worker to client_worker
+    UpdateClientState,               //  client to client_worker
     // ReadDir(Vec<FileSystemMetadata>),  //  from server to requester
 }
 
-pub struct ClientState {
-    pub worker: ProcessAddress,
-    pub state: ClientWorkerState,
+pub type ClientState = HashMap<ProcessReference, ClientStateValue>;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClientStateValue {
+    // pub worker: ProcessReference,  // key
+    pub target_node: String,
+    pub file_hash: [u8; 32],
+    pub chunk_size: u64,
+    pub current_file_hash: Option<[u8; 32]>,
 }
 pub struct ClientWorkerState {
     pub metadata: FileTransferMetadata,
     pub current_file_hash: Option<[u8; 32]>,
-    pub number_pieces_received: u64,
+    pub next_piece_number: u64,
 }
 pub struct ServerWorkerState {
     pub client_worker: ProcessReference,  //  TODO: needed?

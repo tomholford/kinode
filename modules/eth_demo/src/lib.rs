@@ -30,7 +30,7 @@ struct Component;
 #[derive(Debug, Serialize, Deserialize)]
 enum AllActions {
     Erc20Action(Erc20Action),
-    Subscription(EthRpcSubscription),
+    BlockSubscription(EthBlock),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -71,9 +71,29 @@ struct TransferFrom {
 
 // shared with eth_rpc module
 #[derive(Debug, Serialize, Deserialize)]
-struct EthRpcSubscription {
-    // TODO these are just random fields
-    id: String,
+struct EthBlock {
+    baseFeePerGas: String,
+    difficulty: String,
+    extraData: String,
+    gasLimit: String,
+    gasUsed: String,
+    hash: String,
+    logsBloom: String,
+    miner: String,
+    mixHash: String,
+    nonce: String,
+    number: String,
+    parentHash: String,
+    receiptsRoot: String,
+    sealFields: Vec<String>,
+    sha3Uncles: String,
+    size: String,
+    stateRoot: String,
+    timestamp: String,
+    totalDifficulty: String,
+    transactions: Vec<String>,
+    transactionsRoot: String,
+    uncles: Vec<String>
 }
 
 sol! {
@@ -213,12 +233,12 @@ impl bindings::MicrokernelProcess for Component {
                         );
                         bindings::print_to_terminal(0, format!("response: {:?}", res).as_str());        
                     },
-                    AllActions::Subscription(subscription) => {
+                    AllActions::BlockSubscription(subscription) => {
                         bindings::print_to_terminal(0, format!("subscription: {:?}", subscription).as_str());
                     }
                 }
             } else {
-                bindings::print_to_terminal(0, "eth_demo: failed to parse json message");
+                bindings::print_to_terminal(0, format!("eth_demo: failed to parse json message {:?}", message_from_loop_string).as_str());
             }
         }
     }

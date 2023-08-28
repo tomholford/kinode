@@ -292,15 +292,12 @@ async fn handle_message(
                                 content: MessageContent {
                                     message_type: MessageType::Request(false),
                                     payload: Payload {
-                                        // TODO figure out a json format for subscriptions
                                         json: Some(json!({
-                                            "Subscription": {
-                                                "id": rand::random::<u64>().to_string(),
-                                            }
+                                            "BlockSubscription": serde_json::to_value(block).unwrap()
                                         })),
                                         bytes: PayloadBytes{
                                             circumvent: Circumvent::False,
-                                            content: Some(block.hash.unwrap().as_ref().to_vec()),
+                                            content: None
                                         },
                                     },
                                 },

@@ -1,3 +1,11 @@
+use serde::{Serialize, Deserialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessAddress {
+    pub node: String,
+    pub id: u64,
+    pub name: Option<String>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessReference {
     pub node: String,
@@ -74,34 +82,33 @@ pub enum FsResponse {
                         //  use FileSystemError
 }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum NetworkingError {
-    #[error("Peer is offline or otherwise unreachable")]
-    PeerOffline,
-    #[error("Message delivery failed due to timeout")]
-    MessageTimeout,
-    #[error("Some bug in the networking code")]
-    NetworkingBug,
-}
+// #[derive(Error, Debug, Serialize, Deserialize)]
+// pub enum NetworkingError {
+//     #[error("Peer is offline or otherwise unreachable")]
+//     PeerOffline,
+//     #[error("Message delivery failed due to timeout")]
+//     MessageTimeout,
+//     #[error("Some bug in the networking code")]
+//     NetworkingBug,
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq)]
-struct FileTransferKey {
-    client: String,
-    server: String,
-    file_hash: [u8; 32],  // ?
+pub struct FileTransferKey {
+    pub client: String,
+    pub server: String,
+    pub file_hash: [u8; 32],  // ?
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct FileTransferMetadata {
-    key: FileTransferKey,
-    chunk_size: u64,
-    number_pieces: u64,
-    number_bytes: u64,
-    // piece_hashes: Vec<u64>,  //  ?
+pub struct FileTransferMetadata {
+    pub key: FileTransferKey,
+    pub chunk_size: u64,
+    pub number_pieces: u64,
+    pub number_bytes: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum FileTransferRequest {
+pub enum FileTransferRequest {
     GetFile { target_node: String, file_hash: [u8; 32], chunk_size: u64 },                  //  user to client to client_worker
     DisplayOngoing,                                                                         //  user to client
     Start { file_hash: [u8; 32], chunk_size: u64 },                                         //  client_worker to server
@@ -113,40 +120,39 @@ enum FileTransferRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum FileTransferResponse {
+pub enum FileTransferResponse {
     Start(FileTransferMetadata),     //  server_worker to client_worker
     GetPiece { piece_number: u64 },  //  server_worker to client_worker
     // ReadDir(Vec<FileSystemMetadata>),  //  from server to requester
 }
 
-struct ClientState {
-    worker: ProcessAddress,
-    state: ClientWorkerState,
+pub struct ClientState {
+    pub worker: ProcessAddress,
+    pub state: ClientWorkerState,
 }
-struct ClientWorkerState {
-    metadata: FileTransferMetadata,
-    current_file_hash: Option<[u8; 32]>,
-    number_pieces_received: u64,
+pub struct ClientWorkerState {
+    pub metadata: FileTransferMetadata,
+    pub current_file_hash: Option<[u8; 32]>,
+    pub number_pieces_received: u64,
 }
-struct ServerWorkerState {
-    client_worker: ProcessReference,  //  TODO: needed?
-    metadata: FileTransferMetadata,
-    // number_pieces_sent: u64,
+pub struct ServerWorkerState {
+    pub client_worker: ProcessReference,  //  TODO: needed?
+    pub metadata: FileTransferMetadata,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct FileTransferContext {
-    key: FileTransferKey,
-    additional: FileTransferAdditionalContext,
+pub struct FileTransferContext {
+    pub key: FileTransferKey,
+    pub additional: FileTransferAdditionalContext,
 }
 #[derive(Debug, Serialize, Deserialize)]
-enum FileTransferAdditionalContext {
+pub enum FileTransferAdditionalContext {
     Empty,
     Metadata { chunk_size: u64 },
     Piece { piece_number: u64 },
 }
 
-enum MessageHandledStatus {
+pub enum MessageHandledStatus {
     ReadyForNext,
     Done,
 }

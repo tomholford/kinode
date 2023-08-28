@@ -130,7 +130,7 @@ pub fn get_bytes(message: types::InboundMessage) -> anyhow::Result<Vec<u8>> {
     let types::InboundPayloadBytes::Some(bytes) = bytes else {
         return Err(anyhow::anyhow!("bytes field is not Some"));
     };
-    bytes
+    Ok(bytes)
 }
 
 pub fn send_one_request<T, U>(

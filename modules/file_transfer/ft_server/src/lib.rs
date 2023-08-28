@@ -5,11 +5,12 @@ use serde::{Serialize, Deserialize};
 use bindings::{MicrokernelProcess, print_to_terminal, receive};
 use bindings::component::microkernel_process::types;
 
+mod ft_types;
 mod process_lib;
 
 struct Component;
 
-fn handle_next_message(our: &ProcessAddress) -> anyhow::Result<MessageHandledStatus> {
+fn handle_next_message(our: &types::ProcessAddress) -> anyhow::Result<()> {
     let (message, _context) = receive()?;
     match message {
         types::InboundMessage::Response(_) => Err(anyhow::anyhow!("unexpected Response")),
@@ -22,7 +23,7 @@ fn handle_next_message(our: &ProcessAddress) -> anyhow::Result<MessageHandledSta
             },
         }) => {
             match process_lib::parse_message_json(json)? {
-                FileTransferRequest::Start { file_hash, chunk_size } => {
+                ft_types::FileTransferRequest::Start { file_hash, chunk_size } => {
                     //  (1) spin up ft_server_worker to handle upload
                     //  (2) send StartWorker to server_worker to begin upload
 
@@ -91,14 +92,7 @@ impl MicrokernelProcess for Component {
 
         loop {
             match handle_next_message(&our) {
-                Ok(status) => {
-                    match status {
-                        MessageHandledStatus::ReadyForNext => {},
-                        MessageHandledStatus::Done => {
-                            return;
-                        },
-                    }
-                },
+                Ok(status) => {},
                 Err(e) => {
                     //  TODO: should bail?
                     print_to_terminal(0, &format!("ft_server: error: {:?}", e));

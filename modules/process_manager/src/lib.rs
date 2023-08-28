@@ -69,23 +69,26 @@ pub enum FileSystemSeekFrom {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+
 pub enum FsAction {
-    Write,
+    WriteImmutable,
+    WriteAppendable,
     Append([u8; 32]),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
-    PmWrite                  //  specific case for process manager persistance.
-    // different backup add/remove requests
+    PmWrite,   //  specific case for process manager persistance.
+    Delete([u8; 32]),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    //  bytes are in payload_bytes, [old-fileHash, new_filehash, file_uuid]
+    //  bytes are in payload_bytes
     Read([u8; 32]),
     ReadChunk([u8; 32]),
     Write([u8; 32]),
-    Append([u8; 32]),   //  new file_hash [old too?]
-                        //  use FileSystemError
+    Append([u8; 32]),
+    Delete([u8; 32]),
+    //  use FileSystemError
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -427,7 +430,7 @@ fn handle_message (
                         true,
                         our_name,
                         "lfs",
-                        Some(FileSystemAction::Write),
+                        Some(FsAction::WriteImmutable),
                         message.content.payload.bytes,
                         Some(Context::Persist { process_name: message.source.process }),
                     )?;

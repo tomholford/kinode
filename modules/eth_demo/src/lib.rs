@@ -31,6 +31,7 @@ struct Component;
 enum AllActions {
     Erc20Action(Erc20Action),
     BlockSubscription(EthBlock),
+    EventSubscription(EthEvent),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,6 +97,20 @@ struct EthBlock {
     uncles: Vec<String>
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct EthEvent {
+    address: String,
+    blockHash: String,
+    blockNumber: String,
+    data: String,
+    logIndex: String,
+    removed: bool,
+    topics: Vec<String>,
+    transactionHash: String,
+    transactionIndex: String,
+    transactionLogIndex: String,
+}
+
 sol! {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
@@ -126,10 +141,25 @@ impl bindings::MicrokernelProcess for Component {
 
         bindings::print_to_terminal(0, format!("ERC20 address: {:?}", hex::encode(deployment_res.unwrap().content.payload.bytes.content.unwrap())).as_str());
 
-        let sub_res = process_lib::send_request_and_await_response(
+        let block_sub_res = process_lib::send_request_and_await_response(
             our.clone(),
             "eth_rpc".to_string(),
-            Some(json!("Subscribe")),
+            Some(json!("SubscribeBlocks")),
+            types::WitPayloadBytes {
+                circumvent: types::WitCircumvent::False,
+                content: Some(vec![])
+            },
+        );
+
+        bindings::print_to_terminal(0, "eth-demo: subscribed to blocks");
+
+        let event_sub_res = process_lib::send_request_and_await_response(
+            our.clone(),
+            "eth_rpc".to_string(),
+            Some(json!({
+                "SubscribeEvents": {
+                    "addresses": ["5fbdb2315678afecb367f032d93f642f64180aa3"],
+                }})),
             types::WitPayloadBytes {
                 circumvent: types::WitCircumvent::False,
                 content: Some(vec![])
@@ -220,8 +250,7 @@ impl bindings::MicrokernelProcess for Component {
                                 )
                             },
                         };
-                        bindings::print_to_terminal(0, "l");
-                        bindings::print_to_terminal(0, format!("call_data: {:?}", call_data).as_str());
+                        bindings::print_to_terminal(0, "sending request");
                         let res = process_lib::send_request_and_await_response(
                             our.clone(),
                             "eth_rpc".to_string(),
@@ -234,7 +263,10 @@ impl bindings::MicrokernelProcess for Component {
                         bindings::print_to_terminal(0, format!("response: {:?}", res).as_str());        
                     },
                     AllActions::BlockSubscription(subscription) => {
-                        bindings::print_to_terminal(0, format!("subscription: {:?}", subscription).as_str());
+                        bindings::print_to_terminal(0, format!("block subscription: {:?}", subscription).as_str());
+                    }
+                    AllActions::EventSubscription(subscription) => {
+                        bindings::print_to_terminal(0, format!("event subscription: {:?}", subscription).as_str());
                     }
                 }
             } else {

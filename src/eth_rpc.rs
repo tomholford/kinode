@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use ethers::types::transaction::eip2718::TypedTransaction;
 use ethers::core::utils::Anvil;
+use ethers::core::types::Filter;
 use ethers::middleware::SignerMiddleware;
 use ethers::abi::Token;
 use ethers_providers::Ws;
@@ -14,7 +15,8 @@ enum EthRpcAction {
     Call(EthRpcCall),
     SendTransaction(EthRpcCall),
     DeployContract,
-    Subscribe // TODO to specific events
+    SubscribeBlocks,
+    SubscribeEvents(EthEventSubscription)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,9 +35,14 @@ struct DeployContract {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct EthRpcSubscription {
-    // TODO these are just random fields
-    id: String,
+struct EthEventSubscription {
+    addresses: Option<Vec<String>>,
+    // event: Option<String>,
+    // events?
+    // topic0: Option<U256>,
+    // topic1: Option<U256>,
+    // topic2: Option<U256>,
+    // topic3: Option<U256>,
 }
 
 pub async fn eth_rpc(
@@ -242,7 +249,8 @@ async fn handle_message(
                     }
                 ).await.unwrap();
             }
-            EthRpcAction::Subscribe => {
+            EthRpcAction::SubscribeBlocks => {
+                // TODO must make this a tokio thread so that we can cancel it
                 print_tx.send(Printout {
                     verbosity: 0,
                     content: "eth_rpc: subscribing to blocks".to_string(),
@@ -294,6 +302,81 @@ async fn handle_message(
                                     payload: Payload {
                                         json: Some(json!({
                                             "BlockSubscription": serde_json::to_value(block).unwrap()
+                                        })),
+                                        bytes: PayloadBytes{
+                                            circumvent: Circumvent::False,
+                                            content: None
+                                        },
+                                    },
+                                },
+                            }),
+                        }
+                    ).await.unwrap();
+                }
+            }
+            EthRpcAction::SubscribeEvents(sub) => {
+                print_tx.send(Printout {
+                    verbosity: 0,
+                    content: "eth_rpc: subscribing to events".to_string(),
+                }).await;
+
+                // have to send this empty response to make process happy
+                send_to_loop.send(
+                    WrappedMessage {
+                        id: id.clone(),
+                        target: target.clone(),
+                        rsvp: None,
+                        message: Ok(Message {
+                            source: ProcessNode {
+                                node: our.clone(),
+                                process: "eth_rpc".to_string(),
+                            },
+                            content: MessageContent {
+                                message_type: MessageType::Response,
+                                payload: Payload {
+                                    json: None,
+                                    bytes: PayloadBytes{
+                                        circumvent: Circumvent::False,
+                                        content: Some(vec![]),
+                                    },
+                                },
+                            },
+                        }),
+                    }
+                ).await.unwrap();
+
+                let mut filter = Filter::new();
+                if let Some(addresses) = sub.addresses {
+                    filter = filter.address(ValueOrArray::Array(
+                        addresses
+                            .into_iter()
+                            .map(|s| s.parse().unwrap())
+                            .collect()
+                    ));
+                }
+
+                let mut stream = subscriptions.subscribe_logs(&filter).await.unwrap();
+
+                while let Some(event) = stream.next().await {
+                    print_tx.send(Printout {
+                        verbosity: 0,
+                        content: format!("eth_rpc: got event: {:?}", event),
+                    }).await;
+                    send_to_loop.send(
+                        WrappedMessage {
+                            id: rand::random(),
+                            target: target.clone(),
+                            rsvp: None,
+                            message: Ok(Message {
+                                source: ProcessNode {
+                                    node: our.clone(),
+                                    process: "eth_rpc".to_string(),
+                                },
+                                content: MessageContent {
+                                    message_type: MessageType::Request(false),
+                                    payload: Payload {
+                                        json: Some(json!({
+                                            "EventSubscription": serde_json::to_value(event).unwrap()
                                         })),
                                         bytes: PayloadBytes{
                                             circumvent: Circumvent::False,

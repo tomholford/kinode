@@ -127,12 +127,14 @@ async fn handle_message(
         content: "eth_rpc: got message".to_string(),
     }).await;
     let WrappedMessage { ref id, target: _, ref rsvp, message: Ok(Message { ref source, ref content }), }
-            = wm else {
-        panic!("eth_rpc: unexpected Error")  //  TODO: implement error handling
-    };
+        = wm else {
+            return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
+        };
 
     let target = match content.message_type {
-        MessageType::Response => panic!("eth_rpc: should not get a response message"),
+        MessageType::Response => {
+            return Err(EthRpcError::Error { error: format!("eth_rpc: got response, expected request: {:?}", wm) });
+        },
         MessageType::Request(is_expecting_response) => {
             if is_expecting_response {
                 ProcessNode {
@@ -140,14 +142,16 @@ async fn handle_message(
                     process: source.process.clone(),
                 }
             } else {
-                let Some(rsvp) = rsvp else { panic!("eth_rpc: no rsvp"); };
+                let Some(rsvp) = rsvp else {
+                    return Err(EthRpcError::Error { error: format!("eth_rpc: got request with no RSVP: {:?}", wm)});
+                };
                 rsvp.clone()
             }
         }
     };
 
     let Some(json) = content.payload.json.clone() else {
-        panic!("eth_rpc: request must have JSON payload, got: {:?}", wm);
+        return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
     };
 
     let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
@@ -179,8 +183,7 @@ async fn handle_message(
             };
 
             let Ok(call_result) = client.call(&TypedTransaction::Legacy(call_request), None).await else {
-                panic!("eth_rpc: call failed")
-                // TODO send Err() message back to process
+                return Err(EthRpcError::Error { error: format!("eth_rpc: call failed") });
             };
 
             send_to_loop.send(
@@ -224,8 +227,12 @@ async fn handle_message(
                 None => call_request
             };
 
-            let pending = client.send_transaction(TypedTransaction::Legacy(call_request), None).await.unwrap(); // TODO unwrap
-            let Some(rx) = pending.await.unwrap() else { panic!("foo")}; // TODO unwrap
+            let Ok(pending) = client.send_transaction(TypedTransaction::Legacy(call_request), None).await else {
+                return Err(EthRpcError::Error { error: format!("eth_rpc: send_transaction failed") });
+            };
+            let Some(rx) = pending.await.unwrap() else {
+                return Err(EthRpcError::Error { error: format!("eth_rpc: send_transaction execution failed") });
+            };
 
             send_to_loop.send(
                 WrappedMessage {
@@ -252,6 +259,7 @@ async fn handle_message(
             ).await.unwrap();
         }
         EthRpcAction::DeployContract => {
+            // TODO I have a feeling we will delete this functionality
             let factory = ContractFactory::new(Default::default(), call_data.into(), client.clone().into());
             let contract = factory
                 .deploy(())  // TODO should pass these in from json arguments
@@ -411,7 +419,9 @@ async fn handle_message(
                 filter = filter.topic3(topic3);
             }
 
-            let mut stream = subscriptions.subscribe_logs(&filter).await.unwrap();
+            let Ok(mut stream) = subscriptions.subscribe_logs(&filter).await else {
+                return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't create event subscription") });
+            };
 
             while let Some(event) = stream.next().await {
                 print_tx.send(Printout {

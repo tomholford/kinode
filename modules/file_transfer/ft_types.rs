@@ -6,12 +6,12 @@ pub struct ProcessAddress {
     pub id: u64,
     pub name: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ProcessReference {
     pub node: String,
     pub identifier: ProcessIdentifier,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub enum ProcessIdentifier {
     Id(u64),
     Name(String),
@@ -66,9 +66,9 @@ pub enum FsAction {
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    file_hash: [u8; 32],
-    start: u64,
-    length: u64,
+    pub file_hash: [u8; 32],
+    pub start: u64,
+    pub length: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

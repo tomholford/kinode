@@ -1,10 +1,9 @@
 cargo_component_bindings::generate!();
 
-use serde::{Serialize, Deserialize};
-
 use bindings::{MicrokernelProcess, print_to_terminal, receive};
 use bindings::component::microkernel_process::types;
 
+mod ft_types;
 mod process_lib;
 
 struct Component;
@@ -13,10 +12,23 @@ fn div_round_up(numerator: u64, denominator: u64) -> u64 {
     (numerator + denominator - 1) / denominator
 }
 
+fn de_wit_process_reference(wit: &types::ProcessReference) -> ft_types::ProcessReference {
+    ft_types::ProcessReference {
+        node: wit.node.clone(),
+        identifier: de_wit_process_identifier(&wit.identifier),
+    }
+}
+fn de_wit_process_identifier(wit: &types::ProcessIdentifier) -> ft_types::ProcessIdentifier {
+    match wit {
+        types::ProcessIdentifier::Id(id) => ft_types::ProcessIdentifier::Id(id.clone()),
+        types::ProcessIdentifier::Name(name) => ft_types::ProcessIdentifier::Name(name.clone()),
+    }
+}
+
 fn handle_next_message(
-    our: ProcessAddress,
-    state: &mut Option<ServerWorkerState>,
-) -> anyhow::Result<MessageHandledStatus> {
+    our: &types::ProcessAddress,
+    state: &mut Option<ft_types::ServerWorkerState>,
+) -> anyhow::Result<ft_types::MessageHandledStatus> {
     let (message, _context) = receive()?;
 
     //  if we have been StartWorker'd, state will be set:
@@ -25,18 +37,18 @@ fn handle_next_message(
         None => {},
         Some(state) => {
             let source = process_lib::get_source(&message);
-            assert_eq!(state.client_worker, source);
+            assert_eq!(state.client_worker, de_wit_process_reference(&source));
         },
     }
 
     match message {
         types::InboundMessage::Response(_) => Err(anyhow::anyhow!("unexpected Response")),
         types::InboundMessage::Request(types::InboundRequest {
-            is_expecting_response,
-            payload: types::InboundPayload { source, json, bytes },
+            is_expecting_response: _,
+            payload: types::InboundPayload { source: _, json, bytes: _ },
         }) => {
             match process_lib::parse_message_json(json)? {
-                FileTransferRequest::StartWorker { client_worker, file_hash, chunk_size } => {
+                ft_types::FileTransferRequest::StartWorker { client_worker, file_hash, chunk_size } => {
                     //  (1) get file length
                     //  (2) instantiate metadata & add to state
                     //  (3) inform client_worker we are ready to upload
@@ -45,11 +57,11 @@ fn handle_next_message(
                     let response = process_lib::send_and_await_receive(
                         our.node.clone(),
                         types::ProcessIdentifier::Name("lfs".into()),
-                        Some(FsAction::Length(file_hash)),
+                        Some(ft_types::FsAction::Length(file_hash)),
                         types::OutboundPayloadBytes::None,
                     )?;
-                    let length = match response {
-                        Err(e) => { panic!() },  //  TODO: pass error on to client_worker
+                    let number_bytes = match response {
+                        Err(_e) => { panic!() },  //  TODO: pass error on to client_worker
                         Ok(response_message) => {
                             match response_message {
                                 types::InboundMessage::Request(_) => Err(anyhow::anyhow!("unexpected Request resulting from Length lfs call")),
@@ -59,7 +71,7 @@ fn handle_next_message(
                                     bytes: _,
                                 }) => {
                                     match process_lib::parse_message_json(json)? {
-                                        FsResponse::Length(number_bytes) => number_bytes,
+                                        ft_types::FsResponse::Length(number_bytes) => Ok(number_bytes),
                                         _ => Err(anyhow::anyhow!("unexpected Response resulting from Length lfs call")),
                                     }
                                 }
@@ -69,35 +81,36 @@ fn handle_next_message(
 
                     //  (2)
                     let number_pieces = div_round_up(
-                        file_metadata.len,
+                        number_bytes,
                         chunk_size
                     );
-                    let key = FileTransferKey {
+                    let key = ft_types::FileTransferKey {
                         client: client_worker.node.clone(),
                         server: our.node.clone(),
                         file_hash: file_hash.clone(),
                     };
-                    let metadata = FileTransferMetadata {
+                    let metadata = ft_types::FileTransferMetadata {
                         key,
                         chunk_size,
                         number_pieces,
                         number_bytes,
                     };
 
-                    *state = Some(ServerWorkerState {
+                    *state = Some(ft_types::ServerWorkerState {
                         client_worker,
                         metadata: metadata.clone(),
-                        number_pieces_sent: 0,
                     });
 
                     //  (3)
                     process_lib::send_response(
-                        Some(FileTransferResponse::Start(metadata)),
+                        Some(ft_types::FileTransferResponse::Start(metadata)),
                         types::OutboundPayloadBytes::None,
-                        None::<FileTransferContext>,
+                        None::<ft_types::FileTransferContext>,
                     )?;
+
+                    Ok(ft_types::MessageHandledStatus::ReadyForNext)
                 },
-                FileTransferRequest::GetPiece { piece_number } => {
+                ft_types::FileTransferRequest::GetPiece { piece_number } => {
                     //  (1) get chunk bytes from lfs
                     //  (2) send chunk bytes
 
@@ -109,7 +122,7 @@ fn handle_next_message(
                     let response = process_lib::send_and_await_receive(
                         our.node.clone(),
                         types::ProcessIdentifier::Name("lfs".into()),
-                        Some(FsAction::ReadChunk(ReadChunkRequest {
+                        Some(ft_types::FsAction::ReadChunk(ft_types::ReadChunkRequest {
                             file_hash,
                             start,
                             length: chunk_size,
@@ -117,7 +130,7 @@ fn handle_next_message(
                         types::OutboundPayloadBytes::None,
                     )?;
                     let bytes = match response {
-                        Err(e) => { panic!() },  //  TODO: pass error on to client_worker
+                        Err(_e) => { panic!() },  //  TODO: pass error on to client_worker
                         Ok(response_message) => {
                             match response_message {
                                 types::InboundMessage::Request(_) => Err(anyhow::anyhow!("unexpected Request resulting from ReadChunk lfs call")),
@@ -127,9 +140,9 @@ fn handle_next_message(
                                     bytes,
                                 }) => {
                                     let types::InboundPayloadBytes::Some(bytes) = bytes else {
-                                        Err(anyhow::anyhow!("Request resulting from ReadChunk lfs call has no bytes"))
+                                        return Err(anyhow::anyhow!("Request resulting from ReadChunk lfs call has no bytes"));
                                     };
-                                    bytes
+                                    Ok(bytes)
                                 }
                             }
                         },
@@ -137,33 +150,35 @@ fn handle_next_message(
 
                     //  (2)
                     process_lib::send_response(
-                        Some(FileTransferResponse::GetPiece { piece_number }),
+                        Some(ft_types::FileTransferResponse::GetPiece { piece_number }),
                         types::OutboundPayloadBytes::Some(bytes),
-                        None::<FileTransferContext>,
+                        None::<ft_types::FileTransferContext>,
                     )?;
+
+                    Ok(ft_types::MessageHandledStatus::ReadyForNext)
                 },
-                FileTransferRequest::Done => {
+                ft_types::FileTransferRequest::Done => {
+                    let Some(state) = state else { panic!() };
                     print_to_terminal(0, format!(
-                        "file_transfer: done transferring {} to {}",
+                        "file_transfer: done transferring {:?} to {}",
                         state.metadata.key.file_hash,
                         state.metadata.key.client,
                     ).as_str());
 
-                    Ok(MessageHandledStatus::Done)
+                    Ok(ft_types::MessageHandledStatus::Done)
                 },
                 _ => Err(anyhow::anyhow!("unexpected Request")),
             }
         },
     }
 
-    Ok(MessageHandledStatus::ReadyForNext)
 }
 
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: ProcessAddress) {
+impl MicrokernelProcess for Component {
+    fn run_process(our: types::ProcessAddress) {
         print_to_terminal(1, "ft_server_worker: begin");
 
-        let mut state: Option<ServerWorkerState> = None;
+        let mut state: Option<ft_types::ServerWorkerState> = None;
 
         loop {
             match handle_next_message(
@@ -172,15 +187,15 @@ impl bindings::MicrokernelProcess for Component {
             ) {
                 Ok(status) => {
                     match status {
-                        MessageHandledStatus::ReadyForNext => {},
-                        MessageHandledStatus::Done => {
+                        ft_types::MessageHandledStatus::ReadyForNext => {},
+                        ft_types::MessageHandledStatus::Done => {
                             return;
                         },
                     }
                 },
                 Err(e) => {
                     //  TODO: should bail / Cancel
-                    print_to_terminal(0, format!("{}: error: {:?}", process_name, e).as_str());
+                    print_to_terminal(0, &format!("ft_server_worker: error: {:?}", e));
                 },
             };
         }

@@ -158,7 +158,7 @@ async fn main() {
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
     let keyfile = fs::read(format!("{}/.network.keys", home_directory_path)).await;
 
-    let (our, networking_keypair, jwt_secret_bytes): (Identity, signature::Ed25519KeyPair, Vec<u8>) = if keyfile.is_ok() {
+    let (our, networking_keypair, _jwt_secret_bytes): (Identity, signature::Ed25519KeyPair, Vec<u8>) = if keyfile.is_ok() {
         // LOGIN flow
         // get username, keyfile, and jwt_secret from disk
         let (username, key, jwt_secret) = bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
@@ -658,6 +658,7 @@ async fn main() {
         term = terminal::terminal(
             &our,
             VERSION,
+            home_directory_path.into(),
             kernel_message_sender.clone(),
             kernel_debug_message_sender,
             print_sender.clone(),

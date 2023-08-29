@@ -400,8 +400,8 @@ async fn maintain_connection(
             },
             Some(incoming) = read_stream.next() => {
                 let Ok(tungstenite::Message::Binary(bin)) = incoming else {
-                    println!("got a ??\r");
-                    println!("{:?}\r", incoming);
+                    // println!("got a ??\r");
+                    // println!("{:?}\r", incoming);
                     break
                 };
                 let Ok(msg) = bincode::deserialize::<NetworkMessage>(&bin) else { break };

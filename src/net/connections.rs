@@ -350,6 +350,7 @@ async fn maintain_connection(
     kernel_message_tx: MessageSender,
 ) {
     // println!("maintain_connection\r");
+    let message_max_size = websocket.get_config().max_frame_size.unwrap();
     let (mut write_stream, mut read_stream) = websocket.split();
     let mut outstanding_acks = VecDeque::<UnboundedSender<NetworkMessage>>::new();
 
@@ -359,6 +360,14 @@ async fn maintain_connection(
                 // can use a buffer here but doesn't seem to affect performance
                 let bytes = bincode::serialize(&message).unwrap();
                 // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
+                if bytes.len() > message_max_size {
+                    // println!("message too large\r");
+                    let _ = match result_tx {
+                        Some(tx) => tx.send(Err(NetworkError::Timeout)),
+                        None => Ok(()),
+                    };
+                    continue;
+                }
                 let _ = write_stream.send(tungstenite::Message::Binary(
                     bytes
                 )).await;
@@ -605,7 +614,7 @@ async fn peer_handler(
                     if let Ok(bytes) = serde_json::to_vec::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
                             if socket_tx.is_closed() {
-                                result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                                let _ = result_tx.unwrap().send(Err(NetworkError::Offline));
                             } else {
                                 let _ = socket_tx.send((
                                     NetworkMessage::Msg {

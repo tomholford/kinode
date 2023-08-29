@@ -172,7 +172,10 @@ async fn sender(
     let _ = print_tx
         .send(Printout {
             verbosity: 0,
-            content: format!("message to {} took {:?}", km.target.node, elapsed),
+            content: format!(
+                "message to {} took {:?} (result: {:?})",
+                km.target.node, elapsed, result
+            ),
         })
         .await;
 
@@ -312,9 +315,14 @@ async fn message_to_peer(
 
         match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
             Ok(_) => return Ok(()),
-            Err(_e) => {
+            Err(e) => {
                 // if a message to a "known peer" fails, before throwing error,
                 // try to reconnect to them, possibly with different routing.
+                // unless known peer is a router, in which case reconnect
+                // will happen automatically.
+                if our.allowed_routers.contains(target) {
+                    return Err(e);
+                }
                 peers.write().await.remove(target);
             }
         }
@@ -435,20 +443,13 @@ async fn handle_incoming_message(
                     "\x1b[3;32m{}: {}\x1b[0m",
                     payload.source.node,
                     // payload.json,
-                    payload
-                        .json
-                        .as_ref()
-                        .unwrap_or(&"".to_string()),
+                    payload.json.as_ref().unwrap_or(&"".to_string()),
                 ),
             })
             .await;
     } else {
         // available commands: peers
-        match payload
-            .json
-            .unwrap_or("".to_string())
-            .as_str()
-        {
+        match payload.json.unwrap_or("".to_string()).as_str() {
             "peers" => {
                 let peer_read = peers.read().await;
                 let _ = print_tx
@@ -457,7 +458,7 @@ async fn handle_incoming_message(
                         content: format!("{:?}", peer_read.keys()),
                     })
                     .await;
-            },
+            }
             _ => {
                 let _ = print_tx
                     .send(Printout {
@@ -491,11 +492,9 @@ fn make_kernel_response(our: &Identity, km: KernelMessage, err: NetworkError) ->
             node: our.name.clone(),
             identifier: match km.message {
                 Err(e) => e.source.identifier,
-                Ok(m) => {
-                    match m {
-                        TransitMessage::Request(request) => request.payload.source.identifier,
-                        TransitMessage::Response(payload) => payload.source.identifier,
-                    }
+                Ok(m) => match m {
+                    TransitMessage::Request(request) => request.payload.source.identifier,
+                    TransitMessage::Response(payload) => payload.source.identifier,
                 },
             },
         },

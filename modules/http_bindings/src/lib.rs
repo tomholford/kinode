@@ -316,7 +316,7 @@ impl MicrokernelProcess for Component {
                             let auth_success = match jwt_secret.clone() {
                                 Some(secret) => {
                                     print_to_terminal(1, "HAVE SECRET");
-                                    auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
+                                    auth_cookie_valid(our.node.clone(), message_json["headers"]["Cookie"].as_str().unwrap_or(""), secret)
                                 },
                                 None => {
                                     print_to_terminal(1, "NO SECRET");

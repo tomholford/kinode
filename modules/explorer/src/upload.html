@@ -31,7 +31,7 @@
           --dark-gray: rgba(0, 0, 0, 0.5);
           --charcoal: #333;
         }
-  
+
         body {
           margin: 0;
           padding: 0;
@@ -40,23 +40,23 @@
           background-color: #027;
           color: white;
         }
-  
+
         h1,h2,h3,h4,h5,h6 {
           line-height: 1.5em;
         }
-  
+
         .col {
           display: flex;
           flex-direction: column;
           align-items: center;
         }
-  
+
         .row {
           display: flex;
           flex-direction: row;
           align-items: center;
         }
-  
+
         input[type="text"], input[type="password"], input[type="file"] {
           width: 100%;
           padding: 0.5em 0.75em;
@@ -66,7 +66,7 @@
           box-sizing: border-box;
           font-size: 1em;
         }
-  
+
         button {
           width: 100%;
           padding: 1em;
@@ -83,12 +83,12 @@
           color: white;
           margin-top: 1em;
         }
-  
+
         button:hover {
           background-color: var(--uq-darkpink);
           border: 1px solid var(--uq-darkpink);
         }
-  
+
         #home-page {
           width: 100%;
           height: 100%;
@@ -97,22 +97,22 @@
           padding: 2em;
           max-width: calc(100vw - 4em);
         }
-  
+
         label {
           font-size: 0.75em;
         }
-  
+
         .label-row {
           margin: 0.5em 0;
           align-self: flex-start;
         }
-  
+
         .tooltip-container {
           position: relative;
           display: inline-block;
           cursor: pointer;
         }
-  
+
         .tooltip-button {
           border: 2px solid white;
           border-radius: 50%;
@@ -123,7 +123,7 @@
           line-height: 0.5em;
           margin-left: 0.5em;
         }
-  
+
         .tooltip-content {
           visibility: hidden;
           background-color: #555;
@@ -142,7 +142,7 @@
           line-height: 1.5em;
           min-width: 200px;
         }
-  
+
         .tooltip-content::after {
           content: "";
           position: absolute;
@@ -153,32 +153,32 @@
           border-style: solid;
           border-color: transparent transparent #555 transparent;
         }
-  
+
         .tooltip-container:hover .tooltip-content {
           visibility: visible;
           opacity: 1;
         }
-  
+
         .forgot-password {
           font-size: 0.75em;
           margin: 0.25em 0 0.5em 0;
           align-self: flex-start;
           color: var(--uq-lightpurple);
         }
-  
+
         form {
           max-width: calc(100vw - 4em);
           width: 420px;
         }
-  
+
         p {
           line-height: 1.5em;
         }
-  
+
         a {
           color: white;
         }
-  
+
         a:visited {
           color: white;
         }
@@ -225,7 +225,7 @@
     <script>
         async function fetchAndDisplayFiles() {
             try {
-                const response = await fetch('/apps/explorer/files');
+                const response = await fetch('/explorer/files');
                 const files = await response.json();
                 const fileListDiv = document.getElementById('fileList');
 
@@ -236,11 +236,11 @@
                 for (let file of files) {
                     const aTag = document.createElement('a');
                     aTag.textContent = file;
-                    aTag.href = `/apps/explorer/file/${file}`;
-                    
+                    aTag.href = `/explorer/file/${file}`;
+
                     const pTag = document.createElement('p');
                     pTag.appendChild(aTag);
-                    
+
                     fileListDiv.appendChild(pTag);
                 }
             } catch (error) {
@@ -275,7 +275,7 @@
             }
 
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/apps/explorer', true);
+            xhr.open('POST', '/explorer', true);
 
             // Update progress bar
             xhr.upload.addEventListener('progress', (event) => {

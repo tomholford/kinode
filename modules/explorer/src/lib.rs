@@ -3,128 +3,41 @@ cargo_component_bindings::generate!();
 use anyhow::anyhow;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use thiserror::Error;
-use bindings::print_to_terminal;
-use bindings::component::microkernel_process::types::WitPayload;
-use bindings::component::microkernel_process::types::WitMessage;
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
-use bindings::component::microkernel_process::types::WitUqbarError;
+
+use bindings::{MicrokernelProcess, print_to_terminal, receive, send};
+use bindings::component::microkernel_process::types;
 
 mod process_lib;
 
 struct Component;
 
 // TYPES COPY/PASTE START
-// #[derive(Debug, Serialize, Deserialize)]
-impl FileSystemError {
-    pub fn kind(&self) -> &str {
-        match *self {
-            FileSystemError::BadUri { .. } => "BadUri",
-            FileSystemError::BadJson { .. } =>  "BadJson",
-            FileSystemError::BadBytes { .. } => "BadBytes",
-            FileSystemError::IllegalAccess { .. } => "IllegalAccess",
-            FileSystemError::AlreadyOpen { .. } => "AlreadyOpen",
-            FileSystemError::NotCurrentlyOpen { .. } => "NotCurrentlyOpen",
-            FileSystemError::BadPathJoin { .. } => "BadPathJoin",
-            FileSystemError::CouldNotMakeDir { .. } => "CouldNotMakeDir",
-            FileSystemError::ReadFailed { .. } => "ReadFailed",
-            FileSystemError::WriteFailed { .. } => "WriteFailed",
-            FileSystemError::OpenFailed { .. } => "OpenFailed",
-            FileSystemError::FsError { .. } => "FsError",
-        }
-    }
-}
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum FileSystemError {
-    //  bad input from user
-    #[error("Malformed URI: {uri}. Problem with {bad_part_name}: {:?}.", bad_part)]
-    BadUri { uri: String, bad_part_name: String,  bad_part: Option<String>, },
-    #[error("JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.", json)]
-    BadJson { json: Option<serde_json::Value>, error: String, },
-    #[error("Bytes payload required for {action}.")]
-    BadBytes { action: String },
-    #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
-    IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
-    #[error("Already have {path} opened with mode {:?}.", mode)]
-    AlreadyOpen { path: String, mode: FileSystemMode, },
-    #[error("Don't have {path} opened with mode {:?}.", mode)]
-    NotCurrentlyOpen { path: String, mode: FileSystemMode, },
-    //  path or underlying fs problems
-    #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
-    BadPathJoin { base_path: String, addend: String, },
-    #[error("Failed to create dir at {path}: {error}.")]
-    CouldNotMakeDir { path: String, error: String, },
-    #[error("Failed to read {path}: {error}.")]
-    ReadFailed { path: String, error: String, },
-    #[error("Failed to write {path}: {error}.")]
-    WriteFailed { path: String, error: String, },
-    #[error("Failed to open {path} for {:?}: {error}.", mode)]
-    OpenFailed { path: String, mode: FileSystemMode, error: String, },
-    #[error("Filesystem error while {what} on {path}: {error}.")]
-    FsError { what: String, path: String, error: String, },
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileSystemRequest {
-    pub uri_string: String,
-    pub action: FileSystemAction,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemAction {
-    Read,
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsAction {
     Write,
-    GetMetadata,
-    ReadDir,
-    Open(FileSystemMode),
-    Close(FileSystemMode),
-    Append,
-    ReadChunkFromOpen(u64),
-    SeekWithinOpen(FileSystemSeekFrom),
+    Append(Option<[u8; 32]>),
+    Read([u8; 32]),
+    ReadChunk(ReadChunkRequest),
+    PmWrite,                     //  specific case for process manager persistance.
+    Delete([u8; 32]),
+    Length([u8; 32]),
 }
-//  copy of std::io::SeekFrom with Serialize/Deserialize
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemSeekFrom {
-    Start(u64),
-    End(i64),
-    Current(i64),
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReadChunkRequest {
+    file_hash: [u8; 32],
+    start: u64,
+    length: u64,
 }
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemResponse {
-    Read(FileSystemUriHash),
-    Write(String),
-    GetMetadata(FileSystemMetadata),
-    ReadDir(Vec<FileSystemMetadata>),
-    Open { uri_string: String, mode: FileSystemMode },
-    Close { uri_string: String, mode: FileSystemMode },
-    Append(String),
-    ReadChunkFromOpen(FileSystemUriHash),
-    SeekWithinOpen(String),
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileSystemUriHash {
-    pub uri_string: String,
-    pub hash: u64,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileSystemMetadata {
-    pub uri_string: String,
-    pub hash: Option<u64>,
-    pub entry_type: FileSystemEntryType,
-    pub len: u64,
-}
-#[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
-pub enum FileSystemMode {
-    Read,
-    Append,
-    AppendOverwrite,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum FileSystemEntryType {
-    Symlink,
-    File,
-    Dir,
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsResponse {
+    //  bytes are in payload_bytes
+    Read([u8; 32]),
+    ReadChunk([u8; 32]),
+    Write([u8; 32]),
+    Append([u8; 32]),
+    Delete([u8; 32]),
+    Length(u64),
+    //  use FileSystemError
 }
 // TYPES COPY/PASTE END
 
@@ -141,52 +54,42 @@ struct File {
 const UPLOAD_PAGE: &str = include_str!("upload.html");
 
 // TODO swap this out for an AFS call that returns the hash of the file
-fn yield_write(
+fn send_write(
     our_name: &str,
-    uri_string: String,
     bytes: Vec<u8>,
-    context: &str,
-) {
-    bindings::yield_results(Ok(vec![
-        (
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Request(
-                    WitRequestTypeWithTarget {
-                        is_expecting_response: true,
-                        target: WitProcessNode {
-                            node: our_name.into(),
-                            process: "filesystem".into(),
-                        },
-                    },
-                ),
-                payload: WitPayload {
-                    json: Some(serde_json::to_string(
-                        &FileSystemRequest {
-                            uri_string,
-                            action: FileSystemAction::Write,
-                        }
-                    ).unwrap()),
-                    bytes: Some(bytes),
-                },
-            },
-            context.into(),
-        ),
-    ].as_slice()));
+) -> anyhow::Result<[u8; 32]> {
+    let file_msg = process_lib::send_and_await_receive(
+        our_name.to_string(),
+        types::ProcessIdentifier::Name("lfs".to_string()),
+        Some(&FsAction::Write),
+        types::OutboundPayloadBytes::Some(bytes),
+    )?;
+    let json = match file_msg {
+        Err(e) => panic!("explorer: error while writing: {:?}", e),
+        Ok(m) => process_lib::get_json(&m),
+    }?;
+    match process_lib::parse_message_json(Some(json))? {
+        FsResponse::Write(file_hash) => Ok(file_hash),
+        _ => Err(anyhow!("unexpected Response to Write")),
+    }
 }
 
 // TODO swap this out for an AFS read that returns the file bytes
-fn yield_read(
+fn send_read(
     our_name: &str,
-    uri_string: String,
-) -> anyhow::Result<WitMessage> {
-    return process_lib::yield_and_await_response(
-        our_name.to_string(), "filesystem".to_string(),
-        Some(&FileSystemRequest {
-            uri_string,
-            action: FileSystemAction::Read,
-        }),
-        None
-    );
+    file_hash: [u8; 32],
+) -> anyhow::Result<Vec<u8>> {
+    let file_msg = process_lib::send_and_await_receive(
+        our_name.to_string(),
+        types::ProcessIdentifier::Name("lfs".to_string()),
+        Some(&FsAction::Read(file_hash)),
+        types::OutboundPayloadBytes::None,
+    )?;
+    match file_msg {
+        // Err(e) => Err(e),
+        Err(e) => panic!("explorer: error while reading: {:?}", e),
+        Ok(m) => process_lib::get_bytes(m),
+    }
 }
 
 fn extract_boundary_from_headers(headers: &serde_json::Value) -> Option<String> {
@@ -238,7 +141,7 @@ fn extract_file_from_chunk(chunk: Vec<u8>) -> Option<File> {
     let data = chunk[headers_end_pos + 4..].to_vec();
 
     let headers_str = String::from_utf8_lossy(headers_bytes);
-    
+
     let mut name = None;
     let mut content_type = None;
 
@@ -269,7 +172,7 @@ fn extract_file_from_chunk(chunk: Vec<u8>) -> Option<File> {
             content_type = Some(header["Content-Type:".len()..].trim().to_string());
         }
     }
-    
+
     Some(File {
         name: name?,
         content_type,
@@ -279,224 +182,223 @@ fn extract_file_from_chunk(chunk: Vec<u8>) -> Option<File> {
 
 fn handle_next_message(
     file_names: &mut HierarchicalFS,
-    our_name: &str,
-    process_name: &str,
+    our: &types::ProcessAddress,
 ) -> anyhow::Result<()> {
-    let (message, context) = bindings::await_next_message()?;
-    let Some(ref payload_json_string) = message.content.payload.json else {
-        return Err(anyhow!("require non-empty json payload"));
+    let (message, _context) = receive()?;
+
+    let types::InboundMessage::Request(types::InboundRequest {
+        is_expecting_response: _,
+        payload: types::InboundPayload {
+            source: _,
+            ref json,
+            bytes,
+        },
+    }) = message else {
+        return Err(anyhow!("got unexpected response"));
+    };
+
+    let Some(json) = json else {
+        panic!("bar");
+    };
+    let message_from_loop: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => {
+            return Err(anyhow!("failed to parse json"));
+        },
     };
 
     print_to_terminal(
-        0,
-        format!("{}: got json {}", &process_name, payload_json_string).as_str()
+        1,
+        &format!("explorer: got json {}", message_from_loop),
     );
 
-    let message_from_loop: serde_json::Value = serde_json::from_str(&payload_json_string).unwrap();
-    if message_from_loop["method"] == "GET" && message_from_loop["raw_path"] == "/apps/explorer" {
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some(UPLOAD_PAGE.replace("${our}", &our_name).as_bytes().to_vec())
-                }
-            },
+    if (message_from_loop["method"] == serde_json::Value::Null) & (message_from_loop["Initialize"] == serde_json::Value::Null) {
+        let bytes = match bytes {
+            types::InboundPayloadBytes::Some(bytes) => Ok(bytes),
+            _ => Err(anyhow!("bytes field is not Some")),
+        }?;
+        *file_names = bincode::deserialize(&bytes[..])?;
+        process_lib::send_response(
+            None::<String>,
+            types::OutboundPayloadBytes::None,
             "".into(),
-        )].as_slice()));
+        )?;
         return Ok(());
-    } else if message_from_loop["method"] == "POST" && message_from_loop["raw_path"] == "/apps/explorer" {
-        let body_bytes = message.content.payload.bytes.unwrap_or(vec![]); // TODO no unwrap
+    } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/explorer" {
+        process_lib::send_response(
+            Some(serde_json::json!({
+                "action": "response",
+                "status": 200,
+                "headers": {
+                    "Content-Type": "text/html",
+                },
+            })),
+            types::OutboundPayloadBytes::Some(
+                UPLOAD_PAGE
+                    .replace("${our}", &our.node)
+                    .as_bytes()
+                    .to_vec()
+            ),
+            "".into(),
+        )?;
+        return Ok(());
+    } else if message_from_loop["method"] == "POST" && message_from_loop["path"] == "/explorer" {
+        let body_bytes = match bytes {
+            types::InboundPayloadBytes::Some(bytes) => Ok(bytes),
+            _ => Err(anyhow!("bytes field is not Some")),
+        }?;
 
         let boundary = extract_boundary_from_headers(&message_from_loop["headers"].clone()).unwrap();
         let files: Vec<Vec<u8>> = split_body(body_bytes, boundary);
-        bindings::print_to_terminal(0, format!("files {:?}", files.len()).as_str());
+        print_to_terminal(1, format!("files {:?}", files.len()).as_str());
         for file in files {
             let fil: File = extract_file_from_chunk(file).unwrap();
 
-            // TODO check if a file.name is URL safe or not. If not, DONT SAVE IT
-            // TODO replace this with a write to AFS instead of the normal FS
-            yield_write(&our_name, format!("fs://{}", fil.name), fil.data, "");
-            // Real file hash should be returned by the 
-            let dummy_file_hash: FileHash = [0; 32];
-            file_names.insert(fil.name, dummy_file_hash);
+            let file_hash = send_write(&our.node, fil.data)?;
+            file_names.insert(fil.name, file_hash);
         }
+        let _ = process_lib::persist_state(&our.node, &file_names)?;
 
         // TODO error handling
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    }).to_string()),
-                    bytes: Some("success".as_bytes().to_vec())
-                }
-            },
+        process_lib::send_response(
+            Some(serde_json::json!({
+                "action": "response",
+                "status": 200,
+                "headers": {
+                    "Content-Type": "text/html",
+                },
+            })),
+            types::OutboundPayloadBytes::Some("success".as_bytes().to_vec()),
             "".into(),
-        )].as_slice()));
+        )?;
         return Ok(());
-    } else if message_from_loop["method"] == "GET" && message_from_loop["raw_path"] == "/apps/explorer/files" {
+    } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/explorer/files" {
         let mut files = vec![];
         for (name, hash) in file_names.iter() {
             files.push(name);
         }
-        bindings::yield_results(Ok(vec![(
-            bindings::WitProtomessage {
-                protomessage_type: WitProtomessageType::Response,
-                payload: WitPayload {
-                    json: Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "application/json",
-                        },
-                    }).to_string()),
-                    bytes: Some(serde_json::to_vec(&files).unwrap())
-                }
-            },
+        process_lib::send_response(
+            Some(serde_json::json!({
+                "action": "response",
+                "status": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                },
+            })),
+            types::OutboundPayloadBytes::Some(serde_json::to_vec(&files).unwrap()),
             "".into(),
-        )].as_slice()));
+        )?;
         return Ok(());
-    } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/apps/explorer/file/:file" {
+    } else if message_from_loop["method"] == "GET" && message_from_loop["path"] == "/explorer/file/:file" {
         let file = message_from_loop["url_params"]["file"].as_str().unwrap();
+        let file = percent_encoding::percent_decode_str(file)
+            .decode_utf8_lossy()
+            .into_owned();
 
-        if let Some(hash) = file_names.get(file) {
-            let file_msg = yield_read(&our_name, format!("fs://{}", file)).unwrap();
-            let file = file_msg.content.payload.bytes.unwrap();
-            bindings::yield_results(Ok(vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Response,
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "response",
-                            "status": 200,
-                            "headers": {
-                                // "Content-Type": "application/octet-stream",
-                            },
-                        }).to_string()),
-                        bytes: Some(file)
-                    }
-                },
+        print_to_terminal(1, &format!("explorer: file_names: {:?}", file_names));
+
+        if let Some(hash) = file_names.get(&file) {
+            let file_bytes = send_read(&our.node, hash.clone())?;
+            process_lib::send_response(
+                Some(serde_json::json!({
+                    "action": "response",
+                    "status": 200,
+                    "headers": {
+                        // "Content-Type": "application/octet-stream",
+                    },
+                })),
+                types::OutboundPayloadBytes::Some(file_bytes),
                 "".into(),
-            )].as_slice()));
+            )?;
         } else {
-            bindings::yield_results(Ok(vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Response,
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "response",
-                            "status": 404,
-                            "headers": {
-                                "Content-Type": "text/html",
-                            },
-                        }).to_string()),
-                        bytes: Some("not found".as_bytes().to_vec())
-                    }
-                },
+            process_lib::send_response(
+                Some(serde_json::json!({
+                    "action": "response",
+                    "status": 404,
+                    "headers": {
+                        "Content-Type": "text/html",
+                    },
+                })),
+                types::OutboundPayloadBytes::Some("not found".as_bytes().to_vec()),
                 "".into(),
-            )].as_slice()));
+            )?;
         }
         return Ok(());
     } else {
-        bindings::print_to_terminal(0, format!("req {:?}", message_from_loop).as_str());
+        print_to_terminal(0, format!("req {:?}", message_from_loop).as_str());
         return Err(anyhow!("unrecognized request"));
     }
 }
 
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
-        print_to_terminal(1, "file_transfer: begin");
+impl MicrokernelProcess for Component {
+    fn run_process(our: types::ProcessAddress) {
+        print_to_terminal(1, "explorer: begin");
         // HTTP bindings
-        bindings::yield_results(Ok(
-            vec![(
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/apps/explorer",
-                            "app": process_name
-                        }).to_string()),
-                        bytes: None
-                    }
-                },
+        let our_http_bindings = types::ProcessReference {
+            node: our.node.clone(),
+            identifier: types::ProcessIdentifier::Name("http_bindings".into()),
+        };
+        let process_name = match our.name {
+            Some(ref name) => name.clone(),
+            None => format!("{}", our.id),
+        };
+        send(Ok(&types::OutboundMessage::Requests(vec![
+            (
+                vec![
+                    types::OutboundRequest {
+                        is_expecting_response: false,
+                        target: our_http_bindings.clone(),
+                        payload: types::OutboundPayload {
+                            json: Some(serde_json::json!({
+                                "action": "bind-app",
+                                "path": "/explorer",
+                                "authenticated": true,
+                                "app": process_name
+                            }).to_string()),
+                            bytes: types::OutboundPayloadBytes::None,
+                        },
+                    },
+                    types::OutboundRequest {
+                        is_expecting_response: false,
+                        target: our_http_bindings.clone(),
+                        payload: types::OutboundPayload {
+                            json: Some(serde_json::json!({
+                                "action": "bind-app",
+                                "path": "/explorer/files",
+                                "authenticated": true,
+                                "app": process_name
+                            }).to_string()),
+                            bytes: types::OutboundPayloadBytes::None,
+                        },
+                    },
+                    types::OutboundRequest {
+                        is_expecting_response: false,
+                        target: our_http_bindings.clone(),
+                        payload: types::OutboundPayload {
+                            json: Some(serde_json::json!({
+                                "action": "bind-app",
+                                "path": "/explorer/file/:file",
+                                "authenticated": true,
+                                "app": process_name
+                            }).to_string()),
+                            bytes: types::OutboundPayloadBytes::None,
+                        },
+                    },
+                ],
                 "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/apps/explorer/files",
-                            "app": process_name
-                        }).to_string()),
-                        bytes: None
-                    }
-                },
-                "".into(),
-            ), (
-                bindings::WitProtomessage {
-                    protomessage_type: WitProtomessageType::Request(
-                        WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: our_name.clone(),
-                                process: "http_bindings".into(),
-                            },
-                        }
-                    ),
-                    payload: WitPayload {
-                        json: Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/apps/explorer/file/:file",
-                            "app": process_name
-                        }).to_string()),
-                        bytes: None
-                    }
-                },
-                "".into(),
-            )].as_slice()
-        ));
+            ),
+        ])));
 
         let mut file_names: HierarchicalFS = HashMap::new();
 
         loop {
             match handle_next_message(
                 &mut file_names,
-                &our_name,
-                &process_name,
+                &our,
             ) {
                 Ok(_) => {},
                 Err(e) => {
-                    match e.downcast_ref::<WitUqbarError>() {
+                    match e.downcast_ref::<types::UqbarError>() {
                         None => print_to_terminal(0, format!("{}: error: {:?}", process_name, e).as_str()),
                         Some(uqbar_error) => {
                             // TODO handle afs errors here

@@ -80,6 +80,7 @@ pub async fn pill() -> Vec<BootOutboundRequest> {
         ("apps_home", ""),
         ("http_proxy", ""),
         ("persist", ""),
+        ("explorer", ""),
         ("ft_client", "file_transfer"),
         ("ft_server", "file_transfer"),
         ("ft_client_worker", "file_transfer"),

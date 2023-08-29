@@ -202,26 +202,6 @@ async fn connect_to_routers(
         for router_name in &our.allowed_routers {
             if peers.read().await.contains_key(router_name) {
                 continue;
-                // let router_peer = router_peer.clone();
-                // drop(peer_read);
-                // let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                // if let Ok(()) = router_peer
-                //     .sender
-                //     .send((NetworkMessage::Keepalive, Some(result_tx)))
-                // {
-                //     if let Ok(Ok(_)) = result_rx.await {
-                //         continue;
-                //     } else {
-                //         let _ = print_tx
-                //             .send(Printout {
-                //                 verbosity: 0,
-                //                 content: format!("lost connection to {router_name}!"),
-                //             })
-                //             .await;
-                //         let _ = router_peer.destructor.send(());
-                //         peers.write().await.remove(router_name);
-                //     }
-                // }
             } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
                 if let Some((ip, port)) = &router_id.ws_routing {
                     // println!("trying to connect to {router_name}\r");
@@ -262,15 +242,17 @@ async fn connect_to_routers(
                     .await;
             }
         }
-        if let Some(Ok(Ok(_dead_router))) = routers.join_next().await {
-            // let _ = print_tx
-            //     .send(Printout {
-            //         verbosity: 0,
-            //         content: format!("dead router: {dead_router}"),
-            //     })
-            //     .await;
+        if let Some(Ok(Ok(dead_router))) = routers.join_next().await {
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 0,
+                    content: format!("lost connection to router: {dead_router}"),
+                })
+                .await;
+            peers.write().await.remove(&dead_router);
+            continue;
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        break;
     }
 }
 

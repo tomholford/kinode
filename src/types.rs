@@ -10,6 +10,7 @@ pub const FILESYSTEM_ID: u64 = 57005;
 pub const HTTP_SERVER_ID: u64 = 48879;
 pub const HTTP_CLIENT_ID: u64 = 51966;
 pub const LFS_ID: u64 = 47806;
+pub const NET_ID: u64 = 1337;
 
 pub type MessageSender = tokio::sync::mpsc::Sender<KernelMessage>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<KernelMessage>;

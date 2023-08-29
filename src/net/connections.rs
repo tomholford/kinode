@@ -95,7 +95,11 @@ pub async fn build_routed_connection(
         ));
         // println!("l\r");
         // connection is now ready to write to
-        tokio::spawn(active_routed_peer(their_id.name.clone(), sender_tx.clone(), peer_handler));
+        tokio::spawn(active_routed_peer(
+            their_id.name.clone(),
+            sender_tx.clone(),
+            peer_handler,
+        ));
         peers.write().await.insert(their_id.name.clone(), peer);
         let _ = sender_tx.send((NetworkMessage::Raw(initial_message.0), initial_message.1));
         return Ok(());
@@ -272,10 +276,12 @@ async fn active_peer(
     // println!("active_peer\r");
     let keepalive = tokio::spawn(async move {
         loop {
+            // println!("doing a keepalive\r");
             let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
             let _ = sender.send((NetworkMessage::Keepalive, Some(result_tx)));
             match result_rx.await {
                 Ok(Ok(Some(NetworkMessage::Ack(_)))) => {
+                    // println!("alive was kept\r");
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
                 _ => break,
@@ -351,9 +357,12 @@ async fn maintain_connection(
         tokio::select! {
             Some((message, result_tx)) = message_rx.recv() => {
                 // can use a buffer here but doesn't seem to affect performance
+                let bytes = bincode::serialize(&message).unwrap();
+                // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
                 let _ = write_stream.send(tungstenite::Message::Binary(
-                    serde_json::to_vec(&message).unwrap(),
+                    bytes
                 )).await;
+                // println!("..sent\r");
 
                 match message {
                     NetworkMessage::Raw(_)
@@ -381,8 +390,12 @@ async fn maintain_connection(
                 }
             },
             Some(incoming) = read_stream.next() => {
-                let Ok(tungstenite::Message::Binary(bin)) = incoming else { break };
-                let Ok(msg) = serde_json::from_slice::<NetworkMessage>(&bin) else { break };
+                let Ok(tungstenite::Message::Binary(bin)) = incoming else {
+                    println!("got a ??\r");
+                    println!("{:?}\r", incoming);
+                    break
+                };
+                let Ok(msg) = bincode::deserialize::<NetworkMessage>(&bin) else { break };
                 match msg {
                     NetworkMessage::Raw(_) => continue,
                     NetworkMessage::Ack(_)
@@ -589,7 +602,7 @@ async fn peer_handler(
             // otherwise, simply send
             match message {
                 NetworkMessage::Raw(message) => {
-                    if let Ok(bytes) = serde_json::to_vec(&message) {
+                    if let Ok(bytes) = serde_json::to_vec::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
                             if socket_tx.is_closed() {
                                 result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();

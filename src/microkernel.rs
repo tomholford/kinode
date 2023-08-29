@@ -1598,6 +1598,7 @@ async fn make_event_loop(
             names.insert("http_server".into(), t::HTTP_SERVER_ID);
             names.insert("http_client".into(), t::HTTP_CLIENT_ID);
             names.insert("lfs".into(), t::LFS_ID);
+            names.insert("net".into(), t::NET_ID);
 
             let mut ids: Ids = HashMap::new();
             ids.insert(t::KERNEL_ID, "kernel".into());
@@ -1605,6 +1606,7 @@ async fn make_event_loop(
             ids.insert(t::HTTP_SERVER_ID, "http_server".into());
             ids.insert(t::HTTP_CLIENT_ID, "http_client".into());
             ids.insert(t::LFS_ID, "lfs".into());
+            ids.insert(t::NET_ID, "net".into());
 
             let mut process_handles: ProcessHandles = HashMap::new();
             let mut is_debug = false;

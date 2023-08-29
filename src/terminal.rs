@@ -7,7 +7,8 @@ use crossterm::{
 };
 use futures::{future::FutureExt, StreamExt};
 use std::collections::VecDeque;
-use std::io::{stdout, Write};
+use std::io::{stdout, Write, BufWriter};
+use std::fs::{File, OpenOptions, read_to_string};
 
 use crate::types::*;
 
@@ -17,15 +18,21 @@ struct CommandHistory {
     pub working_line: Option<String>,
     pub max_size: usize,
     pub index: usize,
+    pub history_writer: BufWriter<File>,
 }
 
 impl CommandHistory {
-    fn new(max_size: usize) -> Self {
+    fn new(max_size: usize, history: String, history_writer: BufWriter<File>) -> Self {
+        let mut lines = VecDeque::with_capacity(max_size);
+        for line in history.lines() {
+            lines.push_front(line.to_string());
+        }
         Self {
-            lines: VecDeque::with_capacity(max_size),
+            lines,
             working_line: None,
             max_size,
             index: 0,
+            history_writer,
         }
     }
 
@@ -34,6 +41,7 @@ impl CommandHistory {
         // only add line to history if it's not exactly the same
         // as the previous line
         if &line != self.lines.front().unwrap_or(&"".into()) {
+            let _ = writeln!(self.history_writer, "{}", &line);
             self.lines.push_front(line);
         }
         self.index = 0;
@@ -88,6 +96,7 @@ impl CommandHistory {
 pub async fn terminal(
     our: &Identity,
     version: &str,
+    home_directory_path: String,
     event_loop: MessageSender,
     debug_event_loop: DebugSender,
     print_tx: PrintSender,
@@ -146,8 +155,16 @@ pub async fn terminal(
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 
+    let history_path = std::fs::canonicalize(&home_directory_path).unwrap().join(".terminal_history");
+    let history = read_to_string(&history_path).unwrap_or_default();
+    let history_handle = OpenOptions::new().append(true).create(true).open(&history_path).unwrap();
+    let history_writer = BufWriter::new(history_handle);
     // TODO make adjustable max history length
-    let mut command_history = CommandHistory::new(1000);
+    let mut command_history = CommandHistory::new(1000, history, history_writer);
+
+    let log_path = std::fs::canonicalize(&home_directory_path).unwrap().join(".terminal_log");
+    let log_handle = OpenOptions::new().append(true).create(true).open(&log_path).unwrap();
+    let mut log_writer = BufWriter::new(log_handle);
 
     loop {
         let event = reader.next().fuse();
@@ -155,7 +172,7 @@ pub async fn terminal(
         tokio::select! {
             prints = print_rx.recv() => match prints {
                 Some(printout) => {
-                    let mut stdout = stdout.lock();
+                    let _ = writeln!(log_writer, "{}", printout.content);
                     if match printout.verbosity {
                         0 => false,
                         1 => !verbose_mode,
@@ -163,6 +180,7 @@ pub async fn terminal(
                     } {
                         continue;
                     }
+                    let mut stdout = stdout.lock();
                     execute!(
                         stdout,
                         cursor::MoveTo(0, win_rows - 1),

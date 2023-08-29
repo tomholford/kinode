@@ -10,19 +10,24 @@ mod process_lib;
 struct Component;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessNode {
+pub struct ProcessReference {
     pub node: String,
-    pub process: String,
+    pub identifier: ProcessIdentifier,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Payload {
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Payload {
     json: Option<serde_json::Value>,
     bytes: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestOnPanic {
-    target: ProcessNode,
-    payload: Payload,
+    pub target: ProcessReference,
+    pub payload: Payload,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SendOnPanic {
@@ -66,7 +71,7 @@ fn persist_state(our_name: &str, state: &State) -> anyhow::Result<types::WitMess
         "process_manager".into(),
         Some(ProcessManagerCommand::PersistState),
         types::WitPayloadBytes {
-            circumvent: types::WitCircumvent::False,
+            circumvent: types::WitCircumvent::Send,
             content: Some(bincode::serialize(state)?),
         },
     )
@@ -75,7 +80,7 @@ fn persist_state(our_name: &str, state: &State) -> anyhow::Result<types::WitMess
 fn handle_message(
     state: &mut State,
     our_name: &str,
-    process_name: &str,
+    // process_name: &str,
 ) -> anyhow::Result<()> {
     let (message, _context) = bindings::await_next_message()?;
     match message.content.message_type {
@@ -100,7 +105,7 @@ fn handle_message(
                 PersistRequest::Get => {
                     print_to_terminal(
                         0,
-                        format!("{}: state: {:?}", process_name, state).as_str(),
+                        format!("persist: state: {:?}", state).as_str(),
                     );
                 },
                 PersistRequest::Set { new_value } => {
@@ -115,23 +120,20 @@ fn handle_message(
 }
 
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
+    fn run_process(our: types::WitProcessAddress) {
+    // fn run_process(our_name: String, process_name: String) {
         print_to_terminal(1, "persist: begin");
 
         let mut state = State { val: None };
         loop {
             match handle_message(
                 &mut state,
-                &our_name,
-                &process_name,
+                &our.node,
+                // &process_name,
             ) {
                 Ok(()) => {},
                 Err(e) => {
-                    print_to_terminal(0, format!(
-                        "{}: error: {:?}",
-                        process_name,
-                        e,
-                    ).as_str());
+                    print_to_terminal(0, format!("persist: error: {:?}", e).as_str());
                 },
             };
         }

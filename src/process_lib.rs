@@ -15,9 +15,9 @@ where
     Ok((
         vec![types::WitProtorequest {
             is_expecting_response,
-            target: types::WitProcessNode {
+            target: types::WitProcessReference {
                 node: node.into(),
-                process: process.into(),
+                identifier: types::WitProcessIdentifier::Name(process.into()),
             },
             payload,
         }],
@@ -70,9 +70,9 @@ where
     let payload = make_payload(json_struct, bytes)?;
     let protorequest = vec![types::WitProtorequest {
         is_expecting_response,
-        target: types::WitProcessNode {
+        target: types::WitProcessReference {
             node: target_node.into(),
-            process: target_process.into(),
+            identifier: types::WitProcessIdentifier::Name(target_process.into()),
         },
         payload,
     }];
@@ -123,9 +123,9 @@ where
 {
     let payload = make_payload(json_struct, bytes)?;
     match super::bindings::send_request_and_await_response(
-        &types::WitProcessNode {
+        &types::WitProcessReference {
             node: target_node,
-            process: target_process,
+            identifier: types::WitProcessIdentifier::Name(target_process),
         },
         &payload,
     ) {

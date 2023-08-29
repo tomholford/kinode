@@ -48,7 +48,7 @@ enum HasAlreadySent {
 #[derive(Clone, Debug)]
 struct CauseMetadata {
     id: u64,
-    process_node: ProcessNode,
+    source: ProcessReference,
     rsvp: Rsvp,
     message_type: MessageType,
 }
@@ -66,7 +66,7 @@ impl CauseMetadata {
         let Ok(ref message) = wrapped_message.message else { panic!("") };  //  TODO: need error?
         CauseMetadata {
             id: wrapped_message.id.clone(),
-            process_node: message.source.clone(),
+            source: message.source.clone(),
             rsvp: wrapped_message.rsvp.clone(),
             message_type: message.content.message_type.clone(),
         }
@@ -110,8 +110,10 @@ impl ProcessContext {
 }
 
 //  live in event loop
-type Senders = HashMap<String, MessageSender>;
-type ProcessHandles = HashMap<String, JoinHandle<Result<()>>>;
+type Senders = HashMap<u64, MessageSender>;
+type Names = HashMap<String, u64>;
+type Ids = HashMap<u64, String>;
+type ProcessHandles = HashMap<u64, JoinHandle<Result<()>>>;
 
 impl Host for ProcessWasi {
 }
@@ -157,7 +159,7 @@ impl MicrokernelProcessImports for ProcessWasi {
 
         let _ = send_process_requests_to_loop(
             requests,
-            self.process.metadata.our.clone(),
+            address_to_reference(&self.process.metadata.our),
             &self.process.send_to_loop.clone(),
             &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
@@ -186,7 +188,7 @@ impl MicrokernelProcessImports for ProcessWasi {
 
         let _ = send_process_response_to_loop(
             response,
-            self.process.metadata.our.clone(),
+            address_to_reference(&self.process.metadata.our),
             &self.process.send_to_loop,
             &self.process.send_to_terminal,
             &self.process.prompting_message,
@@ -216,7 +218,7 @@ impl MicrokernelProcessImports for ProcessWasi {
 
         let _ = send_process_response_with_side_effect_request_to_loop(
             results,
-            self.process.metadata.our.clone(),
+            address_to_reference(&self.process.metadata.our),
             &self.process.send_to_loop,
             &self.process.send_to_terminal,
             &self.process.prompting_message,
@@ -244,7 +246,7 @@ impl MicrokernelProcessImports for ProcessWasi {
 
     async fn send_request_and_await_response(
         &mut self,
-        target: wit::WitProcessNode,
+        target: wit::WitProcessReference,
         payload: wit::WitPayload,
     ) -> Result<Result<wit::WitMessage, wit::WitUqbarError>> {
         let protomessage = wit::WitProtorequest {
@@ -255,7 +257,7 @@ impl MicrokernelProcessImports for ProcessWasi {
 
         let ids = send_process_requests_to_loop(
             Ok((vec![protomessage], "".into())),
-            self.process.metadata.our.clone(),
+            address_to_reference(&self.process.metadata.our),
             &self.process.send_to_loop.clone(),
             &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
@@ -307,17 +309,49 @@ fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
 }
 
-fn de_wit_process_node(wit: &wit::WitProcessNode) -> ProcessNode {
-    ProcessNode {
-        node: wit.node.clone(),
-        process: wit.process.clone(),
+fn address_to_reference(address: &ProcessAddress) -> ProcessReference {
+    ProcessReference {
+        node: address.node.clone(),
+        identifier: match address.name {
+            None => ProcessIdentifier::Id(address.id.clone()),
+            Some(ref n) => ProcessIdentifier::Name(n.clone()),
+        },
     }
 }
 
-fn en_wit_process_node(dewit: &ProcessNode) -> wit::WitProcessNode {
-    wit::WitProcessNode {
+fn de_wit_process_identifier(wit: &wit::WitProcessIdentifier) -> ProcessIdentifier {
+    match wit {
+        wit::WitProcessIdentifier::Id(id) => ProcessIdentifier::Id(id.clone()),
+        wit::WitProcessIdentifier::Name(name) => ProcessIdentifier::Name(name.clone()),
+    }
+}
+
+fn en_wit_process_identifier(dewit: &ProcessIdentifier) -> wit::WitProcessIdentifier {
+    match dewit {
+        ProcessIdentifier::Id(id) => wit::WitProcessIdentifier::Id(id.clone()),
+        ProcessIdentifier::Name(name) => wit::WitProcessIdentifier::Name(name.clone()),
+    }
+}
+
+fn de_wit_process_reference(wit: &wit::WitProcessReference) -> ProcessReference {
+    ProcessReference {
+        node: wit.node.clone(),
+        identifier: de_wit_process_identifier(&wit.identifier),
+    }
+}
+
+fn en_wit_process_reference(dewit: &ProcessReference) -> wit::WitProcessReference {
+    wit::WitProcessReference {
         node: dewit.node.clone(),
-        process: dewit.process.clone(),
+        identifier: en_wit_process_identifier(&dewit.identifier),
+    }
+}
+
+fn en_wit_process_address(dewit: &ProcessAddress) -> wit::WitProcessAddress {
+    wit::WitProcessAddress {
+        node: dewit.node.clone(),
+        id: dewit.id.clone(),
+        name: dewit.name.clone(),
     }
 }
 
@@ -344,9 +378,9 @@ fn en_wit_error_content(dewit: &UqbarErrorContent, context: String)
 
 fn de_wit_error(wit: &wit::WitUqbarError) -> UqbarError {
     UqbarError {
-        source: ProcessNode {
+        source: ProcessReference {
             node: wit.source.node.clone(),
-            process: wit.source.process.clone(),
+            identifier: de_wit_process_identifier(&wit.source.identifier),
         },
         timestamp: wit.timestamp.clone(),
         content: de_wit_error_content(&wit.content),
@@ -355,9 +389,9 @@ fn de_wit_error(wit: &wit::WitUqbarError) -> UqbarError {
 
 fn en_wit_error(dewit: &UqbarError, context: String) -> wit::WitUqbarError {
     wit::WitUqbarError {
-        source: wit::WitProcessNode {
+        source: wit::WitProcessReference {
             node: dewit.source.node.clone(),
-            process: dewit.source.process.clone(),
+            identifier: en_wit_process_identifier(&dewit.source.identifier),
         },
         timestamp: dewit.timestamp.clone(),
         content: en_wit_error_content(&dewit.content, context),
@@ -422,11 +456,12 @@ async fn get_and_send_specific_loop_message_to_process(
         //   AND the message is not a websocket ack
         if awaited_message_id == wrapped_message.id {
             match wrapped_message.message {
-                Ok(ref message) => {
-                    if !(("net" == message.source.process)
-                         & (Some(serde_json::Value::String("Success".into())) == message.content.payload.json)
-                        )
-                    {
+                Ok(ref _message) => {
+                    //  TODO: can remove?
+                    // if !(("net" == message.source.process)
+                    //      & (Some(serde_json::Value::String("Success".into())) == message.content.payload.json)
+                    //     )
+                    // {
                         let message = send_loop_message_to_process(
                             wrapped_message,
                             send_to_terminal,
@@ -440,7 +475,7 @@ async fn get_and_send_specific_loop_message_to_process(
                                 Err(e) => Ok(Err(e)),
                             },
                         );
-                    }
+                    // }
                 },
                 Err(_) => {
                     let message = send_loop_message_to_process(
@@ -510,7 +545,7 @@ async fn send_loop_message_to_process(
             (
                 wrapped_message,
                 match message_type {
-                    MessageType::Request(_) => Ok((wit_message, "".to_string())),
+                    MessageType::Request(_) => Ok((wit_message, "".into())),
                     MessageType::Response => {
                         let context = get_context(
                             &message_id,
@@ -603,7 +638,8 @@ async fn make_response_id_target(
     prompting_message: &Option<WrappedMessage>,
     contexts: &HashMap<u64, ProcessContext>,
     send_to_terminal: PrintSender,
-) -> Option<(u64, ProcessNode)> {
+// ) -> Option<(u64, ProcessNode)> {
+) -> Option<(u64, ProcessReference)> {
     let Some(ref prompting_message) = prompting_message else {
         println!("need non-None prompting_message to handle Response");
         return None;
@@ -666,7 +702,7 @@ async fn make_response_id_target(
                             if is_expecting_response {
                                 Some((
                                     ultimate.id.clone(),
-                                    ultimate.process_node.clone(),
+                                    ultimate.source.clone(),
                                 ))
                             } else {
                                 let Some(rsvp) = ultimate.rsvp.clone() else {
@@ -700,7 +736,7 @@ async fn make_response_id_target(
                 },
             }
         },
-        Err(ref e) => {
+        Err(ref _e) => {
             let Some(context) = contexts.get(&prompting_message.id) else {
                 send_to_terminal
                     .send(Printout {
@@ -728,7 +764,7 @@ async fn make_response_id_target(
                     if is_expecting_response {
                         Some((
                             ultimate.id.clone(),
-                            ultimate.process_node.clone(),
+                            ultimate.source.clone(),
                         ))
                     } else {
                         let Some(rsvp) = ultimate.rsvp.clone() else {
@@ -776,8 +812,8 @@ fn de_wit_payload_bytes(wit: &wit::WitPayloadBytes) -> PayloadBytes {
 
 fn make_wrapped_message(
     id: u64,
-    source: ProcessNode,
-    target: ProcessNode,
+    source: ProcessReference,
+    target: ProcessReference,
     rsvp: Rsvp,
     message_type: MessageType,
     payload: &wit::WitPayload,
@@ -850,7 +886,7 @@ async fn decrement_context(
 
 async fn send_process_error_to_loop(
     error: wit::WitUqbarErrorContent,
-    source: ProcessNode,
+    source: ProcessReference,
     send_to_loop: &MessageSender,
     prompting_message: &Option<WrappedMessage>,
 ) -> Vec<u64> {
@@ -885,12 +921,12 @@ async fn send_process_error_to_loop(
 }
 
 async fn handle_request(
-    source: ProcessNode,
+    source: ProcessReference,
     send_to_loop: &MessageSender,
-    send_to_terminal: &PrintSender,
+    _send_to_terminal: &PrintSender,
     default_id: u64,
     is_expecting_response: bool,
-    target: wit::WitProcessNode,
+    target: wit::WitProcessReference,
     payload: wit::WitPayload,
     prompting_message: &Option<WrappedMessage>,
     new_context: Option<serde_json::Value>,
@@ -901,7 +937,7 @@ async fn handle_request(
         is_expecting_response,
         &prompting_message,
     );
-    let target = de_wit_process_node(&target);
+    let target = de_wit_process_reference(&target);
 
     let payload: wit::WitPayload = if_circumvent_update_bytes_with_circumvent(
         payload,
@@ -1025,7 +1061,7 @@ fn if_circumvent_update_bytes_with_circumvent(
 
 async fn send_process_requests_to_loop(
     requests: Result<(Vec<wit::WitProtorequest>, String), wit::WitUqbarErrorContent>,
-    source: ProcessNode,
+    source: ProcessReference,
     send_to_loop: &MessageSender,
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
@@ -1060,7 +1096,7 @@ async fn send_process_requests_to_loop(
 
 async fn send_process_response_to_loop(
     response: Result<(wit::WitPayload, String), wit::WitUqbarErrorContent>,
-    source: ProcessNode,
+    source: ProcessReference,
     send_to_loop: &MessageSender,
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
@@ -1121,7 +1157,7 @@ async fn send_process_response_to_loop(
 
 async fn send_process_response_with_side_effect_request_to_loop(
     results: Result<wit::WitProtoresponseWithSideEffectProtorequest, wit::WitUqbarErrorContent>,
-    source: ProcessNode,
+    source: ProcessReference,
     send_to_loop: &MessageSender,
     send_to_terminal: &PrintSender,
     prompting_message: &Option<WrappedMessage>,
@@ -1185,7 +1221,7 @@ async fn send_process_response_with_side_effect_request_to_loop(
     ids.push(id);
 
     //  handle side-effect Request
-    let (wit::WitProtorequest { is_expecting_response, target, payload }, request_context) =
+    let (wit::WitProtorequest { is_expecting_response, target, payload }, _request_context) =
         results.request;
     let default_id = rand::random();
     let prompting_message = None;
@@ -1237,7 +1273,7 @@ async fn convert_message_to_wit_message(m: &Message) -> wit::WitMessage {
         MessageType::Response => wit::WitMessageType::Response,
     };
     wit::WitMessage {
-        source: en_wit_process_node(&m.source),
+        source: en_wit_process_reference(&m.source),
         content: wit::WitMessageContent {
             message_type: wit_message_type,
             payload: wit_payload,
@@ -1255,7 +1291,8 @@ async fn make_process_loop(
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our_name = metadata.our.node.clone();
-    let process_name = metadata.our.process.clone();
+    // let process_name = metadata.our.process.clone();
+    let address = metadata.our.clone();
     let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
     let send_on_panic = metadata.send_on_panic.clone();
 
@@ -1298,8 +1335,7 @@ async fn make_process_loop(
 
             let is_error = match bindings.call_run_process(
                 &mut store,
-                &our_name,
-                &process_name,
+                &en_wit_process_address(&address),
             ).await {
                 Ok(()) => false,
                 Err(e) => {
@@ -1307,8 +1343,8 @@ async fn make_process_loop(
                         .send(Printout {
                             verbosity: 0,
                             content: format!(
-                                "mk: process {} ended with error: {:?}",
-                                process_name,
+                                "mk: process {:?} ended with error: {:?}",
+                                address,
                                 e,
                             ),
                         })
@@ -1317,13 +1353,13 @@ async fn make_process_loop(
                 }
             };
 
-            let our_pm = ProcessNode {
+            let our_pm = ProcessReference {
                 node: our_name.clone(),
-                process: "process_manager".into(),
+                identifier: ProcessIdentifier::Name("process_manager".into()),
             };
-            let our_kernel = ProcessNode {
+            let our_kernel = ProcessReference {
                 node: our_name.clone(),
-                process: "kernel".into(),  //  should this be process_name?
+                identifier: ProcessIdentifier::Name("kernel".into()),  //  should this be process_name?
             };
 
             //  clean up process metadata & channels
@@ -1339,7 +1375,7 @@ async fn make_process_loop(
                             payload: Payload {
                                 json: Some(
                                     serde_json::to_value(ProcessManagerCommand::Stop {
-                                        process_name: process_name.clone()
+                                        id: address.id.clone(),
                                     }).unwrap()
                                 ),
                                 bytes: PayloadBytes {
@@ -1369,7 +1405,7 @@ async fn make_process_loop(
                                         payload: Payload {
                                             json: Some(
                                                 serde_json::to_value(ProcessManagerCommand::Start {
-                                                    process_name,
+                                                    name: address.name.clone(),
                                                     wasm_bytes_uri,
                                                     send_on_panic,
                                                 }).unwrap()
@@ -1393,9 +1429,16 @@ async fn make_process_loop(
                                     target: request.target,
                                     rsvp: None,
                                     message: Ok(Message {
-                                        source: ProcessNode {
+                                        source: ProcessReference {
                                             node: our_name.clone(),
-                                            process: process_name.clone(),
+                                            identifier: match address.name {
+                                                Some(ref name) => {
+                                                    ProcessIdentifier::Name(name.clone())
+                                                },
+                                                None => {
+                                                    ProcessIdentifier::Id(address.id.clone())
+                                                },
+                                            },
                                         },
                                         content: MessageContent {
                                             message_type: MessageType::Request(false),
@@ -1421,17 +1464,46 @@ async fn handle_kernel_request(
     send_to_terminal: PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
+    names: &mut Names,
+    ids: &mut Ids,
     engine: &Engine,
 ) {
     let Ok(message) = wrapped_message.message else {
         panic!("fubar");  //  TODO
     };
+    if match message.source.identifier {
+        ProcessIdentifier::Name(ref n) => {
+            ("process_manager" != n.as_str())
+            & ("kernel" != n.as_str())
+        },
+        ProcessIdentifier::Id(id) => {
+            match ids.get(&id) {
+                None => false,
+                Some(ref n) => {
+                    ("process_manager" != n.as_str())
+                    & ("kernel" != n.as_str())
+                },
+            }
+        },
+    } {
+        send_to_terminal
+            .send(Printout{
+                verbosity: 0,
+                content: format!(
+                    "kernel: rejecting kernel command not from process_manager: {}",
+                    message,
+                ),
+            })
+            .await
+            .unwrap();
+        return;
+    }
     let Some(value) = message.content.payload.json else {
         send_to_terminal
             .send(Printout{
                 verbosity: 0,
                 content: format!(
-                    "kernel: got kernel command with no json payload. Got: {}",
+                    "kernel: rejecting kernel command with no json payload: {}",
                     message,
                 ),
             })
@@ -1439,18 +1511,15 @@ async fn handle_kernel_request(
             .unwrap();
         return;
     };
-    let kernel_request: KernelRequest =
-        serde_json::from_value(value)
+    let kernel_request: KernelRequest = serde_json::from_value(value)
         .expect("kernel: could not parse to command");
     match kernel_request {
-        KernelRequest::StartProcess { process_name, wasm_bytes_uri, send_on_panic } => {
+        KernelRequest::StartProcess { id, name, wasm_bytes_uri, send_on_panic } => {
             let Some(wasm_bytes) = message.content.payload.bytes.content else {
                 send_to_terminal
                     .send(Printout{
                         verbosity: 0,
-                        content: format!(
-                            "kernel: StartProcess requires bytes",
-                        ),
+                        content: "kernel: StartProcess requires bytes".into(),
                     })
                     .await
                     .unwrap();
@@ -1458,17 +1527,18 @@ async fn handle_kernel_request(
             };
             let (send_to_process, recv_in_process) =
                 mpsc::channel::<WrappedMessage>(PROCESS_CHANNEL_CAPACITY);
-            senders.insert(process_name.clone(), send_to_process);
+            senders.insert(id.clone(), send_to_process);
             let metadata = ProcessMetadata {
-                our: ProcessNode {
-                    node: our_name.to_string(),
-                    process: process_name.clone(),
+                our: ProcessAddress {
+                    node: our_name.clone(),
+                    id: id.clone(),
+                    name: name.clone(),
                 },
                 wasm_bytes_uri: wasm_bytes_uri.clone(),
                 send_on_panic,
             };
             process_handles.insert(
-                process_name.clone(),
+                id.clone(),
                 tokio::spawn(
                     make_process_loop(
                         metadata.clone(),
@@ -1481,17 +1551,22 @@ async fn handle_kernel_request(
                 ),
             );
 
+            if let Some(n) = name {
+                names.insert(n.clone(), id.clone());
+                ids.insert(id.clone(), n.clone());
+            };
+
             let start_completed_message = WrappedMessage {
                 id: wrapped_message.id,
-                target: ProcessNode {
+                target: ProcessReference {
                     node: our_name.clone(),
-                    process: "process_manager".into(),
+                    identifier: ProcessIdentifier::Name("process_manager".into()),
                 },
                 rsvp: None,
                 message: Ok(Message {
-                    source: ProcessNode {
+                    source: ProcessReference {
                         node: our_name.clone(),
-                        process: "kernel".into(),
+                        identifier: ProcessIdentifier::Name("kernel".into()),
                     },
                     content: MessageContent {
                         message_type: MessageType::Response,
@@ -1513,9 +1588,8 @@ async fn handle_kernel_request(
                 .send(start_completed_message)
                 .await
                 .unwrap();
-            return;
         },
-        KernelRequest::StopProcess { process_name } => {
+        KernelRequest::StopProcess { id } => {
             let MessageType::Request(is_expecting_response) = message.content.message_type else {
                 send_to_terminal
                     .send(Printout {
@@ -1526,8 +1600,8 @@ async fn handle_kernel_request(
                     .unwrap();
                 return;
             };
-            let _ = senders.remove(&process_name);
-            let process_handle = match process_handles.remove(&process_name) {
+            let _ = senders.remove(&id);
+            let process_handle = match process_handles.remove(&id) {
                 Some(ph) => ph,
                 None => {
                     send_to_terminal
@@ -1535,7 +1609,7 @@ async fn handle_kernel_request(
                             verbosity: 0,
                             content: format!(
                                 "kernel: no such process {} to Stop",
-                                process_name,
+                                id,
                             ),
                         })
                         .await
@@ -1544,24 +1618,28 @@ async fn handle_kernel_request(
                 },
             };
             process_handle.abort();
+            if let Some(n) = ids.remove(&id) {
+                names.remove(&n);
+            };
+
             if !is_expecting_response {
                 return;
             }
             let json_payload = serde_json::to_value(
-                KernelResponse::StopProcess { process_name }
+                KernelResponse::StopProcess { id }
             ).unwrap();
 
             let stop_completed_message = WrappedMessage {
                 id: wrapped_message.id,
-                target: ProcessNode {
+                target: ProcessReference {
                     node: our_name.clone(),
-                    process: "process_manager".into(),
+                    identifier: ProcessIdentifier::Name("process_manager".into()),
                 },
                 rsvp: None,
                 message: Ok(Message {
-                    source: ProcessNode {
+                    source: ProcessReference {
                         node: our_name.clone(),
-                        process: "kernel".into(),
+                        identifier: ProcessIdentifier::Name("kernel".into()),
                     },
                     content: MessageContent {
                         message_type: MessageType::Response,
@@ -1579,7 +1657,57 @@ async fn handle_kernel_request(
                 .send(stop_completed_message)
                 .await
                 .unwrap();
-            return;
+        },
+        KernelRequest::RegisterProcess { id, name } => {
+            if ids.contains_key(&id) {
+                send_to_terminal
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!(
+                            "kernel: RegisterProcess id {} already registered",
+                            id,
+                        ),
+                    })
+                    .await
+                    .unwrap();
+                return;
+            }
+            if names.contains_key(&name) {
+                send_to_terminal
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!(
+                            "kernel: RegisterProcess name {} already registered",
+                            name,
+                        ),
+                    })
+                    .await
+                    .unwrap();
+                return;
+            }
+
+            ids.insert(id.clone(), name.clone());
+            names.insert(name.clone(), id.clone());
+        },
+        KernelRequest::UnregisterProcess { id } => {
+            match ids.remove(&id) {
+                Some(name) => {
+                    names.remove(&name);
+                },
+                None => {
+                    send_to_terminal
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "kernel: UnregisterProcess id {} not registered",
+                                id,
+                            ),
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                },
+            }
         },
     }
 }
@@ -1600,10 +1728,24 @@ async fn make_event_loop(
     Box::pin(
         async move {
             let mut senders: Senders = HashMap::new();
-            senders.insert("filesystem".to_string(), send_to_fs);
-            senders.insert("http_server".to_string(), send_to_http_server.clone());
-            senders.insert("http_client".to_string(), send_to_http_client);
-            senders.insert("lfs".to_string(), send_to_lfs);
+            senders.insert(FILESYSTEM_ID, send_to_fs);
+            senders.insert(HTTP_SERVER_ID, send_to_http_server);
+            senders.insert(HTTP_CLIENT_ID, send_to_http_client);
+            senders.insert(LFS_ID, send_to_lfs);
+
+            let mut names: Names = HashMap::new();
+            names.insert("kernel".into(), KERNEL_ID);
+            names.insert("filesystem".into(), FILESYSTEM_ID);
+            names.insert("http_server".into(), HTTP_SERVER_ID);
+            names.insert("http_client".into(), HTTP_CLIENT_ID);
+            names.insert("lfs".into(), LFS_ID);
+
+            let mut ids: Ids = HashMap::new();
+            ids.insert(KERNEL_ID, "kernel".into());
+            ids.insert(FILESYSTEM_ID, "filesystem".into());
+            ids.insert(HTTP_SERVER_ID, "http_server".into());
+            ids.insert(HTTP_CLIENT_ID, "http_client".into());
+            ids.insert(LFS_ID, "lfs".into());
 
             let mut process_handles: ProcessHandles = HashMap::new();
             let mut is_debug = false;
@@ -1626,12 +1768,11 @@ async fn make_event_loop(
                         let Some(wrapped_message) = wrapped_message else {
                             send_to_terminal.send(Printout {
                                     verbosity: 1,
-                                    content: "event loop: got None for message".to_string(),
+                                    content: "event loop: got None for message".into(),
                                 }
                             ).await.unwrap();
                             continue;
                         };
-                        // let wrapped_message = recv_in_loop.recv().await.unwrap();
                         send_to_terminal.send(
                             Printout {
                                 verbosity: 1,
@@ -1644,7 +1785,7 @@ async fn make_event_loop(
                                     send_to_terminal
                                         .send(Printout {
                                             verbosity: 1,
-                                            content: "event loop: message sent to network".to_string(),
+                                            content: "event loop: message sent to network".into(),
                                         })
                                         .await
                                         .unwrap();
@@ -1660,8 +1801,30 @@ async fn make_event_loop(
                                 }
                             }
                         } else {
-                            let to = wrapped_message.target.process.clone();
-                            if to == "kernel" {
+                            let (id, maybe_name) = match wrapped_message.target.identifier {
+                                ProcessIdentifier::Id(id) => {
+                                    (id.clone(), ids.get(&id))
+                                },
+                                ProcessIdentifier::Name(ref name) => {
+                                    match names.get(name) {
+                                        Some(id) => (id.clone(), Some(name)),
+                                        None => {
+                                            send_to_terminal
+                                                .send(Printout {
+                                                    verbosity: 0,
+                                                    content: format!(
+                                                        "event loop: no id corresponding to name given in Message {}",
+                                                        wrapped_message,
+                                                    ),
+                                                })
+                                                .await
+                                                .unwrap();
+                                            continue;
+                                        },
+                                    }
+                                },
+                            };
+                            if Some(&"kernel".to_string()) == maybe_name {
                                 handle_kernel_request(
                                     our_name.clone(),
                                     wrapped_message,
@@ -1669,15 +1832,17 @@ async fn make_event_loop(
                                     send_to_terminal.clone(),
                                     &mut senders,
                                     &mut process_handles,
+                                    &mut names,
+                                    &mut ids,
                                     &engine,
                                 ).await;
                             //  XX temporary branch to assist in pure networking debugging
                             //  can be removed when ws WASM module is ready
-                            } else if to == "net" {
+                            } else if Some(&"net".to_string()) == maybe_name {
                                 let _ = send_to_net.send(wrapped_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
-                                match senders.get(&to) {
+                                match senders.get(&id) {
                                     Some(sender) => {
                                         let _result = sender
                                             .send(wrapped_message)
@@ -1688,8 +1853,9 @@ async fn make_event_loop(
                                             .send(Printout {
                                                 verbosity: 0,
                                                 content: format!(
-                                                    "event loop: don't have {} amongst registered processes: {:?}",
-                                                    to,
+                                                    "event loop: don't have {:?}, {:?} amongst registered processes: {:?}",
+                                                    id,
+                                                    maybe_name,
                                                     senders.keys().collect::<Vec<_>>()
                                                 )
                                             })
@@ -1699,8 +1865,6 @@ async fn make_event_loop(
                                 }
                             }
                         }
-
-
                     },
                 }
             }

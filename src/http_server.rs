@@ -137,15 +137,15 @@ async fn handler(
     let id: u64 = rand::random();
     let message = WrappedMessage {
         id: id.clone(),
-        target: ProcessNode {
+        target: ProcessReference {
             node: our.clone(),
-            process: "http_bindings".into(),
+            identifier: ProcessIdentifier::Name("http_bindings".into()),
         },
         rsvp: None, // TODO I believe this is correct
         message: Ok(Message {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our.clone(),
-                process: "http_server".into(),
+                identifier: ProcessIdentifier::Name("http_server".into()),
             },
             content: MessageContent {
                 message_type: MessageType::Request(true),

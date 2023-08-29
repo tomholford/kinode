@@ -20,9 +20,9 @@ fn parse_command(our_name: &str, line: String) {
                 vec![
                     types::WitProtorequest {
                         is_expecting_response: false,
-                        target: types::WitProcessNode {
+                        target: types::WitProcessReference {
                             node: target.into(),
-                            process: "net".into(),
+                            identifier: types::WitProcessIdentifier::Name("net".into()),
                         },
                         payload: types::WitPayload {
                             json: Some(serde_json::Value::String(message.into()).to_string()),
@@ -55,13 +55,15 @@ fn parse_command(our_name: &str, line: String) {
                 vec![
                     types::WitProtorequest {
                         is_expecting_response: false,
-                        target: types::WitProcessNode {
+                        target: types::WitProcessReference {
                             node: if target_node == "our" {
                                 our_name.into()
                             } else {
                                 target_node.into()
                             },
-                            process: target_process.into(),
+                            identifier: types::WitProcessIdentifier::Name(
+                                target_process.into()
+                            ),
                         },
                         payload: types::WitPayload {
                             json: Some(payload.into()),
@@ -82,16 +84,21 @@ fn parse_command(our_name: &str, line: String) {
 }
 
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
+    fn run_process(our: types::WitProcessAddress) {
+    // fn run_process(our_name: String, process_name: String) {
+        let Some(ref process_name) = our.name else {
+            bindings::print_to_terminal(0, "terminal: require our.name set");
+            panic!();
+        };
         assert_eq!(process_name, "terminal");
-        bindings::print_to_terminal(1, format!("{our_name} terminal: running").as_str());
+        bindings::print_to_terminal(1, format!("{:?} terminal: running", our).as_str());
 
         loop {
             let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
             if let types::WitMessageType::Request(_) = message.content.message_type {
                 let stringy = bincode::deserialize(&message.content.payload.bytes.content.unwrap_or_default())
                     .unwrap_or_default();
-                parse_command(&our_name, stringy);
+                parse_command(&our.node, stringy);
             } else {
                 if let Some(s) = message.content.payload.json {
                     bindings::print_to_terminal(0, &format!("net error: {}!", &s));

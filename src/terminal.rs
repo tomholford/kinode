@@ -563,15 +563,19 @@ pub async fn terminal(
                                     let _err = event_loop.send(
                                         WrappedMessage {
                                             id: rand::random(),
-                                            target: ProcessNode {
+                                            target: ProcessReference {
                                                 node: our.name.clone(),
-                                                process: "terminal".into(),
+                                                identifier: ProcessIdentifier::Name(
+                                                    "terminal".into()
+                                                ),
                                             },
                                             rsvp: None,
                                             message: Ok(Message {
-                                                source: ProcessNode {
+                                                source: ProcessReference {
                                                     node: our.name.clone(),
-                                                    process: "terminal".into(),
+                                                    identifier: ProcessIdentifier::Name(
+                                                        "terminal".into()
+                                                    ),
                                                 },
                                                 content: MessageContent {
                                                     message_type: MessageType::Request(false),

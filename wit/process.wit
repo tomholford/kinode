@@ -24,7 +24,7 @@ interface types {
     }
 
     record wit-message {
-        source: wit-process-node,
+        source: wit-process-reference,
         content: wit-message-content,
     }
 
@@ -35,7 +35,7 @@ interface types {
 
     record wit-protorequest {
         is-expecting-response: bool,
-        target: wit-process-node,
+        target: wit-process-reference,
         payload: wit-payload,
     }
 
@@ -44,13 +44,29 @@ interface types {
         request: tuple<wit-protorequest, string>,
     }
 
-    record wit-process-node {
+    record wit-process-reference {
         node: string,
-        process: string,
+        identifier: wit-process-identifier,
     }
 
+    record wit-process-address {
+        node: string,
+        id: u64,
+        name: option<string>,
+    }
+
+    variant wit-process-identifier {
+        id(u64),
+        name(string),
+    }
+
+    // record wit-process-node {
+    //     node: string,
+    //     process: string,
+    // }
+
     record wit-uqbar-error {
-        source: wit-process-node,
+        source: wit-process-reference,
         timestamp: u64,  //  unix time
         content: wit-uqbar-error-content,
     }
@@ -71,7 +87,10 @@ world microkernel-process {
         wit-message-content,
         wit-protorequest,
         wit-protoresponse-with-side-effect-protorequest,
-        wit-process-node,
+        wit-process-reference,
+        wit-process-address,
+        wit-process-identifier,
+        // wit-process-node,
         wit-uqbar-error,
         wit-uqbar-error-content,
     }
@@ -81,8 +100,8 @@ world microkernel-process {
     import send-response: func(response: result<tuple<wit-payload, string>, wit-uqbar-error-content>)
     import send-response-with-side-effect-request: func(results: result<wit-protoresponse-with-side-effect-protorequest, wit-uqbar-error-content>)
     import await-next-message: func() -> result<tuple<wit-message, string>, wit-uqbar-error>
-    import send-request-and-await-response: func(target: wit-process-node, payload: wit-payload) -> result<wit-message, wit-uqbar-error>
+    import send-request-and-await-response: func(target: wit-process-reference, payload: wit-payload) -> result<wit-message, wit-uqbar-error>
     import get-current-unix-time: func() -> u64
     import get-insecure-uniform-u64: func() -> u64
-    export run-process: func(our-name: string, process-name: string)
+    export run-process: func(our: wit-process-address)
 }

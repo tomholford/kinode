@@ -53,9 +53,9 @@ async fn handle_message(
         MessageType::Response => panic!("http_client: should not get a response message"),
         MessageType::Request(is_expecting_response) => {
             if is_expecting_response {
-                ProcessNode {
+                ProcessReference {
                     node: our.clone(),
-                    process: source.process.clone(),
+                    identifier: source.identifier.clone(),
                 }
             } else {
                 let Some(rsvp) = rsvp else { panic!("http_client: no rsvp"); };
@@ -104,9 +104,9 @@ async fn handle_message(
         target,
         rsvp: None,
         message: Ok(Message {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our.clone(),
-                process: "http_client".into(),
+                identifier: ProcessIdentifier::Name("http_client".into()),
             },
             content: MessageContent {
                 message_type: MessageType::Response,

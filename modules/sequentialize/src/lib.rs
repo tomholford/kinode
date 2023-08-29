@@ -9,10 +9,24 @@ mod process_lib;
 
 struct Component;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessReference {
+    pub node: String,
+    pub process: ProcessIdentifier,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
-enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+pub enum SequentializeRequest {
+    QueueMessage {
+        target_node: Option<String>,
+        target_process: ProcessIdentifier,
+        json: Option<String>,
+    },
     RunQueue,
 }
 
@@ -22,14 +36,21 @@ enum ReturnStatus {
 }
 
 struct QueueItem {
-    target: types::WitProcessNode,
+    target: types::WitProcessReference,
     payload: types::WitPayload,
+}
+
+fn en_wit_process_identifier(dewit: &ProcessIdentifier) -> types::WitProcessIdentifier {
+    match dewit {
+        ProcessIdentifier::Id(id) => types::WitProcessIdentifier::Id(id.clone()),
+        ProcessIdentifier::Name(name) => types::WitProcessIdentifier::Name(name.clone()),
+    }
 }
 
 fn handle_message(
     message_queue: &mut VecDeque<QueueItem>,
     our_name: &str,
-    process_name: &str,
+    // process_name: &str,
 ) -> anyhow::Result<ReturnStatus> {
     let (message, _context) = await_next_message()?;
     if our_name != message.source.node {
@@ -40,12 +61,12 @@ fn handle_message(
             match process_lib::parse_message_json(message.content.payload.json)? {
                 SequentializeRequest::QueueMessage { target_node, target_process, json } => {
                     message_queue.push_back(QueueItem{
-                        target: types::WitProcessNode {
+                        target: types::WitProcessReference {
                             node: match target_node {
                                 Some(n) => n,
                                 None => our_name.into(),
                             },
-                            process: target_process,
+                            identifier: en_wit_process_identifier(&target_process),
                         },
                         payload: types::WitPayload {
                             json,
@@ -63,13 +84,14 @@ fn handle_message(
             }
         },
         types::WitMessageType::Response => {
-            panic!("{process_name}: got unexpected Response: {:?}", message);
+            panic!("sequentialize: got unexpected Response: {:?}", message);
         },
     }
 }
 
 impl MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
+    fn run_process(our: types::WitProcessAddress) {
+    // fn run_process(our_name: String, process_name: String) {
         print_to_terminal(1, "sequentialize: begin");
 
         let mut message_queue: VecDeque<QueueItem> = VecDeque::new();
@@ -77,8 +99,8 @@ impl MicrokernelProcess for Component {
         loop {
             match handle_message(
                 &mut message_queue,
-                &our_name,
-                &process_name,
+                &our.node,
+                // &process_name,
             ) {
                 Ok(return_status) => {
                     match return_status {
@@ -87,8 +109,8 @@ impl MicrokernelProcess for Component {
                     }
                 },
                 Err(e) => {
-                    print_to_terminal(0, format!("{}: error: {:?}", process_name, e).as_str());
-                    panic!("{}: error: {:?}", process_name, e);
+                    print_to_terminal(0, format!("sequentialize: error: {:?}", e).as_str());
+                    panic!("sequentialize: error: {:?}", e);
                 },
             };
         }

@@ -109,7 +109,7 @@ pub async fn fs_sender(
             continue;
         };
 
-        let source_process = &source.process;
+        let source_identifier = &source.identifier;
         if our_name != source.node {
             println!(
                 "lfs: request must come from our_name={}, got: {}",
@@ -125,7 +125,7 @@ pub async fn fs_sender(
         let lfs_directory_path_clone = lfs_directory_path.clone();
 
         let our_name = our_name.clone();
-        let source_process = source_process.into();
+        let source_identifier = source_identifier.clone();
         let id = id.clone();
         let send_to_loop = send_to_loop.clone();
         let send_to_terminal = send_to_terminal.clone();
@@ -142,7 +142,7 @@ pub async fn fs_sender(
             .await
             {
                 send_to_loop
-                    .send(make_error_message(our_name.into(), id, source_process, e))
+                    .send(make_error_message(our_name.into(), id, source_identifier, e))
                     .await
                     .unwrap();
             }
@@ -270,7 +270,7 @@ async fn handle_request(
                             read_immutable(&req.file_hash, &lfs_directory_path, Some(req.start), Some(req.length)).await?
                         },
                     };
-        
+
                     Payload {
                         json: Some(serde_json::to_value(FsResponse::Read(req.file_hash)).unwrap()),
                         bytes: PayloadBytes {
@@ -283,10 +283,19 @@ async fn handle_request(
         },
         // specific process manager write:
         FsAction::PmWrite => {
-            if "process_manager" != source.process {
-                return Err(FileSystemError::LFSError {
-                    error: "Only process_manager can write to PmWrite".into(),
-                });
+            let ProcessIdentifier::Name(ref source_process) = source.identifier else {
+                return Err(
+                    FileSystemError::LFSError {
+                        error: "Only process_manager can write to PmWrite 0".into()
+                    }
+                );
+            };
+            if "process_manager" != source_process {
+                return Err(
+                    FileSystemError::LFSError {
+                        error: "Only process_manager can write to PmWrite 1".into()
+                    }
+                );
             }
 
             let Some(data) = content.payload.bytes.content.clone() else {
@@ -302,7 +311,7 @@ async fn handle_request(
             hasher.update(&data);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
-           
+
             //  write underlying
             let write_result = write_immutable(file_hash, &data, &lfs_directory_path).await;
             if let Err(e) = write_result {
@@ -366,30 +375,30 @@ async fn handle_request(
                 let uuid = uuid::Uuid::new_v4().as_u128();
                 (new_file, uuid)
             };
-        
+
             let chunk_length = data.len() as u64;
             let mut temp_hasher = file.hasher.clone();
             temp_hasher.update(&data);
             let new_hash: [u8; 32] = temp_hasher.finalize().into();
-        
+
             let write_result = write_appendable(uuid, &data, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
                 });
             }
-        
+
             let backup = BackupAppendable {
                 file_uuid: uuid,
                 file_hash: new_hash,
                 file_length: file.file_length + chunk_length,
                 backup: Vec::new(),
             };
-        
+
             let record = ManifestRecord::BackupA(backup);
-        
+
             let _ = manifest.add_append(&record).await?;
-        
+
             let _ = manifest.insert(uuid,InMemoryFile {
                     hash: new_hash,
                     file_type: FileType::Appendable,
@@ -397,7 +406,7 @@ async fn handle_request(
                     file_length: file.file_length + chunk_length,
                 },
             ).await?;
-            
+
             //  println!("appended to new_hash! {:?}", new_hash);
 
             Payload {
@@ -428,15 +437,15 @@ async fn handle_request(
     if is_expecting_response {
         let response = WrappedMessage {
             id,
-            target: ProcessNode {
+            target: ProcessReference {
                 node: our_name.clone(),
-                process: source.process.clone(),
+                identifier: source.identifier.clone(),
             },
             rsvp,
             message: Ok(Message {
-                source: ProcessNode {
+                source: ProcessReference {
                     node: our_name.clone(),
-                    process: "lfs".into(),
+                    identifier: ProcessIdentifier::Name("lfs".into()),
                 },
                 content: MessageContent {
                     message_type: MessageType::Response,
@@ -562,20 +571,20 @@ pub async fn read_immutable(file_hash: &[u8; 32], lfs_directory_path: &PathBuf, 
 fn make_error_message(
     our_name: String,
     id: u64,
-    source_process: String,
+    source_identifier: ProcessIdentifier,
     error: FileSystemError,
 ) -> WrappedMessage {
     WrappedMessage {
         id,
-        target: ProcessNode {
+        target: ProcessReference {
             node: our_name.clone(),
-            process: source_process,
+            identifier: source_identifier,
         },
         rsvp: None,
         message: Err(UqbarError {
-            source: ProcessNode {
+            source: ProcessReference {
                 node: our_name,
-                process: "lfs".into(),
+                identifier: ProcessIdentifier::Name("lfs".into()),
             },
             timestamp: get_current_unix_time().unwrap(), //  TODO: handle error?
             content: UqbarErrorContent {
@@ -592,8 +601,8 @@ pub async fn pm_bootstrap(
     home_directory_path: String,
 ) -> Result<Option<(Vec<u8>, [u8; 32])>, FileSystemError> {
     // fs bootstrapping, create home_directory and manifest file if none.
-    // note similarity 
-    
+    // note similarity
+
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
     }
@@ -609,7 +618,7 @@ pub async fn pm_bootstrap(
 
     let manifest_path = lfs_directory_path.join("manifest.bin");
 
-    let mut manifest_file = fs::OpenOptions::new()
+    let manifest_file = fs::OpenOptions::new()
         .append(true)
         .read(true)
         .create(true)

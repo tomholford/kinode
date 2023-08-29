@@ -85,7 +85,8 @@ struct Component;
 
 // TODO: handle auth correctly, generate a secret and store in filesystem if non-existent
 impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, _process_name: String) {
+    fn run_process(our: types::WitProcessAddress) {
+    // fn run_process(our_name: String, _process_name: String) {
         bindings::print_to_terminal(1, "http_bindings: start");
         let mut path_bindings: HashMap<String, BoundPath> = HashMap::new();
         let mut jwt_secret: Option<Hmac<Sha256>> = None;
@@ -166,7 +167,7 @@ impl bindings::MicrokernelProcess for Component {
                             if message_json["method"] == "GET" {
                                 bindings::print_to_terminal(1, "http_bindings: got login GET request");
                                 let login_page_content = include_str!("login.html");
-                                let personalized_login_page = login_page_content.replace("${our}", &our_name);
+                                let personalized_login_page = login_page_content.replace("${our}", &our.node);
 
                                 yield_http_response(message_json["id"].to_string(), 200, {
                                     let mut headers = HashMap::new();
@@ -192,13 +193,13 @@ impl bindings::MicrokernelProcess for Component {
 
                                     match jwt_secret.clone() {
                                         Some(secret) => {
-                                            match generate_token(our_name.clone(), secret) {
+                                            match generate_token(our.node.clone(), secret) {
                                                 Some(token) => {
                                                     // Token was generated successfully; you can use it here.
                                                     yield_http_response(message_json["id"].to_string(), 200, {
                                                         let mut headers = HashMap::new();
                                                         headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our_name, token));
+                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
                                                         headers
                                                     }, "".as_bytes().to_vec());
                                                 }
@@ -234,13 +235,13 @@ impl bindings::MicrokernelProcess for Component {
 
                                     match jwt_secret.clone() {
                                         Some(secret) => {
-                                            match generate_token(our_name.clone(), secret) {
+                                            match generate_token(our.node.clone(), secret) {
                                                 Some(token) => {
                                                     // Token was generated successfully; you can use it here.
                                                     yield_http_response(message_json["id"].to_string(), 200, {
                                                         let mut headers = HashMap::new();
                                                         headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our_name, token));
+                                                        headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
                                                         headers
                                                     }, "".as_bytes().to_vec());
                                                 }
@@ -302,7 +303,7 @@ impl bindings::MicrokernelProcess for Component {
                                     let auth_success = match jwt_secret.clone() {
                                         Some(secret) => {
                                             bindings::print_to_terminal(1, "HAVE SECRET");
-                                            auth_cookie_valid(our_name.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
+                                            auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
                                         },
                                         None => {
                                             bindings::print_to_terminal(1, "NO SECRET");
@@ -320,7 +321,7 @@ impl bindings::MicrokernelProcess for Component {
                                         };
 
                                         let location = match proxy_path {
-                                            Some(_) => format!("/http-proxy/serve/{}/login?redirect={}", &our_name, redirect_path),
+                                            Some(_) => format!("/http-proxy/serve/{}/login?redirect={}", &our.node, redirect_path),
                                             None => format!("/login?redirect={}", redirect_path)
                                         };
 
@@ -338,9 +339,11 @@ impl bindings::MicrokernelProcess for Component {
                                     vec![
                                         types::WitProtorequest {
                                             is_expecting_response: false,
-                                            target: types::WitProcessNode {
-                                                node: our_name.clone(),
-                                                process: app.into(),
+                                            target: types::WitProcessReference {
+                                                node: our.node.clone(),
+                                                identifier: types::WitProcessIdentifier::Name(
+                                                    app.into()
+                                                ),
                                             },
                                             payload: types::WitPayload {
                                                 json: Some(serde_json::json!({

@@ -1,4 +1,6 @@
 use crate::types::*;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 use ethers::prelude::*;
 use serde::{Deserialize, Serialize};
 use ethers::types::transaction::eip2718::TypedTransaction;
@@ -16,7 +18,8 @@ enum EthRpcAction {
     SendTransaction(EthRpcCall),
     DeployContract,
     SubscribeBlocks,
-    SubscribeEvents(EthEventSubscription)
+    SubscribeEvents(EthEventSubscription),
+    Unsubscribe(u64),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +50,7 @@ struct EthEventSubscription {
 pub enum EthRpcError {
     #[error("eth_rpc: error {error}")]
     Error { error: String },
+    // TODO fill these out
 }
 impl EthRpcError {
     pub fn kind(&self) -> &str {
@@ -80,16 +84,18 @@ pub async fn eth_rpc(
     };
     let client = SignerMiddleware::new(provider, wallet.with_chain_id(anvil.chain_id()));
 
-    let Ok(subscriptions) = Provider::<Ws>::connect(anvil.ws_endpoint()).await else {
+    let Ok(ws_rpc) = Provider::<Ws>::connect(anvil.ws_endpoint()).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
 
+    // TODO generate subscription IDs and put into here, create a cancel message        
+    let subscription_threads = Arc::new(Mutex::new(HashMap::<u64, tokio::task::JoinHandle<()>>::new()));
+
     while let Some(message) = recv_in_client.recv().await {
-        // TODO generate subscription IDs and put this into a hashmap and create a cancel message        
         let id = message.id.clone();
         let our_name = our_name.clone();
         let send_to_loop = send_to_loop.clone();
-        let subscriptions = subscriptions.clone();
+        let ws_rpc = ws_rpc.clone();
         let client = client.clone();
         let print_tx = print_tx.clone();
         tokio::spawn(async move {
@@ -97,7 +103,7 @@ pub async fn eth_rpc(
                 our_name.clone(),
                 send_to_loop.clone(),
                 message,
-                subscriptions,
+                ws_rpc,
                 client,
                 print_tx,
             ).await {
@@ -118,7 +124,7 @@ async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
     wm: WrappedMessage,
-    subscriptions: Provider<Ws>,
+    ws_rpc: Provider<Ws>,
     client: SignerMiddleware<Provider<Http>, LocalWallet>,
     print_tx: PrintSender,
 ) -> Result<(), EthRpcError>  {
@@ -150,11 +156,11 @@ async fn handle_message(
         }
     };
 
+    let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
+
     let Some(json) = content.payload.json.clone() else {
         return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
     };
-
-    let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
 
     let Ok(action) = serde_json::from_value::<EthRpcAction>(json.clone()) else {
         return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse json: {:?}", json) });
@@ -247,10 +253,10 @@ async fn handle_message(
                         content: MessageContent {
                             message_type: MessageType::Response,
                             payload: Payload {
-                                json: None,
+                                json: Some(serde_json::to_value(rx).unwrap()),
                                 bytes: PayloadBytes{
                                     circumvent: Circumvent::False,
-                                    content: Some(rx.transaction_hash.as_ref().to_vec()), // TODO we should pass back all relevant tx info 
+                                    content: None
                                 },
                             },
                         },
@@ -331,7 +337,7 @@ async fn handle_message(
                 }
             ).await.unwrap();
 
-            let mut stream = subscriptions.subscribe_blocks().await.unwrap();
+            let mut stream = ws_rpc.subscribe_blocks().await.unwrap();
 
             // send to target
             // until they cancel
@@ -419,7 +425,7 @@ async fn handle_message(
                 filter = filter.topic3(topic3);
             }
 
-            let Ok(mut stream) = subscriptions.subscribe_logs(&filter).await else {
+            let Ok(mut stream) = ws_rpc.subscribe_logs(&filter).await else {
                 return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't create event subscription") });
             };
 
@@ -454,6 +460,13 @@ async fn handle_message(
                     }
                 ).await.unwrap();
             }
+        }
+        EthRpcAction::Unsubscribe(sub_id) => {
+            // TODO
+            print_tx.send(Printout {
+                verbosity: 0,
+                content: format!("eth_rpc: unsubscribing: {:?}", sub_id),
+            }).await;
         }
     }
 

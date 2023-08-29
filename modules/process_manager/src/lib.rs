@@ -74,21 +74,24 @@ pub enum FileSystemSeekFrom {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Append([u8; 32]),
+    Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
-    PmWrite                  //  specific case for process manager persistance.
-    // different backup add/remove requests
+    PmWrite,                     //  specific case for process manager persistance.
+    Delete([u8; 32]),
+    Length([u8; 32]),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    //  bytes are in payload_bytes, [old-fileHash, new_filehash, file_uuid]
+    //  bytes are in payload_bytes
     Read([u8; 32]),
     ReadChunk([u8; 32]),
     Write([u8; 32]),
-    Append([u8; 32]),   //  new file_hash [old too?]
-                        //  use FileSystemError
+    Append([u8; 32]),
+    Delete([u8; 32]),
+    Length(u64),
+    //  use FileSystemError
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -562,7 +565,7 @@ fn handle_message (
                         true,
                         our_name,
                         types::ProcessIdentifier::Name("lfs".into()),
-                        Some(FileSystemAction::Write),
+                        Some(FsAction::Write),
                         types::OutboundPayloadBytes::AttachCircumvented,
                         Some(Context::Persist {
                             identifier: de_wit_process_identifier(&source.identifier)

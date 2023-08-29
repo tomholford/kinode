@@ -1,6 +1,46 @@
-//  TODO: rewrite lib, given new bindgen behavior
+use serde::{Serialize, Deserialize};
 
 use super::bindings::component::microkernel_process::types;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessReference {
+    pub node: String,
+    pub identifier: ProcessIdentifier,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum TransitPayloadBytes {
+    None,
+    Some(Vec<u8>),
+    Circumvent(Vec<u8>),
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequestOnPanic {
+    pub target: ProcessReference,
+    pub json: Option<String>,
+    pub bytes: TransitPayloadBytes,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SendOnPanic {
+    None,
+    Restart,
+    Requests(Vec<RequestOnPanic>),
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProcessManagerCommand {
+    Initialize { jwt_secret_bytes: Option<Vec<u8>> },
+    Start { name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
+    Stop { id: u64 },
+    Restart { id: u64 },
+    ListRegisteredProcesses,
+    PersistState,
+    RebootStart { id: u64, name: Option<String>, wasm_bytes_uri: String, send_on_panic: SendOnPanic },  //  TODO: remove
+}
 
 pub fn make_request<T, U>(
     is_expecting_response: bool,
@@ -76,6 +116,65 @@ pub fn make_outbound_bytes_from_noncircumvented_inbound(
     }
 }
 
+pub fn get_source(message: &types::InboundMessage) -> types::ProcessReference {
+    match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                ref source,
+                json: _,
+                bytes: _,
+            },
+        }) => source.clone(),
+        types::InboundMessage::Response(types::InboundPayload {
+            ref source,
+            json: _,
+            bytes: _,
+        }) => source.clone(),
+    }
+}
+
+pub fn get_json(message: &types::InboundMessage) -> anyhow::Result<String> {
+    let json = match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source: _,
+                ref json,
+                bytes: _,
+            },
+        }) => json,
+        types::InboundMessage::Response(types::InboundPayload {
+            source: _,
+            ref json,
+            bytes: _,
+        }) => json,
+    };
+    json.clone().ok_or(anyhow::anyhow!("json field is None"))
+}
+
+pub fn get_bytes(message: types::InboundMessage) -> anyhow::Result<Vec<u8>> {
+    let bytes = match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source: _,
+                json: _,
+                bytes,
+            },
+        }) => bytes,
+        types::InboundMessage::Response(types::InboundPayload {
+            source: _,
+            json: _,
+            bytes,
+        }) => bytes,
+    };
+    let types::InboundPayloadBytes::Some(bytes) = bytes else {
+        return Err(anyhow::anyhow!("bytes field is not Some"));
+    };
+    Ok(bytes)
+}
+
 pub fn send_one_request<T, U>(
     is_expecting_response: bool,
     target_node: &str,
@@ -144,4 +243,19 @@ where
         },
         &payload,
     ))
+}
+
+pub fn persist_state<T>(
+    our_name: &str,
+    state: &T,
+) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>>
+where
+    T: serde::Serialize,
+{
+    send_and_await_receive(
+        our_name.into(),
+        types::ProcessIdentifier::Name("process_manager".into()),
+        Some(ProcessManagerCommand::PersistState),
+        types::OutboundPayloadBytes::Circumvent(bincode::serialize(state)?),
+    )
 }

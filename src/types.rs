@@ -81,7 +81,6 @@ pub struct TransitRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransitPayload {
     pub source: ProcessReference,
-    // pub json: Option<serde_json::Value>,
     pub json: Option<String>,
     pub bytes: TransitPayloadBytes,
 }
@@ -90,7 +89,6 @@ pub struct TransitPayload {
 pub enum TransitPayloadBytes {
     None,
     Some(Vec<u8>),
-    // AttachCircumvented,
     Circumvent(Vec<u8>),
 }
 
@@ -314,6 +312,34 @@ pub struct ProcessMetadata {
     pub our: ProcessAddress,
     pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
     pub send_on_panic: SendOnPanic,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsAction {
+    Write,
+    Append(Option<[u8; 32]>),
+    Read([u8; 32]),
+    ReadChunk(ReadChunkRequest),
+    PmWrite,                     //  specific case for process manager persistance.
+    Delete([u8; 32]),
+    Length([u8; 32]),
+}
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReadChunkRequest {
+    pub file_hash: [u8; 32],
+    pub start: u64,
+    pub length: u64,
+}
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsResponse {
+    //  bytes are in payload_bytes
+    Read([u8; 32]),
+    ReadChunk([u8; 32]),
+    Write([u8; 32]),
+    Append([u8; 32]),
+    Delete([u8; 32]),
+    Length(u64),
+    //  use FileSystemError
 }
 
 impl FileSystemError {

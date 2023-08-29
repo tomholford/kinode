@@ -17,8 +17,7 @@ fn main() {
     }
 
     // Tell Cargo that if the given file changes, to rerun this build script.
-    // const APPS: [&str; 10] = [
-    const APPS: [&str; 7] = [
+    const APPS: [&str; 11] = [
         "apps_home",
         // "file_transfer",
         // "file_transfer_one_off",
@@ -30,6 +29,10 @@ fn main() {
         // "sequencer",
         "sequentialize",
         "persist",
+        "file_transfer/ft_client",
+        "file_transfer/ft_server",
+        "file_transfer/ft_client_worker",
+        "file_transfer/ft_server_worker",
     ];
     for name in APPS {
         // only execute if one of the modules has source code changes

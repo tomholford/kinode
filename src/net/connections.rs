@@ -611,7 +611,7 @@ async fn peer_handler(
             // otherwise, simply send
             match message {
                 NetworkMessage::Raw(message) => {
-                    if let Ok(bytes) = serde_json::to_vec::<KernelMessage>(&message) {
+                    if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
                             if socket_tx.is_closed() {
                                 let _ = result_tx.unwrap().send(Err(NetworkError::Offline));
@@ -650,7 +650,7 @@ async fn peer_handler(
         _ = async {
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
-                    if let Ok(message) = serde_json::from_slice::<KernelMessage>(&decrypted) {
+                    if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
                         let _ = kernel_message_tx.send(message).await;
                         continue;
                     }

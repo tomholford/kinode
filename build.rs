@@ -11,17 +11,28 @@ fn run_command(cmd: &mut Command) -> io::Result<()> {
 }
 
 fn main() {
+    if std::env::var("SKIP_BUILD_SCRIPT").is_ok() {
+        println!("Skipping build script");
+        return;
+    }
+
     // Tell Cargo that if the given file changes, to rerun this build script.
-    const APPS: [&str; 9] = [
+    const APPS: [&str; 11] = [
         "apps_home",
-        "file_transfer",
-        "file_transfer_one_off",
-        "hi_lus_lus",
+        // "file_transfer",
+        // "file_transfer_one_off",
+        // "hi_lus_lus",
         "http_bindings",
         "http_proxy",
         "process_manager",
         "terminal",
-        "sequencer",
+        // "sequencer",
+        "sequentialize",
+        "persist",
+        "file_transfer/ft_client",
+        "file_transfer/ft_server",
+        "file_transfer/ft_client_worker",
+        "file_transfer/ft_server_worker",
     ];
     for name in APPS {
         // only execute if one of the modules has source code changes

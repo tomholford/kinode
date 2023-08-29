@@ -1,8 +1,9 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types::{
-    WitMessageType, WitPayload, WitProcessNode, WitProtomessage, WitProtomessageType, WitRequestTypeWithTarget,
-};
+use bindings::{MicrokernelProcess, print_to_terminal, receive};
+use bindings::component::microkernel_process::types;
+
+mod process_lib;
 
 struct Component;
 
@@ -14,90 +15,114 @@ fn parse_command(our_name: &str, line: String) {
             let (target, message) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
                 None => {
-                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
+                    print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
-            bindings::yield_results(Ok(
-                vec![(
-                    WitProtomessage {
-                        protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: target.into(),
-                                process: "net".into(),
-                            },
-                        }),
-                        payload: WitPayload {
-                            json: Some(serde_json::Value::String(message.into()).to_string()),
-                            bytes: None,
-                        },
-                    },
-                    "".into(),
-                )]
-                .as_slice(),
-            ));
+            let _ = process_lib::send_one_request(
+                false,
+                target.into(),
+                types::ProcessIdentifier::Name("net".into()),
+                Some(serde_json::Value::String(message.into())),
+                types::OutboundPayloadBytes::None,
+                None::<String>,
+            );
         }
         "!message" => {
             let (target_node, tail) = match tail.split_once(" ") {
                 Some((s, t)) => (s, t),
                 None => {
-                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
+                    print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
             let (target_process, payload) = match tail.split_once(" ") {
                 Some((a, p)) => (a, p),
                 None => {
-                    bindings::print_to_terminal(1, &format!("invalid command: \"{}\"", line));
+                    print_to_terminal(1, &format!("invalid command: \"{}\"", line));
                     panic!("invalid command");
                 }
             };
-            bindings::yield_results(Ok(
-                vec![(
-                    WitProtomessage {
-                        protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                            is_expecting_response: false,
-                            target: WitProcessNode {
-                                node: if target_node == "our" {
+            //  TODO: why does this work but using the API below does not?
+            //        Is it related to passing json in rather than a Serialize type?
+            bindings::send(Ok(&types::OutboundMessage::Requests(vec![(
+                vec![
+                    types::OutboundRequest {
+                        is_expecting_response: false,
+                        target: types::ProcessReference {
+                            node:
+                                if target_node == "our" {
                                     our_name.into()
                                 } else {
                                     target_node.into()
                                 },
-                                process: target_process.into(),
-                            },
-                        }),
-                        payload: WitPayload {
+                            identifier: types::ProcessIdentifier::Name(target_process.into()),
+                        },
+                        payload: types::OutboundPayload {
                             json: Some(payload.into()),
-                            bytes: None,
+                            bytes: types::OutboundPayloadBytes::None,
                         },
                     },
-                    "".into(),
-                )]
-                .as_slice(),
-            ));
+                ],
+                "".into(),
+            )])));
+            // let json = serde_json::to_value(payload).unwrap();
+            // print_to_terminal(1, &format!("terminal: got {}", json));
+            // let _ = process_lib::send_one_request(
+            //     false,
+            //     if target_node == "our" {
+            //         our_name.into()
+            //     } else {
+            //         target_node.into()
+            //     },
+            //     types::ProcessIdentifier::Name(target_process.into()),
+            //     Some(json),
+            //     types::OutboundPayloadBytes::None,
+            //     None::<String>,
+            // );
         }
         _ => {
-            bindings::print_to_terminal(1, &format!("invalid command: \"{line}\""));
+            print_to_terminal(1, &format!("invalid command: \"{line}\""));
         }
     }
 }
 
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
+impl MicrokernelProcess for Component {
+    fn run_process(our: types::ProcessAddress) {
+        let Some(ref process_name) = our.name else {
+            print_to_terminal(0, "terminal: require our.name set");
+            panic!();
+        };
         assert_eq!(process_name, "terminal");
-        bindings::print_to_terminal(1, format!("{our_name} terminal: running").as_str());
+        print_to_terminal(1, format!("{:?} terminal: running", our).as_str());
 
         loop {
-            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
-            if let WitMessageType::Request(_) = message.content.message_type {
-                let stringy = bincode::deserialize(&message.content.payload.bytes.unwrap_or_default())
-                    .unwrap_or_default();
-                parse_command(&our_name, stringy);
-            } else {
-                if let Some(s) = message.content.payload.json {
-                    bindings::print_to_terminal(0, &format!("net error: {}!", &s));
-                }
+            let (message, _) = receive().unwrap();  //  TODO: handle error properly
+            match message {
+                types::InboundMessage::Request(types::InboundRequest {
+                    is_expecting_response: _,
+                    payload: types::InboundPayload {
+                        source: _,
+                        json: _,
+                        ref bytes,
+                    },
+                }) => {
+                    let types::InboundPayloadBytes::Some(bytes) = bytes else {
+                        continue;
+                    };
+                    let stringy = bincode::deserialize(bytes)
+                        .unwrap_or_default();
+                    parse_command(&our.node, stringy);
+                },
+                types::InboundMessage::Response(types::InboundPayload {
+                    source: _,
+                    ref json,
+                    bytes: _,
+                }) => {
+                    if let Some(s) = json {
+                        print_to_terminal(0, &format!("net error: {}!", &s));
+                    }
+                },
             }
         }
     }

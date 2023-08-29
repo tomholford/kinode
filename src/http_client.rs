@@ -41,34 +41,42 @@ pub async fn http_client(
 async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
-    wm: WrappedMessage,
+    km: KernelMessage,
     _print_tx: PrintSender,
 ) {
-    let WrappedMessage { ref id, target: _, ref rsvp, message: Ok(Message { ref source, ref content }), }
-            = wm else {
+    let KernelMessage {
+        ref id,
+        target: _,
+        ref rsvp,
+        message: Ok(TransitMessage::Request(TransitRequest {
+            ref is_expecting_response,
+            payload: TransitPayload {
+                ref source,
+                ref json,
+                bytes: _,
+            }
+        })),
+    } = km else {
         panic!("filesystem: unexpected Error")  //  TODO: implement error handling
     };
 
-    let target = match content.message_type {
-        MessageType::Response => panic!("http_client: should not get a response message"),
-        MessageType::Request(is_expecting_response) => {
-            if is_expecting_response {
-                ProcessNode {
-                    node: our.clone(),
-                    process: source.process.clone(),
-                }
-            } else {
-                let Some(rsvp) = rsvp else { panic!("http_client: no rsvp"); };
-                rsvp.clone()
+
+    let target =
+        if *is_expecting_response {
+            ProcessReference {
+                node: our.clone(),
+                identifier: source.identifier.clone(),
             }
-        }
+        } else {
+            let Some(rsvp) = rsvp else { panic!("http_client: no rsvp"); };
+            rsvp.clone()
+        };
+
+    let Some(ref json) = json else {
+        panic!("http_client: request must have JSON payload, got: {:?}", km);
     };
 
-    let Some(value) = content.payload.json.clone() else {
-        panic!("http_client: request must have JSON payload, got: {:?}", wm);
-    };
-
-    let req: HttpClientRequest = match serde_json::from_value(value) {
+    let req: HttpClientRequest = match serde_json::from_str(json) {
         Ok(req) => req,
         Err(e) => panic!("http_client: failed to parse request: {:?}", e),
     };
@@ -99,23 +107,18 @@ async fn handle_message(
         headers: serialize_headers(&response.headers().clone()),
     };
 
-    let message = WrappedMessage {
+    let message = KernelMessage {
         id: id.clone(),
         target,
         rsvp: None,
-        message: Ok(Message {
-            source: ProcessNode {
+        message: Ok(TransitMessage::Response(TransitPayload {
+            source: ProcessReference {
                 node: our.clone(),
-                process: "http_client".into(),
+                identifier: ProcessIdentifier::Name("http_client".into()),
             },
-            content: MessageContent {
-                message_type: MessageType::Response,
-                payload: Payload {
-                    json: Some(serde_json::to_value(http_client_response).unwrap()),
-                    bytes: Some(response.bytes().await.unwrap().to_vec()),
-                },
-            },
-        }),
+            json: Some(serde_json::to_string(&http_client_response).unwrap()),
+            bytes: TransitPayloadBytes::Some(response.bytes().await.unwrap().to_vec()),
+        })),
     };
 
     send_to_loop.send(message).await.unwrap();

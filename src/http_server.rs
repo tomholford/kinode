@@ -47,16 +47,28 @@ async fn http_handle_messages(
     mut message_rx: MessageReceiver,
     print_tx: PrintSender,
 ) {
-    while let Some(wm) = message_rx.recv().await {
-        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { source: _, ref content }), }
-                = wm else {
+    while let Some(km) = message_rx.recv().await {
+        let KernelMessage {
+            ref id,
+            target: _,
+            rsvp: _,
+            message: Ok(TransitMessage::Response(TransitPayload {
+                source: _,
+                ref json,
+                ref bytes,
+            })),
+        } = km else {
             panic!("filesystem: unexpected Error")  //  TODO: implement error handling
         };
 
-        let Some(value) = content.payload.json.clone() else {
-            panic!("http_server: action must have JSON payload, got: {:?}", wm);
+        let Some(ref json) = json else {
+            panic!("http_server: action must have JSON payload, got: {}", km);
         };
-        let request: HttpResponse = serde_json::from_value(value).unwrap();
+        let request: HttpResponse = serde_json::from_str(json).unwrap();
+
+        let TransitPayloadBytes::Some(bytes) = bytes else {
+            panic!("http_server: action must have bytes payload, got: {}", km);
+        };
 
         let mut senders = http_response_senders.lock().await;
         match senders.remove(id) {
@@ -64,7 +76,7 @@ async fn http_handle_messages(
                 let _ = channel.send(HttpResponse {
                     status: request.status,
                     headers: request.headers,
-                    body: content.payload.bytes.clone(),  //  TODO: ? ; could remove ref in 51 and avoid clone
+                    body: Some(bytes.clone()),  //  TODO: ? ; could remove ref in 58 and avoid clone
                 });
             }
             None => {
@@ -135,34 +147,30 @@ async fn handler(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let path_str = path.as_str().to_string();
     let id: u64 = rand::random();
-    let message = WrappedMessage {
+    let message = KernelMessage {
         id: id.clone(),
-        target: ProcessNode {
+        target: ProcessReference {
             node: our.clone(),
-            process: "http_bindings".into(),
+            identifier: ProcessIdentifier::Name("http_bindings".into()),
         },
         rsvp: None, // TODO I believe this is correct
-        message: Ok(Message {
-            source: ProcessNode {
-                node: our.clone(),
-                process: "http_server".into(),
-            },
-            content: MessageContent {
-                message_type: MessageType::Request(true),
-                payload: Payload {
-                    json: Some(serde_json::json!(
-                      {
-                        "action": "request".to_string(),
-                        "method": method.to_string(),
-                        "path": path_str,
-                        "headers": serialize_headers(&headers),
-                        "query_params": query_params,
-                      }
-                    )),
-                    bytes: Some(body.to_vec()), // TODO None sometimes
+        message: Ok(TransitMessage::Request(TransitRequest {
+            is_expecting_response: true,
+            payload: TransitPayload {
+                source: ProcessReference {
+                    node: our.clone(),
+                    identifier: ProcessIdentifier::Name("http_server".into()),
                 },
+                json: Some(serde_json::json!({
+                    "action": "request".to_string(),
+                    "method": method.to_string(),
+                    "path": path_str,
+                    "headers": serialize_headers(&headers),
+                    "query_params": query_params,
+                }).to_string()),
+                bytes: TransitPayloadBytes::Some(body.to_vec()), // TODO None sometimes
             },
-        }),
+        })),
     };
 
     let (response_sender, response_receiver) = oneshot::channel();

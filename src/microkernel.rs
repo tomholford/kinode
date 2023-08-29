@@ -6,18 +6,13 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use tokio::task::JoinHandle;
-use serde::{Serialize, Deserialize};
 
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView, wasi};
 
-use crate::types::*;
+use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::microkernel::component::microkernel_process::types::Host;
-// use crate::microkernel::component::microkernel_process::types::WitErrorContent;
-use crate::microkernel::component::microkernel_process::types::WitMessageContent;
-use crate::microkernel::component::microkernel_process::types::WitMessageType;
-use crate::microkernel::component::microkernel_process::types::WitProtomessageType;
-use crate::microkernel::component::microkernel_process::types::WitRequestTypeWithTarget;
+use crate::microkernel::component::microkernel_process::types as wit;
 
 bindgen!({
     path: "wit",
@@ -27,13 +22,15 @@ bindgen!({
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
 
 struct Process {
-    metadata: ProcessMetadata,
-    recv_in_process: MessageReceiver,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
-    prompting_message: Option<WrappedMessage>,
+    metadata: t::ProcessMetadata,
+    recv_in_process: t::MessageReceiver,
+    send_to_loop: t::MessageSender,
+    send_to_terminal: t::PrintSender,
+    has_already_sent: bool,
+    prompting_message: Option<t::KernelMessage>,
     contexts: HashMap<u64, ProcessContext>,
-    message_queue: VecDeque<WrappedMessage>,
+    contexts_to_clean: Vec<u64>,  //  remove these upon receiving next message
+    message_queue: VecDeque<t::KernelMessage>,
 }
 
 struct ProcessWasi {
@@ -45,37 +42,41 @@ struct ProcessWasi {
 #[derive(Clone, Debug)]
 struct CauseMetadata {
     id: u64,
-    process_node: ProcessNode,
-    rsvp: Rsvp,
-    message_type: MessageType,
+    source: t::ProcessReference,
+    rsvp: t::Rsvp,
+    is_expecting_response: bool,
+    // message_type: t::MessageType,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ProcessContext {
+    number_outstanding_requests: u32,
     proximate: CauseMetadata,         //  kernel only: for routing responses  TODO: needed?
     ultimate: Option<CauseMetadata>,  //  kernel only: for routing responses
     context: serde_json::Value,       //  input/output from process
 }
 
 impl CauseMetadata {
-    fn new(wrapped_message: &WrappedMessage) -> Self {
-        let Ok(ref message) = wrapped_message.message else { panic!("") };  //  TODO: need error?
+    fn new(kernel_message: &t::KernelMessage) -> Self {
+        let Ok(ref message) = kernel_message.message else { panic!("") };  //  TODO: need error?
+        let t::TransitMessage::Request(ref r) = message else { panic!("cause not request") };
         CauseMetadata {
-            id: wrapped_message.id.clone(),
-            process_node: message.source.clone(),
-            rsvp: wrapped_message.rsvp.clone(),
-            message_type: message.content.message_type.clone(),
+            id: kernel_message.id.clone(),
+            source: r.payload.source.clone(),
+            rsvp: kernel_message.rsvp.clone(),
+            is_expecting_response: r.is_expecting_response,
         }
     }
 }
 
 impl ProcessContext {
     fn new(
-        proximate: &WrappedMessage,
-        ultimate: Option<&WrappedMessage>,
+        proximate: &t::KernelMessage,
+        ultimate: Option<&t::KernelMessage>,
         context: Option<serde_json::Value>,
     ) -> Self {
         ProcessContext {
+            number_outstanding_requests: 1,
             proximate: CauseMetadata::new(proximate),
             ultimate: match ultimate {
                 Some(ultimate) => Some(CauseMetadata::new(ultimate)),
@@ -87,11 +88,28 @@ impl ProcessContext {
             },
         }
     }
+    fn new_from_context(
+        proximate: &t::KernelMessage,
+        ultimate: &Option<CauseMetadata>,
+        context: Option<serde_json::Value>,
+    ) -> Self {
+        ProcessContext {
+            number_outstanding_requests: 1,
+            proximate: CauseMetadata::new(proximate),
+            ultimate: ultimate.clone(),
+            context: match context {
+                Some(c) => c,
+                None => serde_json::Value::Null,
+            },
+        }
+    }
 }
 
 //  live in event loop
-type Senders = HashMap<String, MessageSender>;
-type ProcessHandles = HashMap<String, JoinHandle<Result<()>>>;
+type Senders = HashMap<u64, t::MessageSender>;
+type Names = HashMap<String, u64>;
+type Ids = HashMap<u64, String>;
+type ProcessHandles = HashMap<u64, JoinHandle<Result<()>>>;
 
 impl Host for ProcessWasi {
 }
@@ -113,72 +131,117 @@ impl WasiView for ProcessWasi {
 
 #[async_trait::async_trait]
 impl MicrokernelProcessImports for ProcessWasi {
-    async fn yield_results(
-        &mut self,
-        results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
-    ) -> Result<()> {
-        let _ = send_process_results_to_loop(
-            results,
-            self.process.metadata.our.clone(),
-            // self.process.metadata.our_name.clone(),
-            // self.process.metadata.process_name.clone(),
-            self.process.send_to_loop.clone(),
-            &self.process.prompting_message,
-            &mut self.process.contexts,
-        ).await;
-        Ok(())
-    }
-
-    async fn await_next_message(&mut self) -> Result<Result<(WitMessage, String), WitUqbarError>> {
-        let (wrapped_message, process_input) = get_and_send_loop_message_to_process(
+    async fn receive(&mut self)
+    -> Result<Result<(wit::InboundMessage, String), wit::UqbarError>> {
+        let (kernel_message, process_input) = get_and_send_loop_message_to_process(
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
             &mut self.process.send_to_terminal,
-            &self.process.contexts,
+            &mut self.process.contexts,
+            &mut self.process.contexts_to_clean,
         ).await;
-        self.process.prompting_message = Some(wrapped_message);
+        self.process.prompting_message = Some(kernel_message);
+
+        self.process.has_already_sent = false;
         process_input
     }
 
-    async fn yield_and_await_response(
+    async fn send(
         &mut self,
-        target: WitProcessNode,
-        payload: WitPayload,
-    ) -> Result<Result<WitMessage, WitUqbarError>> {
-        let protomessage = WitProtomessage {
-            protomessage_type: WitProtomessageType::Request(WitRequestTypeWithTarget {
-                is_expecting_response: true,
-                target,
-            }),
+        message: Result<wit::OutboundMessage, wit::UqbarErrorPayload>,
+    ) -> Result<()> {
+        if self.process.has_already_sent {
+            return Err(anyhow::anyhow!("Can only `send()` once per `receive()`."));
+        }
+
+        let Ok(message) = message else {
+            let Err(e) = message else { panic!("") };
+            let _ = send_process_error_to_loop(
+                e,
+                address_to_reference(&self.process.metadata.our),
+                &self.process.send_to_loop,
+                &self.process.prompting_message,
+            ).await;
+            return Ok(());
+        };
+
+        match message {
+            wit::OutboundMessage::Requests(requests) => {
+                let _ = send_process_requests_to_loop(
+                    requests,
+                    address_to_reference(&self.process.metadata.our),
+                    &self.process.send_to_loop.clone(),
+                    &self.process.send_to_terminal.clone(),
+                    &self.process.prompting_message,
+                    &mut self.process.contexts,
+                ).await?;
+            },
+            wit::OutboundMessage::Response(response) => {
+                let _ = send_process_response_to_loop(
+                    response,
+                    address_to_reference(&self.process.metadata.our),
+                    &self.process.send_to_loop,
+                    &self.process.send_to_terminal,
+                    &self.process.prompting_message,
+                    &mut self.process.contexts,
+                ).await?;
+            },
+            wit::OutboundMessage::ResponseWithSideEffect(rwse) => {
+                let _ = send_process_response_with_side_effect_request_to_loop(
+                    rwse,
+                    address_to_reference(&self.process.metadata.our),
+                    &self.process.send_to_loop,
+                    &self.process.send_to_terminal,
+                    &self.process.prompting_message,
+                    &mut self.process.contexts,
+                ).await?;
+            },
+        }
+
+        self.process.has_already_sent = true;
+        Ok(())
+    }
+
+    async fn send_and_await_receive(
+        &mut self,
+        target: wit::ProcessReference,
+        payload: wit::OutboundPayload,
+    ) -> Result<Result<wit::InboundMessage, wit::UqbarError>> {
+        let request = wit::OutboundRequest {
+            is_expecting_response: true,
+            target,
             payload,
         };
 
-        let ids = send_process_results_to_loop(
-            Ok(vec![(protomessage, "".into())]),
-            self.process.metadata.our.clone(),
-            self.process.send_to_loop.clone(),
+        let ids = send_process_requests_to_loop(
+            vec![(vec![request], "".into())],
+            address_to_reference(&self.process.metadata.our),
+            &self.process.send_to_loop.clone(),
+            &self.process.send_to_terminal.clone(),
             &self.process.prompting_message,
             &mut self.process.contexts,
-        ).await;
+        ).await?;
 
         if 1 != ids.len() {
             panic!("yield_and_await_response: must receive only 1 id back");
         }
 
-        let (wrapped_message, process_input) = get_and_send_specific_loop_message_to_process(
+        let (_kernel_message, process_input) = get_and_send_specific_loop_message_to_process(
             ids[0],
             &mut self.process.message_queue,
             &mut self.process.recv_in_process,
             &mut self.process.send_to_terminal,
-            &self.process.contexts,
+            &mut self.process.contexts,
+            &mut self.process.contexts_to_clean,
         ).await;
-        self.process.prompting_message = Some(wrapped_message);
+
+        self.process.has_already_sent = false;
         process_input
     }
 
     async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         self.process.send_to_terminal
-            .send(Printout { verbosity, content })
+            .send(t::Printout { verbosity, content })
             .await
             .expect("print_to_terminal: error sending");
         Ok(())
@@ -204,30 +267,63 @@ fn json_to_string(json: &serde_json::Value) -> String {
     json.to_string().trim().trim_matches('"').to_string()
 }
 
-fn de_wit_process_node(wit: &WitProcessNode) -> ProcessNode {
-    ProcessNode {
+fn address_to_reference(address: &t::ProcessAddress) -> t::ProcessReference {
+    t::ProcessReference {
+        node: address.node.clone(),
+        identifier: match address.name {
+            None => t::ProcessIdentifier::Id(address.id.clone()),
+            Some(ref n) => t::ProcessIdentifier::Name(n.clone()),
+        },
+    }
+}
+
+fn de_wit_process_identifier(wit: &wit::ProcessIdentifier) -> t::ProcessIdentifier {
+    match wit {
+        wit::ProcessIdentifier::Id(id) => t::ProcessIdentifier::Id(id.clone()),
+        wit::ProcessIdentifier::Name(name) => t::ProcessIdentifier::Name(name.clone()),
+    }
+}
+
+fn en_wit_process_identifier(dewit: &t::ProcessIdentifier) -> wit::ProcessIdentifier {
+    match dewit {
+        t::ProcessIdentifier::Id(id) => wit::ProcessIdentifier::Id(id.clone()),
+        t::ProcessIdentifier::Name(name) => wit::ProcessIdentifier::Name(name.clone()),
+    }
+}
+
+fn de_wit_process_reference(wit: &wit::ProcessReference) -> t::ProcessReference {
+    t::ProcessReference {
         node: wit.node.clone(),
-        process: wit.process.clone(),
+        identifier: de_wit_process_identifier(&wit.identifier),
     }
 }
 
-fn en_wit_process_node(dewit: &ProcessNode) -> WitProcessNode {
-    WitProcessNode {
+fn en_wit_process_reference(dewit: &t::ProcessReference) -> wit::ProcessReference {
+    wit::ProcessReference {
         node: dewit.node.clone(),
-        process: dewit.process.clone(),
+        identifier: en_wit_process_identifier(&dewit.identifier),
     }
 }
 
-fn de_wit_error_content(wit: &WitUqbarErrorContent) -> UqbarErrorContent {
-    UqbarErrorContent {
+fn en_wit_process_address(dewit: &t::ProcessAddress) -> wit::ProcessAddress {
+    wit::ProcessAddress {
+        node: dewit.node.clone(),
+        id: dewit.id.clone(),
+        name: dewit.name.clone(),
+    }
+}
+
+fn de_wit_error_payload(wit: &wit::UqbarErrorPayload) -> t::UqbarErrorPayload {
+    t::UqbarErrorPayload {
         kind: wit.kind.clone(),
         message: serde_json::from_str(&wit.message).unwrap(),  //  TODO: handle error?
         context: serde_json::from_str(&wit.context).unwrap(),  //  TODO: handle error?
     }
 }
 
-fn en_wit_error_content(dewit: &UqbarErrorContent, context: String) -> WitUqbarErrorContent {
-    WitUqbarErrorContent {
+fn en_wit_error_payload(dewit: &t::UqbarErrorPayload, context: String)
+-> wit::UqbarErrorPayload {
+    wit::UqbarErrorPayload {
         kind: dewit.kind.clone(),
         message: dewit.message.to_string(),
         context: if "" == context {
@@ -238,74 +334,83 @@ fn en_wit_error_content(dewit: &UqbarErrorContent, context: String) -> WitUqbarE
     }
 }
 
-fn de_wit_error(wit: &WitUqbarError) -> UqbarError {
-    UqbarError {
-        source: ProcessNode {
-            node: wit.source.node.clone(),
-            process: wit.source.process.clone(),
+fn en_wit_error(dewit: &t::UqbarError, context: String) -> wit::UqbarError {
+    wit::UqbarError {
+        source: wit::ProcessReference {
+            node: dewit.source.node.clone(),
+            identifier: en_wit_process_identifier(&dewit.source.identifier),
         },
-        timestamp: wit.timestamp.clone(),
-        content: de_wit_error_content(&wit.content),
+        timestamp: dewit.timestamp.clone(),
+        payload: en_wit_error_payload(&dewit.payload, context),
     }
 }
 
-fn en_wit_error(dewit: &UqbarError, context: String) -> WitUqbarError {
-    WitUqbarError {
-        source: WitProcessNode {
-            node: dewit.source.node.clone(),
-            process: dewit.source.process.clone(),
-        },
-        timestamp: dewit.timestamp.clone(),
-        content: en_wit_error_content(&dewit.content, context),
+fn get_transit_message_source(message: &t::TransitMessage) -> &t::ProcessReference {
+    match message {
+        t::TransitMessage::Request(request) => &request.payload.source,
+        t::TransitMessage::Response(payload) => &payload.source,
+    }
+}
+
+async fn clean_contexts(
+    send_to_terminal: &t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
+) {
+    for id in contexts_to_clean.drain(..) {
+        let _ = contexts.remove(&id);
+    }
+    if contexts.len() > 0 {
+        send_to_terminal.send(t::Printout {
+            verbosity: 1,
+            content: format!(
+                "contexts now reads: {:?}",
+                contexts,
+            ),
+        }).await.unwrap();
     }
 }
 
 async fn get_and_send_specific_loop_message_to_process(
     awaited_message_id: u64,
-    message_queue: &mut VecDeque<WrappedMessage>,
-    recv_in_process: &mut MessageReceiver,
-    send_to_terminal: &mut PrintSender,
-    contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<Result<WitMessage, WitUqbarError>>) {
+    message_queue: &mut VecDeque<t::KernelMessage>,
+    recv_in_process: &mut t::MessageReceiver,
+    send_to_terminal: &mut t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
+) -> (t::KernelMessage, Result<Result<wit::InboundMessage, wit::UqbarError>>) {
+    // clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     loop {
-        let wrapped_message = recv_in_process.recv().await.unwrap();
+        let kernel_message = recv_in_process.recv().await.unwrap();
         //  if message id matches the one we sent out
-        //   AND the message is not a websocket ack
-        if awaited_message_id == wrapped_message.id {
-            match wrapped_message.message {
-                Ok(ref message) => {
-                    if !(("net" == message.source.process)
-                         & (Some(serde_json::Value::String("Success".into())) == message.content.payload.json)
-                        )
-                    {
-                        let message = send_loop_message_to_process(
-                            wrapped_message,
-                            send_to_terminal,
-                            contexts,
-                        ).await;
-                        return (
-                            message.0,
-                            match message.1 {
-                                Ok(r) => {
-                                    Ok(Ok(r.0))
-                                },
-                                Err(e) => Ok(Err(e)),
-                            },
-                        );
-                    }
-                },
-                Err(_) => {
+        if awaited_message_id == kernel_message.id {
+            match kernel_message.message {
+                Ok(ref _message) => {
                     let message = send_loop_message_to_process(
-                        wrapped_message,
+                        kernel_message,
                         send_to_terminal,
                         contexts,
+                        contexts_to_clean,
                     ).await;
                     return (
                         message.0,
                         match message.1 {
-                            Ok(r) => {
-                                Ok(Ok(r.0))
-                            },
+                            Ok(r) => Ok(Ok(r.0)),
+                            Err(e) => Ok(Err(e)),
+                        },
+                    );
+                },
+                Err(_) => {
+                    let message = send_loop_message_to_process(
+                        kernel_message,
+                        send_to_terminal,
+                        contexts,
+                        contexts_to_clean,
+                    ).await;
+                    return (
+                        message.0,
+                        match message.1 {
+                            Ok(r) => Ok(Ok(r.0)),
                             Err(e) => Ok(Err(e)),
                         },
                     );
@@ -313,64 +418,87 @@ async fn get_and_send_specific_loop_message_to_process(
             }
         }
 
-        message_queue.push_back(wrapped_message);
+        message_queue.push_back(kernel_message);
+        send_to_terminal
+            .send(t::Printout {
+                verbosity: 1,
+                content: format!("queue length now {}", message_queue.len()),
+            })
+            .await
+            .unwrap();
     }
 }
 
 async fn get_and_send_loop_message_to_process(
-    message_queue: &mut VecDeque<WrappedMessage>,
-    recv_in_process: &mut MessageReceiver,
-    send_to_terminal: &mut PrintSender,
-    contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<Result<(WitMessage, String), WitUqbarError>>) {
+    message_queue: &mut VecDeque<t::KernelMessage>,
+    recv_in_process: &mut t::MessageReceiver,
+    send_to_terminal: &mut t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
+) -> (t::KernelMessage, Result<Result<(wit::InboundMessage, String), wit::UqbarError>>) {
+    clean_contexts(send_to_terminal, contexts, contexts_to_clean).await;
     //  TODO: dont unwrap: causes panic when Start already running process
-    let wrapped_message = recv_in_process.recv().await.unwrap();
-    let wrapped_message =
-        match message_queue.pop_front() {
-            Some(m) => {
-                message_queue.push_back(wrapped_message);
-                m
-            },
-            None => wrapped_message,
-        };
+    let kernel_message = match message_queue.pop_front() {
+        Some(message_from_queue) => message_from_queue,
+        None => recv_in_process.recv().await.unwrap(),
+    };
 
     let to_loop = send_loop_message_to_process(
-        wrapped_message,
+        kernel_message,
         send_to_terminal,
         contexts,
+        contexts_to_clean,
     ).await;
 
     (to_loop.0, Ok(to_loop.1))
 }
 
 async fn send_loop_message_to_process(
-    wrapped_message: WrappedMessage,
-    send_to_terminal: &mut PrintSender,
-    contexts: &HashMap<u64, ProcessContext>,
-) -> (WrappedMessage, Result<(WitMessage, String), WitUqbarError>) {
-    match wrapped_message.message {
+    kernel_message: t::KernelMessage,
+    send_to_terminal: &mut t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
+) -> (t::KernelMessage, Result<(wit::InboundMessage, String), wit::UqbarError>) {
+    match kernel_message.message {
         Ok(ref message) => {
-            let wit_message = convert_message_to_wit_message(message).await;
-
-            let message_id = wrapped_message.id.clone();
-            let message_type = message.content.message_type.clone();
-            (
-                wrapped_message,
-                match message_type {
-                    MessageType::Request(_) => Ok((wit_message, "".to_string())),
-                    MessageType::Response => {
-                        let context = get_context(&message_id, send_to_terminal, contexts)
-                            .await;
-                        Ok((wit_message, context))
-                    },
+            let (inbound_message, context) = match message {
+                t::TransitMessage::Request(r) => {
+                    (
+                        make_inbound_request_from_transit(r.is_expecting_response, &r.payload),
+                        "".into(),
+                    )
                 },
+                t::TransitMessage::Response(payload) => {
+                    (
+                        make_inbound_response_from_transit(&payload),
+                        get_context(
+                            &kernel_message.id,
+                            send_to_terminal,
+                            contexts,
+                            contexts_to_clean,
+                        ).await,
+                    )
+                }
+            };
+
+            (
+                kernel_message,
+                Ok((
+                    inbound_message,
+                    context,
+                ))
             )
         },
         Err(ref e) => {
-            let context = get_context(&wrapped_message.id, send_to_terminal, contexts).await;
+            let context = get_context(
+                &kernel_message.id,
+                send_to_terminal,
+                contexts,
+                contexts_to_clean,
+            ).await;
             let e = e.clone();
             (
-                wrapped_message,
+                kernel_message,
                 Err(en_wit_error(&e, context)),
             )
         },
@@ -379,16 +507,18 @@ async fn send_loop_message_to_process(
 
 async fn get_context(
     message_id: &u64,
-    send_to_terminal: &mut PrintSender,
-    contexts: &HashMap<u64, ProcessContext>,
+    send_to_terminal: &mut t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
 ) -> String {
+    decrement_context(message_id, send_to_terminal, contexts, contexts_to_clean).await;
     match contexts.get(&message_id) {
         Some(ref context) => {
             serde_json::to_string(&context.context).unwrap()
         },
         None => {
             send_to_terminal
-                .send(Printout { verbosity: 1, content: "couldn't find context for Response".into() })
+                .send(t::Printout { verbosity: 1, content: "couldn't find context for Response".into() })
                 .await
                 .unwrap();
             "".into()
@@ -396,63 +526,72 @@ async fn get_context(
     }
 }
 
-fn handle_request_case(
+fn make_request_id_target(
+    default_id: u64,
     is_expecting_response: bool,
-    prompting_message: &Option<WrappedMessage>,
-) -> (u64, Rsvp) {
+    prompting_message: &Option<t::KernelMessage>,
+) -> (u64, t::Rsvp) {
     if is_expecting_response {
-        (rand::random(), None)
+        (default_id, None)
     } else {
         //  rsvp is set if there was a Request expecting Response
         //   followed by Request(s) not expecting Response;
         //   could also be None if entire chain of Requests are
         //   not expecting Response
         match prompting_message {
+            None => (rand::random(), None),
             Some(ref prompting_message) => {
                 let Ok(ref pm_message) = prompting_message.message else {
                     return (rand::random(), None);
                 };
-                match pm_message.content.message_type {
-                    MessageType::Request(prompting_message_is_expecting_response) => {
-                        if prompting_message_is_expecting_response {
+                match pm_message {
+                    t::TransitMessage::Response(_) => (rand::random(), None),
+                    t::TransitMessage::Request(r) => {
+                        if r.is_expecting_response {
                             (
-                                prompting_message.id.clone(), //  TODO: need to reference count? ; is this right? I think we may want new message id here
-                                Some(pm_message.source.clone()),
+                                prompting_message.id.clone(),
+                                Some(r.payload.source.clone()),
                             )
                         } else {
                             (
-                                prompting_message.id.clone(),  //  TODO: need to reference count? ; is this right? I think we may want new message id here
+                                prompting_message.id.clone(),
                                 prompting_message.rsvp.clone(),
                             )
                         }
                     },
-                    MessageType::Response => {
-                        (rand::random(), None)
-                        // panic!("oops: {:?}\n{}\n{}\n{}", results, source_ship, source_app, prompting_message)
-                    },
                 }
             },
-            None => (rand::random(), None),
         }
     }
 }
 
-fn handle_response_case(
-    prompting_message: &WrappedMessage,
+async fn make_response_id_target(
+    prompting_message: &Option<t::KernelMessage>,
     contexts: &HashMap<u64, ProcessContext>,
-) -> Option<(u64, ProcessNode)> {
+    send_to_terminal: t::PrintSender,
+) -> Option<(u64, t::ProcessReference)> {
+    let Some(ref prompting_message) = prompting_message else {
+        println!("need non-None prompting_message to handle Response");
+        return None;
+    };
     match prompting_message.message {
         Ok(ref pm_message) => {
-            match pm_message.content.message_type {
-                MessageType::Request(is_expecting_response) => {
-                    if is_expecting_response {
+            match pm_message {
+                t::TransitMessage::Request(r) => {
+                    if r.is_expecting_response {
                         Some((
                             prompting_message.id.clone(),
-                            pm_message.source.clone(),
+                            r.payload.source.clone(),
                         ))
                     } else {
                         let Some(rsvp) = prompting_message.rsvp.clone() else {
-                            println!("no rsvp set for response (prompting)");
+                            send_to_terminal
+                                .send(t::Printout {
+                                    verbosity: 1,
+                                    content: "no rsvp set for response (prompting)".into(),
+                                })
+                                .await
+                                .unwrap();
                             return None;
                         };
 
@@ -462,364 +601,594 @@ fn handle_response_case(
                         ))
                     }
                 },
-                MessageType::Response => {
+                t::TransitMessage::Response(_) => {
                     let Some(context) = contexts.get(&prompting_message.id) else {
-                        println!("couldn't find context to route response");
+                        send_to_terminal
+                            .send(t::Printout {
+                                verbosity: 0,
+                                content: format!(
+                                    "couldn't find context to route response via prompt: {:?}",
+                                    prompting_message,
+                                ),
+                            })
+                            .await
+                            .unwrap();
                         return None;
                     };
-                    // println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
                     let Some(ref ultimate) = context.ultimate else {
-                        println!("couldn't find ultimate cause to route response");
+                        send_to_terminal
+                            .send(t::Printout {
+                                verbosity: 0,
+                                content: "couldn't find ultimate cause to route response"
+                                    .into(),
+                            })
+                            .await
+                            .unwrap();
                         return None;
                     };
 
-                    match ultimate.message_type {
-                        MessageType::Request(is_expecting_response) => {
-                            if is_expecting_response {
-                                Some((
-                                    ultimate.id.clone(),
-                                    ultimate.process_node.clone(),
-                                ))
-                            } else {
-                                let Some(rsvp) = ultimate.rsvp.clone() else {
-                                    println!("no rsvp set for response (ultimate)");
-                                    return None;
-                                };
-                                Some((
-                                    ultimate.id.clone(),
-                                    rsvp.clone(),
-                                ))
-                            }
-                        },
-                        MessageType::Response => {
-                            println!("ultimate as response unexpected case");
-                            return None;
-                        },
-                    }
-                },
-            }
-        },
-        Err(ref e) => {
-            let Some(context) = contexts.get(&prompting_message.id) else {
-                println!("couldn't find context to route response");
-                return None;
-            };
-            println!("sprtl: resp to resp; prox, ult: {:?}, {:?}", context.proximate, context.ultimate);
-            let Some(ref ultimate) = context.ultimate else {
-                println!("couldn't find ultimate cause to route response");
-                return None;
-            };
-
-            match ultimate.message_type {
-                MessageType::Request(is_expecting_response) => {
-                    if is_expecting_response {
+                    if ultimate.is_expecting_response {
                         Some((
                             ultimate.id.clone(),
-                            ultimate.process_node.clone(),
+                            ultimate.source.clone(),
                         ))
                     } else {
                         let Some(rsvp) = ultimate.rsvp.clone() else {
-                            println!("no rsvp set for response (ultimate)");
+                            send_to_terminal
+                                .send(t::Printout {
+                                    verbosity: 1,
+                                    content: "no rsvp set for response (ultimate)"
+                                        .into(),
+                                })
+                                .await
+                                .unwrap();
                             return None;
                         };
                         Some((
                             ultimate.id.clone(),
-                            rsvp.clone(),
+                            rsvp,
                         ))
                     }
                 },
-                MessageType::Response => {
-                    println!("ultimate as response unexpected case");
+            }
+        },
+        Err(ref _e) => {
+            let Some(context) = contexts.get(&prompting_message.id) else {
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: "couldn't find context to route response (err)".into(),
+                    })
+                    .await
+                    .unwrap();
+                return None;
+            };
+            let Some(ref ultimate) = context.ultimate else {
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: "couldn't find ultimate cause to route response (err)"
+                            .into(),
+                    })
+                    .await
+                    .unwrap();
+                return None;
+            };
+
+            if ultimate.is_expecting_response {
+                Some((
+                    ultimate.id.clone(),
+                    ultimate.source.clone(),
+                ))
+            } else {
+                let Some(rsvp) = ultimate.rsvp.clone() else {
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 1,
+                        content: "no rsvp set for response (ultimate) (err)".into(),
+                    })
+                    .await
+                    .unwrap();
                     return None;
-                },
+                };
+                Some((
+                    ultimate.id.clone(),
+                    rsvp.clone(),
+                ))
             }
         },
     }
 }
 
-fn make_wrapped_message(
-    id: u64,
-    source: ProcessNode,
-    target: ProcessNode,
-    rsvp: Rsvp,
-    message_type: MessageType,
-    payload: &WitPayload,
-) -> WrappedMessage {
-    let payload = Payload {
-        json: match payload.json {
-            Some(ref json_string) => serde_json::from_str(&json_string).unwrap_or(None),
-            None => None,
+fn make_transit_request_from_outbound(
+    source: t::ProcessReference,
+    is_expecting_response: bool,
+    payload: wit::OutboundPayload,
+    prompting_message: &Option<t::KernelMessage>,
+) -> Result<t::TransitMessage> {
+    Ok(t::TransitMessage::Request(t::TransitRequest {
+        is_expecting_response,
+        payload: make_transit_payload_from_outbound(source, payload, prompting_message)?,
+    }))
+}
+
+fn make_transit_payload_from_outbound(
+    source: t::ProcessReference,
+    payload: wit::OutboundPayload,
+    prompting_message: &Option<t::KernelMessage>,
+) -> Result<t::TransitPayload> {
+    Ok(t::TransitPayload {
+        source,
+        json: payload.json,
+        bytes: make_transit_payload_bytes_from_outbound(
+            payload.bytes,
+            prompting_message,
+        )?,
+    })
+}
+
+fn make_transit_payload_bytes_from_outbound(
+    pb: wit::OutboundPayloadBytes,
+    prompting_message: &Option<t::KernelMessage>,
+) -> Result<t::TransitPayloadBytes> {
+    Ok(match pb {
+        wit::OutboundPayloadBytes::None => t::TransitPayloadBytes::None,
+        wit::OutboundPayloadBytes::Some(bytes) => t::TransitPayloadBytes::Some(bytes),
+        wit::OutboundPayloadBytes::Circumvent(bytes) => t::TransitPayloadBytes::Circumvent(bytes),
+        wit::OutboundPayloadBytes::AttachCircumvented => {
+            t::TransitPayloadBytes::Some(update_with_circumvented_bytes(prompting_message)?)
         },
-        bytes: payload.bytes.clone(),
+    })
+}
+
+fn make_transit_response_from_outbound(
+    source: t::ProcessReference,
+    payload: wit::OutboundPayload,
+    prompting_message: &Option<t::KernelMessage>,
+) -> Result<t::TransitMessage> {
+    Ok(t::TransitMessage::Response(make_transit_payload_from_outbound(
+        source,
+        payload,
+        prompting_message,
+    )?))
+}
+
+fn make_inbound_request_from_transit(
+    is_expecting_response: bool,
+    payload: &t::TransitPayload,
+) -> wit::InboundMessage {
+    let payload = make_inbound_payload_from_transit(payload);
+    wit::InboundMessage::Request(wit::InboundRequest {
+        is_expecting_response,
+        payload,
+    })
+}
+
+fn make_inbound_response_from_transit(payload: &t::TransitPayload) -> wit::InboundMessage {
+    wit::InboundMessage::Response(make_inbound_payload_from_transit(payload))
+}
+
+fn make_inbound_payload_from_transit(
+    payload: &t::TransitPayload,
+) -> wit::InboundPayload {
+    wit::InboundPayload {
+        source: en_wit_process_reference(&payload.source),
+        json: payload.json.clone(),
+        bytes: match payload.bytes.clone() {
+            t::TransitPayloadBytes::None => wit::InboundPayloadBytes::None,
+            t::TransitPayloadBytes::Some(bytes) => wit::InboundPayloadBytes::Some(bytes),
+            t::TransitPayloadBytes::Circumvent(_bytes) => wit::InboundPayloadBytes::Circumvented,
+        },
+    }
+}
+
+fn update_with_circumvented_bytes(
+    prompting_message: &Option<t::KernelMessage>,
+) -> Result<Vec<u8>> {
+    let Some(pm) = prompting_message else {
+        return Err(anyhow::anyhow!(""));
     };
-    WrappedMessage {
+    let Ok(ref m) = pm.message else {
+        return Err(anyhow::anyhow!(""));
+    };
+    let bytes = match m {
+        t::TransitMessage::Request(r) => {
+            let t::TransitPayloadBytes::Circumvent(bytes) = r.payload.bytes.clone() else {
+                return Err(anyhow::anyhow!(""));
+            };
+            bytes
+        },
+        t::TransitMessage::Response(payload) => {
+            let t::TransitPayloadBytes::Circumvent(bytes) = payload.bytes.clone() else {
+                return Err(anyhow::anyhow!(""));
+            };
+            bytes
+        },
+    };
+    return Ok(bytes);
+}
+
+async fn insert_or_increment_context(
+    is_expecting_response: bool,
+    id: u64,
+    context: ProcessContext,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) {
+    if is_expecting_response {
+        match contexts.remove(&id) {
+            Some(mut existing_context) => {
+                existing_context.number_outstanding_requests += 1;
+                contexts.insert(id, existing_context);
+            },
+            None => {
+                contexts.insert(id, context);
+            }
+        }
+    }
+}
+
+async fn decrement_context(
+    id: &u64,
+    send_to_terminal: &t::PrintSender,
+    contexts: &mut HashMap<u64, ProcessContext>,
+    contexts_to_clean: &mut Vec<u64>,
+) {
+    match contexts.get_mut(id) {
+        Some(context) => {
+            context.number_outstanding_requests -= 1;
+            if 0 == context.number_outstanding_requests {
+                //  remove context upon receiving next message
+                contexts_to_clean.push(id.clone());
+            }
+        },
+        None => {
+            send_to_terminal.send(t::Printout {
+                verbosity: 1,
+                content: format!(
+                    "decrement_context: {} not found",
+                    id,
+                ),
+            }).await.unwrap();
+        },
+    }
+}
+
+async fn send_process_error_to_loop(
+    error: wit::UqbarErrorPayload,
+    source: t::ProcessReference,
+    send_to_loop: &t::MessageSender,
+    prompting_message: &Option<t::KernelMessage>,
+) -> Vec<u64> {
+    let Some(ref prompting_message) = prompting_message else {
+        println!("need non-None prompting_message to handle Error");
+        return vec![];  //  TODO: how to handle error on error routing case?
+    };
+
+    let id = prompting_message.id.clone();
+    let target = match prompting_message.message {
+        Err(ref e) => e.source.clone(),
+        Ok(ref m) => get_transit_message_source(m).clone(),
+    };
+
+    let kernel_message = t::KernelMessage {
+        id,
+        target,
+        rsvp: None,
+        message: Err(t::UqbarError {
+            source,
+            timestamp: get_current_unix_time().unwrap(),
+            payload: de_wit_error_payload(&error),
+        }),
+    };
+
+    send_to_loop
+        .send(kernel_message)
+        .await
+        .unwrap();
+
+    return vec![id];
+}
+
+async fn handle_request(
+    source: t::ProcessReference,
+    send_to_loop: &t::MessageSender,
+    _send_to_terminal: &t::PrintSender,
+    default_id: u64,
+    is_expecting_response: bool,
+    target: wit::ProcessReference,
+    payload: wit::OutboundPayload,
+    prompting_message: &Option<t::KernelMessage>,
+    new_context: Option<serde_json::Value>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Result<u64> {
+    let (id, rsvp) = make_request_id_target(
+        default_id,
+        is_expecting_response,
+        &prompting_message,
+    );
+    let target = de_wit_process_reference(&target);
+
+    let transit_message = make_transit_request_from_outbound(
+        source.clone(),
+        is_expecting_response,
+        payload,
+        prompting_message,
+    )?;
+
+    let kernel_message = t::KernelMessage {
         id,
         target,
         rsvp,
-        message: Ok(Message {
-            source,
-            content: MessageContent {
-                message_type,
-                payload,
-            },
-        })
-    }
-}
-
-async fn send_process_results_to_loop(
-    results: Result<Vec<(WitProtomessage, String)>, WitUqbarErrorContent>,
-    source: ProcessNode,
-    send_to_loop: MessageSender,
-    prompting_message: &Option<WrappedMessage>,
-    contexts: &mut HashMap<u64, ProcessContext>,
-) -> Vec<u64> {
-    let Ok(results) = results else {
-        //  error case
-        //  TODO: factor out the Response routing, since we want
-        //        to route Error in the same way
-        let Err(e) = results else { panic!("") };
-
-        let Some(ref prompting_message) = prompting_message else {
-            println!("need non-None prompting_message to handle Error");
-            return vec![];  //  TODO: how to handle error on error routing case?
-        };
-
-        let (id, target) = match handle_response_case(
-            &prompting_message,
-            contexts,
-        ) {
-            Some(r) => r,
-            None => return vec![],  //  TODO: how to handle error on error routing case?
-        };
-
-        let wrapped_message = WrappedMessage {
-            id,
-            target,
-            rsvp: None,
-            message: Err(UqbarError{
-                source,
-                timestamp: get_current_unix_time().unwrap(),
-                content: de_wit_error_content(&e),
-            }),
-        };
-
-        send_to_loop
-            .send(wrapped_message)
-            .await
-            .unwrap();
-
-        return vec![id];
+        message: Ok(transit_message),
     };
 
-    let mut ids: Vec<u64> = Vec::new();
-    for (WitProtomessage { protomessage_type, payload }, new_context_string) in &results {
-        let new_context = serde_json::from_str(new_context_string).ok();
-        let (id, rsvp, target, message_type) =
-            match protomessage_type {
-                WitProtomessageType::Request(type_with_target) => {
-                    let (id, rsvp) = handle_request_case(
-                        type_with_target.is_expecting_response,
-                        &prompting_message,
-                    );
-                    (
-                        id,
-                        rsvp,
-                        de_wit_process_node(&type_with_target.target),
-                        // type_with_target.target_ship.clone(),
-                        // type_with_target.target_app.clone(),
-                        MessageType::Request(type_with_target.is_expecting_response),
-                    )
-                },
-                WitProtomessageType::Response => {
-                    let Some(ref prompting_message) = prompting_message else {
-                        println!("need non-None prompting_message to handle Response");
-                        continue;
-                    };
-                    let (id, target) = match handle_response_case(
-                        &prompting_message,
-                        contexts,
-                    ) {
-                        Some(r) => r,
-                        None => continue,
-                    };
-                    (
-                        id,
-                        None,
-                        target,
-                        MessageType::Response,
-                    )
-                },
-            };
-
-        let wrapped_message = make_wrapped_message(
-            id.clone(),
-            source.clone(),
-            target,
-            rsvp,
-            message_type,
-            payload,
-        );
-
-        //  modify contexts if necessary
-        //   note that this could be rolled into the `match` making Message above;
-        //   if performance is bad here, roll into above
-        let Ok(ref message) = wrapped_message.message else {
-            panic!("foo");
-        };
-        match message.content.message_type {
-            MessageType::Request(_) => {
-                //  add context, as appropriate
-                match prompting_message {
-                    Some(ref prompting_message) => {
-                        match prompting_message.message {
-                            Ok(ref prompting_message_message) => {
-                                match prompting_message_message.content.message_type {
-                                    MessageType::Request(_) => {
-                                        //  case: prompting_message_is_expecting_response
-                                        //   ultimate stored for source
-                                        //  case: !prompting_message_is_expecting_response
-                                        //   ultimate stored for rsvp
-                                        contexts.insert(
-                                            wrapped_message.id,
-                                            ProcessContext::new(
-                                                &wrapped_message,
-                                                Some(&prompting_message),
-                                                new_context,
-                                            )
-                                        );
-                                    },
-                                    MessageType::Response => {
-                                        //  TODO: factor out with Eer case below
-                                        match contexts.get(&prompting_message.id) {
-                                            Some(context) => {
-                                                //  ultimate is the ultimate of the prompt of Response
-                                                contexts.insert(
-                                                    wrapped_message.id,
-                                                    ProcessContext {
-                                                        proximate: CauseMetadata::new(
-                                                            &wrapped_message
-                                                        ),
-                                                        ultimate: context.ultimate.clone(),
-                                                        context: match new_context {
-                                                            Some(new_context) => new_context,
-                                                            None => serde_json::Value::Null,
-                                                        },
-                                                    },
-                                                );
-                                            },
-                                            None => {
-                                                //  should this even be allowed?
-                                                contexts.insert(
-                                                    wrapped_message.id,
-                                                    ProcessContext::new(
-                                                        &wrapped_message,
-                                                        Some(&prompting_message),
-                                                        new_context,
-                                                    )
-                                                );
-                                            },
-                                        }
-                                    },
-                                }
-                            },
-                            Err(_) => {
-                                //  TODO: factor out with Response case above
-                                match contexts.get(&prompting_message.id) {
-                                    Some(context) => {
-                                        //  ultimate is the ultimate of the prompt of Response
-                                        contexts.insert(
-                                            wrapped_message.id,
-                                            ProcessContext {
-                                                proximate: CauseMetadata::new(
-                                                    &wrapped_message
-                                                ),
-                                                ultimate: context.ultimate.clone(),
-                                                context: match new_context {
-                                                    Some(new_context) => new_context,
-                                                    None => serde_json::Value::Null,
-                                                },
-                                            },
-                                        );
-                                    },
-                                    None => {
-                                        //  should this even be allowed?
-                                        contexts.insert(
-                                            wrapped_message.id,
-                                            ProcessContext::new(
-                                                &wrapped_message,
-                                                Some(&prompting_message),
-                                                new_context,
-                                            )
-                                        );
-                                    },
-                                }
-                            },
-                        }
-                    },
-                    None => {
-                        contexts.insert(
-                            wrapped_message.id,
+    //  modify contexts
+    let process_context = match prompting_message {
+        Some(ref prompting_message) => {
+            match prompting_message.message {
+                Ok(ref prompting_message_message) => {
+                    match prompting_message_message {
+                        t::TransitMessage::Request(_) => {
+                            //  case: prompting_message_is_expecting_response
+                            //   ultimate stored for source
+                            //  case: !prompting_message_is_expecting_response
+                            //   ultimate stored for rsvp
                             ProcessContext::new(
-                                &wrapped_message,
-                                None,
+                                &kernel_message,
+                                Some(&prompting_message),
                                 new_context,
                             )
-                        );
-                    },
-                }
-            },
-            MessageType::Response => {
-                //  clean up context we just used
-                contexts.remove(&wrapped_message.id);
-            },
-        }
+                        },
+                        t::TransitMessage::Response(_) => {
+                            match contexts.get(&prompting_message.id) {
+                                Some(context) => {
+                                    //  ultimate is the ultimate of the prompt of Response
+                                    ProcessContext::new_from_context(
+                                        &kernel_message,
+                                        &context.ultimate,
+                                        new_context,
+                                    )
+                                },
+                                None => {
+                                    //  should this even be allowed?
+                                    ProcessContext::new(
+                                        &kernel_message,
+                                        Some(&prompting_message),
+                                        new_context,
+                                    )
+                                },
+                            }
+                        },
+                    }
+                },
+                Err(_) => {
+                    match contexts.get(&prompting_message.id) {
+                        Some(context) => {
+                            //  ultimate is the ultimate of the prompt of Response
+                            ProcessContext::new_from_context(
+                                &kernel_message,
+                                &context.ultimate,
+                                new_context,
+                            )
+                        },
+                        None => {
+                            //  should this even be allowed?
+                            ProcessContext::new(
+                                &kernel_message,
+                                Some(&prompting_message),
+                                new_context,
+                            )
+                        },
+                    }
+                },
+            }
+        },
+        None => {
+            ProcessContext::new(
+                &kernel_message,
+                None,
+                new_context,
+            )
+        },
+    };
+    insert_or_increment_context(
+        is_expecting_response,
+        kernel_message.id,
+        process_context,
+        contexts,
+    ).await;
 
-        send_to_loop
-            .send(wrapped_message)
-            .await
-            .unwrap();
+    send_to_loop
+        .send(kernel_message)
+        .await
+        .unwrap();
 
-        ids.push(id);
-    }
-    ids
+    Ok(id)
 }
 
-async fn convert_message_to_wit_message(m: &Message) -> WitMessage {
-    let wit_payload = WitPayload {
-        json: match m.content.payload.json.clone() {
-            Some(value) => Some(json_to_string(&value)),
-            None => None,
-        },
-        bytes: m.content.payload.bytes.clone(),
-    };
-    let wit_message_type = match m.content.message_type {
-        MessageType::Request(is_expecting_response) => {
-            WitMessageType::Request(is_expecting_response)
-        },
-        MessageType::Response => WitMessageType::Response,
-    };
-    WitMessage {
-        source: en_wit_process_node(&m.source),
-        content: WitMessageContent {
-            message_type: wit_message_type,
-            payload: wit_payload,
-
-        },
+async fn send_process_requests_to_loop(
+    requests: Vec<wit::JoinedRequests>,
+    source: t::ProcessReference,
+    send_to_loop: &t::MessageSender,
+    send_to_terminal: &t::PrintSender,
+    prompting_message: &Option<t::KernelMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Result<Vec<u64>> {
+    let mut ids: Vec<u64> = Vec::new();
+    for (outbound_requests, context) in requests {
+        let default_id = rand::random();
+        let context = serde_json::from_str(&context).ok();
+        for wit::OutboundRequest {
+            is_expecting_response,
+            target,
+            payload,
+        } in outbound_requests {
+            let new_id = handle_request(
+                source.clone(),
+                send_to_loop,
+                send_to_terminal,
+                default_id,
+                is_expecting_response,
+                target,
+                payload,
+                prompting_message,
+                context.clone(),
+                contexts,
+            ).await?;
+            if !ids.contains(&new_id) {
+                ids.push(new_id);
+            }
+        }
     }
+    Ok(ids)
+}
+
+async fn send_process_response_to_loop(
+    response: (wit::OutboundPayload, String),
+    source: t::ProcessReference,
+    send_to_loop: &t::MessageSender,
+    send_to_terminal: &t::PrintSender,
+    prompting_message: &Option<t::KernelMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Result<u64> {
+    let payload = response.0;
+    let (id, target) = match make_response_id_target(
+        &prompting_message,
+        contexts,
+        send_to_terminal.clone(),
+    ).await {
+        Some(r) => r,
+        None => {
+            send_to_terminal
+                .send(t::Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "dropping Response: {:?}; contexts: {:?}",
+                        payload.json,
+                        contexts,
+                    ),
+                })
+                .await
+                .unwrap();
+            return Ok(0);  //  TODO: do better
+        },
+    };
+    let rsvp = None;
+
+    let transit_message = make_transit_response_from_outbound(
+        source.clone(),
+        payload,
+        prompting_message,
+    )?;
+
+    let kernel_message = t::KernelMessage {
+        id,
+        target,
+        rsvp,
+        message: Ok(transit_message),
+    };
+
+    send_to_loop
+        .send(kernel_message)
+        .await
+        .unwrap();
+
+    return Ok(id);
+}
+
+async fn send_process_response_with_side_effect_request_to_loop(
+    results: wit::ResponseWithSideEffect,
+    source: t::ProcessReference,
+    send_to_loop: &t::MessageSender,
+    send_to_terminal: &t::PrintSender,
+    prompting_message: &Option<t::KernelMessage>,
+    contexts: &mut HashMap<u64, ProcessContext>,
+) -> Result<Vec<u64>> {
+    //  handle Response
+    let (payload, _response_context) = results.response;
+
+    let mut ids: Vec<u64> = Vec::new();
+
+    let (id, target) = match make_response_id_target(
+        &prompting_message,
+        contexts,
+        send_to_terminal.clone(),
+    ).await {
+        Some(r) => r,
+        None => {
+            send_to_terminal
+                .send(t::Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "dropping Response: {:?}; contexts: {:?}",
+                        payload.json,
+                        contexts,
+                    ),
+                })
+                .await
+                .unwrap();
+            return Ok(vec![]);
+        },
+    };
+    let rsvp = None;
+
+    let transit_message = make_transit_response_from_outbound(
+        source.clone(),
+        payload,
+        prompting_message,
+    )?;
+
+    let kernel_message = t::KernelMessage {
+        id,
+        target,
+        rsvp,
+        message: Ok(transit_message),
+    };
+
+    send_to_loop
+        .send(kernel_message)
+        .await
+        .unwrap();
+
+    ids.push(id);
+
+    //  handle side-effect Request
+    let (wit::OutboundRequest { is_expecting_response, target, payload }, request_context) =
+        results.request;
+    let default_id = rand::random();
+    let prompting_message = None;
+    let request_context = Some(serde_json::to_value(request_context)?);
+
+    ids.push(handle_request(
+        source,
+        send_to_loop,
+        send_to_terminal,
+        default_id,
+        is_expecting_response,
+        target,
+        payload,
+        &prompting_message,
+        request_context,
+        contexts,
+    ).await?);
+
+    return Ok(ids);
 }
 
 async fn make_process_loop(
-    metadata: ProcessMetadata,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
-    recv_in_process: MessageReceiver,
-    wasm_bytes: Vec<u8>,
+    metadata: t::ProcessMetadata,
+    send_to_loop: t::MessageSender,
+    send_to_terminal: t::PrintSender,
+    recv_in_process: t::MessageReceiver,
+    wasm_bytes: &Vec<u8>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our_name = metadata.our.node.clone();
-    let process_name = metadata.our.process.clone();
+    let address = metadata.our.clone();
+    let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
+    let send_on_panic = metadata.send_on_panic.clone();
 
-    let component = Component::new(&engine, &wasm_bytes)
+    let component = Component::new(&engine, wasm_bytes)
         .expect("make_process_loop: couldn't read file");
 
     let mut linker = Linker::new(&engine);
@@ -837,8 +1206,10 @@ async fn make_process_loop(
                 recv_in_process,
                 send_to_loop: send_to_loop.clone(),
                 send_to_terminal: send_to_terminal.clone(),
+                has_already_sent: false,
                 prompting_message: None,
                 contexts: HashMap::new(),
+                contexts_to_clean: Vec::new(),
                 message_queue: VecDeque::new(),
             },
             table,
@@ -854,55 +1225,106 @@ async fn make_process_loop(
                 &linker
             ).await.unwrap();
 
-            //  process loop happens inside the WASM component process -- if desired
-            match bindings.call_run_process(
+            let is_error = match bindings.call_run_process(
                 &mut store,
-                &our_name,
-                &process_name,
+                &en_wit_process_address(&address),
             ).await {
-                Ok(()) => {},
+                Ok(()) => false,
                 Err(e) => {
                     let _ = send_to_terminal
-                        .send(Printout {
+                        .send(t::Printout {
                             verbosity: 0,
                             content: format!(
-                                "mk: process {} ended with error: {:?}",
-                                process_name,
+                                "mk: process {:?} ended with error: {:?}",
+                                address,
                                 e,
                             ),
                         })
                         .await;
+                    true
                 }
+            };
+
+            let our_pm = t::ProcessReference {
+                node: our_name.clone(),
+                identifier: t::ProcessIdentifier::Name("process_manager".into()),
+            };
+            let our_kernel = t::ProcessReference {
+                node: our_name.clone(),
+                identifier: t::ProcessIdentifier::Name("kernel".into()),  //  should this be process_name?
             };
 
             //  clean up process metadata & channels
             send_to_loop
-                .send(WrappedMessage {
+                .send(t::KernelMessage {
                     id: rand::random(),
-                    target: ProcessNode {
-                        node: our_name.clone(),
-                        process: "process_manager".into(),
-                    },
+                    target: our_pm.clone(),
                     rsvp: None,
-                    message: Ok(Message {
-                        source: ProcessNode {
-                            node: our_name.clone(),
-                            process: "kernel".into(),
+                    message: Ok(t::TransitMessage::Request(t::TransitRequest {
+                        is_expecting_response: false,
+                        payload: t::TransitPayload {
+                            source: our_kernel.clone(),
+                            json: Some(
+                                serde_json::to_string(&t::ProcessManagerCommand::Stop {
+                                    id: address.id.clone(),
+                                }).unwrap()
+                            ),
+                            bytes: t::TransitPayloadBytes::None,
                         },
-                        content: MessageContent {
-                            message_type: MessageType::Request(false),
-                            payload: Payload {
-                                json: Some(serde_json::json!({
-                                    "type": "Stop",
-                                    "process_name": process_name,
-                                })),
-                                bytes: None,
-                            },
-                        },
-                    }),
+                    })),
                 })
                 .await
                 .unwrap();
+
+            if is_error {
+                match send_on_panic {
+                    t::SendOnPanic::None => {},
+                    t::SendOnPanic::Restart => {
+                        send_to_loop
+                            .send(t::KernelMessage {
+                                id: rand::random(),
+                                target: our_pm,
+                                rsvp: None,
+                                message: Ok(t::TransitMessage::Request(t::TransitRequest {
+                                    is_expecting_response: false,
+                                    payload: t::TransitPayload {
+                                        source: our_kernel,
+                                        json: Some(
+                                            serde_json::to_string(&t::ProcessManagerCommand::Start {
+                                                name: address.name.clone(),
+                                                wasm_bytes_uri,
+                                                send_on_panic,
+                                            }).unwrap()
+                                        ),
+                                        bytes: t::TransitPayloadBytes::None,
+                                    },
+                                })),
+                            })
+                            .await
+                            .unwrap();
+                    },
+                    t::SendOnPanic::Requests(requests) => {
+                        for request in requests {
+                            send_to_loop
+                                .send(t::KernelMessage {
+                                    id: rand::random(),
+                                    target: request.target,
+                                    rsvp: None,
+                                    message: Ok(t::TransitMessage::Request(t::TransitRequest {
+                                        is_expecting_response: false,
+                                        payload: t::TransitPayload {
+                                            source: address_to_reference(&address),
+                                            json: request.json,
+                                            bytes: request.bytes,
+                                        },
+                                    })),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                    },
+                }
+            }
             Ok(())
         }
     )
@@ -910,22 +1332,55 @@ async fn make_process_loop(
 
 async fn handle_kernel_request(
     our_name: String,
-    wrapped_message: WrappedMessage,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
+    kernel_message: t::KernelMessage,
+    send_to_loop: t::MessageSender,
+    send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
+    names: &mut Names,
+    ids: &mut Ids,
     engine: &Engine,
 ) {
-    let Ok(message) = wrapped_message.message else {
+    let Ok(message) = kernel_message.message else {
         panic!("fubar");  //  TODO
     };
-    let Some(value) = message.content.payload.json else {
+    let payload = match message {
+        t::TransitMessage::Request(ref request) => &request.payload,
+        t::TransitMessage::Response(ref payload) => payload,
+    };
+    if match payload.source.identifier {
+        t::ProcessIdentifier::Name(ref n) => {
+            ("process_manager" != n.as_str())
+            & ("kernel" != n.as_str())
+        },
+        t::ProcessIdentifier::Id(id) => {
+            match ids.get(&id) {
+                None => false,
+                Some(ref n) => {
+                    ("process_manager" != n.as_str())
+                    & ("kernel" != n.as_str())
+                },
+            }
+        },
+    } {
         send_to_terminal
-            .send(Printout{
+            .send(t::Printout{
                 verbosity: 0,
                 content: format!(
-                    "kernel: got kernel command with no json payload. Got: {}",
+                    "kernel: rejecting kernel command not from process_manager: {}",
+                    message,
+                ),
+            })
+            .await
+            .unwrap();
+        return;
+    }
+    let Some(ref json_string) = payload.json else {
+        send_to_terminal
+            .send(t::Printout{
+                verbosity: 0,
+                content: format!(
+                    "kernel: rejecting kernel command with no json payload: {}",
                     message,
                 ),
             })
@@ -933,35 +1388,34 @@ async fn handle_kernel_request(
             .unwrap();
         return;
     };
-    let kernel_request: KernelRequest =
-        serde_json::from_value(value)
+    let kernel_request: t::KernelRequest = serde_json::from_str(json_string)
         .expect("kernel: could not parse to command");
     match kernel_request {
-        KernelRequest::StartProcess(cmd) => {
-            let Some(wasm_bytes) = message.content.payload.bytes else {
+        t::KernelRequest::StartProcess { id, name, wasm_bytes_uri, send_on_panic } => {
+            let t::TransitPayloadBytes::Some(ref wasm_bytes) = payload.bytes else {
                 send_to_terminal
-                    .send(Printout{
+                    .send(t::Printout{
                         verbosity: 0,
-                        content: format!(
-                            "kernel: StartProcess requires bytes",
-                        ),
+                        content: "kernel: StartProcess requires bytes".into(),
                     })
                     .await
                     .unwrap();
                 return;
             };
             let (send_to_process, recv_in_process) =
-                mpsc::channel::<WrappedMessage>(PROCESS_CHANNEL_CAPACITY);
-            senders.insert(cmd.process_name.clone(), send_to_process);
-            let metadata = ProcessMetadata {
-                our: ProcessNode {
-                    node: our_name.to_string(),
-                    process: cmd.process_name.clone(),
+                mpsc::channel::<t::KernelMessage>(PROCESS_CHANNEL_CAPACITY);
+            senders.insert(id.clone(), send_to_process);
+            let metadata = t::ProcessMetadata {
+                our: t::ProcessAddress {
+                    node: our_name.clone(),
+                    id: id.clone(),
+                    name: name.clone(),
                 },
-                wasm_bytes_uri: cmd.wasm_bytes_uri.clone(),
+                wasm_bytes_uri: wasm_bytes_uri.clone(),
+                send_on_panic,
             };
             process_handles.insert(
-                cmd.process_name.clone(),
+                id.clone(),
                 tokio::spawn(
                     make_process_loop(
                         metadata.clone(),
@@ -974,43 +1428,39 @@ async fn handle_kernel_request(
                 ),
             );
 
-            let start_completed_message = WrappedMessage {
-                id: wrapped_message.id,
-                target: ProcessNode {
+            if let Some(n) = name {
+                names.insert(n.clone(), id.clone());
+                ids.insert(id.clone(), n.clone());
+            };
+
+            let start_completed_message = t::KernelMessage {
+                id: kernel_message.id,
+                target: t::ProcessReference {
                     node: our_name.clone(),
-                    process: "process_manager".into(),
+                    identifier: t::ProcessIdentifier::Name("process_manager".into()),
                 },
                 rsvp: None,
-                message: Ok(Message {
-                    source: ProcessNode {
+                message: Ok(t::TransitMessage::Response(t::TransitPayload {
+                    source: t::ProcessReference {
                         node: our_name.clone(),
-                        process: "kernel".into(),
+                        identifier: t::ProcessIdentifier::Name("kernel".into()),
                     },
-                    content: MessageContent {
-                        message_type: MessageType::Response,
-                        payload: Payload {
-                            json: Some(
-                                serde_json::to_value(
-                                    KernelResponse::StartProcess(metadata)
-                                ).unwrap()
-                            ),
-                            bytes: None,
-                        },
-                    },
-                })
+                    json: Some(serde_json::to_string(&t::KernelResponse::StartProcess(metadata))
+                        .unwrap()),
+                    bytes: t::TransitPayloadBytes::None,
+                }))
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(start_completed_message)
-                    .await
-                    .unwrap();
-            }
-            return;
+            send_to_loop
+                .send(start_completed_message)
+                .await
+                .unwrap();
         },
-        KernelRequest::StopProcess(cmd) => {
-            let MessageType::Request(is_expecting_response) = message.content.message_type else {
+        t::KernelRequest::StopProcess { id } => {
+            let t::TransitMessage::Request(t::TransitRequest { is_expecting_response, payload: _ })
+                = message else {
+            // let t::MessageType::Request(is_expecting_response) = message.content.message_type else {
                 send_to_terminal
-                    .send(Printout {
+                    .send(t::Printout {
                         verbosity: 0,
                         content: "kernel: StopProcess requires Request, got Response".into()
                     })
@@ -1018,16 +1468,16 @@ async fn handle_kernel_request(
                     .unwrap();
                 return;
             };
-            let _ = senders.remove(&cmd.process_name);
-            let process_handle = match process_handles.remove(&cmd.process_name) {
+            let _ = senders.remove(&id);
+            let process_handle = match process_handles.remove(&id) {
                 Some(ph) => ph,
                 None => {
                     send_to_terminal
-                        .send(Printout {
+                        .send(t::Printout {
                             verbosity: 0,
                             content: format!(
                                 "kernel: no such process {} to Stop",
-                                cmd.process_name,
+                                id,
                             ),
                         })
                         .await
@@ -1036,113 +1486,174 @@ async fn handle_kernel_request(
                 },
             };
             process_handle.abort();
+            if let Some(n) = ids.remove(&id) {
+                names.remove(&n);
+            };
+
             if !is_expecting_response {
                 return;
             }
-            let json_payload = serde_json::to_value(
-                KernelResponse::StopProcess(KernelStopProcess {
-                    process_name: cmd.process_name.clone(),
-                })
-            ).unwrap();
+            let json_payload = serde_json::to_string(&t::KernelResponse::StopProcess { id })
+                .unwrap();
 
-            let stop_completed_message = WrappedMessage {
-                id: wrapped_message.id,
-                target: ProcessNode {
+            let stop_completed_message = t::KernelMessage {
+                id: kernel_message.id,
+                target: t::ProcessReference {
                     node: our_name.clone(),
-                    process: "process_manager".into(),
+                    identifier: t::ProcessIdentifier::Name("process_manager".into()),
                 },
                 rsvp: None,
-                message: Ok(Message {
-                    source: ProcessNode {
+                message: Ok(t::TransitMessage::Response(t::TransitPayload {
+                    source: t::ProcessReference {
                         node: our_name.clone(),
-                        process: "kernel".into(),
+                        identifier: t::ProcessIdentifier::Name("kernel".into()),
                     },
-                    content: MessageContent {
-                        message_type: MessageType::Response,
-                        payload: Payload {
-                            json: Some(json_payload),
-                            bytes: None,
-                        },
-                    },
-                })
+                    json: Some(json_payload),
+                    bytes: t::TransitPayloadBytes::None,
+                }))
             };
-            if let Some(send_to_process_manager) = senders.get("process_manager") {
-                send_to_process_manager
-                    .send(stop_completed_message)
+            send_to_loop
+                .send(stop_completed_message)
+                .await
+                .unwrap();
+        },
+        t::KernelRequest::RegisterProcess { id, name } => {
+            if ids.contains_key(&id) {
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: format!(
+                            "kernel: RegisterProcess id {} already registered",
+                            id,
+                        ),
+                    })
                     .await
                     .unwrap();
+                return;
             }
-            return;
+            if names.contains_key(&name) {
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: format!(
+                            "kernel: RegisterProcess name {} already registered",
+                            name,
+                        ),
+                    })
+                    .await
+                    .unwrap();
+                return;
+            }
+
+            ids.insert(id.clone(), name.clone());
+            names.insert(name.clone(), id.clone());
+        },
+        t::KernelRequest::UnregisterProcess { id } => {
+            match ids.remove(&id) {
+                Some(name) => {
+                    names.remove(&name);
+                },
+                None => {
+                    send_to_terminal
+                        .send(t::Printout {
+                            verbosity: 0,
+                            content: format!(
+                                "kernel: UnregisterProcess id {} not registered",
+                                id,
+                            ),
+                        })
+                        .await
+                        .unwrap();
+                    return;
+                },
+            }
         },
     }
 }
 
 async fn make_event_loop(
     our_name: String,
-    mut recv_in_loop: MessageReceiver,
-    mut recv_debug_in_loop: DebugReceiver,
-    send_to_loop: MessageSender,
-    send_to_net: MessageSender,
-    send_to_fs: MessageSender,
-    send_to_http_server: MessageSender,
-    send_to_http_client: MessageSender,
-    send_to_terminal: PrintSender,
+    mut recv_in_loop: t::MessageReceiver,
+    mut recv_debug_in_loop: t::DebugReceiver,
+    send_to_loop: t::MessageSender,
+    send_to_net: t::MessageSender,
+    send_to_fs: t::MessageSender,
+    send_to_lfs: t::MessageSender,
+    send_to_http_server: t::MessageSender,
+    send_to_http_client: t::MessageSender,
+    send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(
         async move {
             let mut senders: Senders = HashMap::new();
-            senders.insert("filesystem".to_string(), send_to_fs);
-            senders.insert("http_server".to_string(), send_to_http_server.clone());
-            senders.insert("http_client".to_string(), send_to_http_client);
+            senders.insert(t::FILESYSTEM_ID, send_to_fs);
+            senders.insert(t::HTTP_SERVER_ID, send_to_http_server);
+            senders.insert(t::HTTP_CLIENT_ID, send_to_http_client);
+            senders.insert(t::LFS_ID, send_to_lfs);
+
+            let mut names: Names = HashMap::new();
+            names.insert("kernel".into(), t::KERNEL_ID);
+            names.insert("filesystem".into(), t::FILESYSTEM_ID);
+            names.insert("http_server".into(), t::HTTP_SERVER_ID);
+            names.insert("http_client".into(), t::HTTP_CLIENT_ID);
+            names.insert("lfs".into(), t::LFS_ID);
+            names.insert("net".into(), t::NET_ID);
+
+            let mut ids: Ids = HashMap::new();
+            ids.insert(t::KERNEL_ID, "kernel".into());
+            ids.insert(t::FILESYSTEM_ID, "filesystem".into());
+            ids.insert(t::HTTP_SERVER_ID, "http_server".into());
+            ids.insert(t::HTTP_CLIENT_ID, "http_client".into());
+            ids.insert(t::LFS_ID, "lfs".into());
+            ids.insert(t::NET_ID, "net".into());
 
             let mut process_handles: ProcessHandles = HashMap::new();
             let mut is_debug = false;
             loop {
                 tokio::select! {
                     debug = recv_debug_in_loop.recv() => {
-                        if let Some(DebugCommand::Toggle) = debug {
+                        if let Some(t::DebugCommand::Toggle) = debug {
                             is_debug = !is_debug;
                         }
                     },
-                    wrapped_message = recv_in_loop.recv() => {
+                    kernel_message = recv_in_loop.recv() => {
                         while is_debug {
                             let debug = recv_debug_in_loop.recv().await.unwrap();
                             match debug {
-                                DebugCommand::Toggle => is_debug = !is_debug,
-                                DebugCommand::Step => break,
+                                t::DebugCommand::Toggle => is_debug = !is_debug,
+                                t::DebugCommand::Step => break,
                             }
                         }
 
-                        let Some(wrapped_message) = wrapped_message else {
-                            send_to_terminal.send(Printout {
+                        let Some(kernel_message) = kernel_message else {
+                            send_to_terminal.send(t::Printout {
                                     verbosity: 1,
-                                    content: "event loop: got None for message".to_string(),
+                                    content: "event loop: got None for message".into(),
                                 }
                             ).await.unwrap();
                             continue;
                         };
-                        // let wrapped_message = recv_in_loop.recv().await.unwrap();
                         send_to_terminal.send(
-                            Printout {
+                            t::Printout {
                                 verbosity: 1,
-                                content: format!("event loop: got message: {}", wrapped_message)
+                                content: format!("event loop: got message: {}", kernel_message)
                             }
                         ).await.unwrap();
-                        if our_name != wrapped_message.target.node {
-                            match send_to_net.send(wrapped_message).await {
+                        if our_name != kernel_message.target.node {
+                            match send_to_net.send(kernel_message).await {
                                 Ok(()) => {
                                     send_to_terminal
-                                        .send(Printout {
+                                        .send(t::Printout {
                                             verbosity: 1,
-                                            content: "event loop: message sent to network".to_string(),
+                                            content: "event loop: message sent to network".into(),
                                         })
                                         .await
                                         .unwrap();
                                 }
                                 Err(e) => {
                                     send_to_terminal
-                                        .send(Printout {
+                                        .send(t::Printout {
                                             verbosity: 0,
                                             content: format!("event loop: message to network failed: {}", e),
                                         })
@@ -1151,36 +1662,61 @@ async fn make_event_loop(
                                 }
                             }
                         } else {
-                            let to = wrapped_message.target.process.clone();
-                            if to == "kernel" {
+                            let (id, maybe_name) = match kernel_message.target.identifier {
+                                t::ProcessIdentifier::Id(id) => {
+                                    (id.clone(), ids.get(&id))
+                                },
+                                t::ProcessIdentifier::Name(ref name) => {
+                                    match names.get(name) {
+                                        Some(id) => (id.clone(), Some(name)),
+                                        None => {
+                                            send_to_terminal
+                                                .send(t::Printout {
+                                                    verbosity: 0,
+                                                    content: format!(
+                                                        "event loop: no id corresponding to name given in Message {}",
+                                                        kernel_message,
+                                                    ),
+                                                })
+                                                .await
+                                                .unwrap();
+                                            continue;
+                                        },
+                                    }
+                                },
+                            };
+                            if Some(&"kernel".to_string()) == maybe_name {
                                 handle_kernel_request(
                                     our_name.clone(),
-                                    wrapped_message,
+                                    kernel_message,
                                     send_to_loop.clone(),
                                     send_to_terminal.clone(),
                                     &mut senders,
                                     &mut process_handles,
+                                    &mut names,
+                                    &mut ids,
                                     &engine,
                                 ).await;
                             //  XX temporary branch to assist in pure networking debugging
                             //  can be removed when ws WASM module is ready
-                            } else if to == "net" {
-                                let _ = send_to_net.send(wrapped_message).await;
+                            } else if Some(&"net".to_string()) == maybe_name {
+                                let _ = send_to_net.send(kernel_message).await;
                             } else {
                                 //  pass message to appropriate runtime/process
-                                match senders.get(&to) {
+                                match senders.get(&id) {
                                     Some(sender) => {
                                         let _result = sender
-                                            .send(wrapped_message)
+                                            .send(kernel_message)
                                             .await;
                                     }
                                     None => {
                                         send_to_terminal
-                                            .send(Printout {
+                                            .send(t::Printout {
                                                 verbosity: 0,
                                                 content: format!(
-                                                    "event loop: don't have {} amongst registered processes: {:?}",
-                                                    to,
+                                                    "event loop: don't have {:?}, {:?} amongst registered processes: {:?}",
+                                                    id,
+                                                    maybe_name,
                                                     senders.keys().collect::<Vec<_>>()
                                                 )
                                             })
@@ -1190,8 +1726,6 @@ async fn make_event_loop(
                                 }
                             }
                         }
-
-
                     },
                 }
             }
@@ -1199,17 +1733,17 @@ async fn make_event_loop(
     )
 }
 
-
 pub async fn kernel(
-    our: Identity,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
-    recv_in_loop: MessageReceiver,
-    recv_debug_in_loop: DebugReceiver,
-    send_to_wss: MessageSender,
-    send_to_fs: MessageSender,
-    send_to_http_server: MessageSender,
-    send_to_http_client: MessageSender,
+    our: t::Identity,
+    send_to_loop: t::MessageSender,
+    send_to_terminal: t::PrintSender,
+    recv_in_loop: t::MessageReceiver,
+    recv_debug_in_loop: t::DebugReceiver,
+    send_to_wss: t::MessageSender,
+    send_to_fs: t::MessageSender,
+    send_to_lfs: t::MessageSender,
+    send_to_http_server: t::MessageSender,
+    send_to_http_client: t::MessageSender,
 ) {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1226,6 +1760,7 @@ pub async fn kernel(
             send_to_loop.clone(),
             send_to_wss,
             send_to_fs,
+            send_to_lfs,
             send_to_http_server,
             send_to_http_client,
             send_to_terminal.clone(),

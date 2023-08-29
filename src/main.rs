@@ -23,6 +23,7 @@ mod http_client;
 mod http_server;
 mod microkernel;
 mod net;
+mod lfs;
 mod register;
 mod terminal;
 mod types;
@@ -93,6 +94,9 @@ async fn main() {
         mpsc::channel(WEBSOCKET_SENDER_CHANNEL_CAPACITY);
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY.clone());
+    // new FS channel: todo merge
+    let (lfs_message_sender, lfs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
     // http server channel (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
@@ -150,47 +154,47 @@ async fn main() {
     // username, address, networking key, and routing info.
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
-    let registration_port = find_open_port(8000).await.unwrap();
     let http_server_port = find_open_port(8080).await.unwrap();
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
     let keyfile = fs::read(format!("{}/.network.keys", home_directory_path)).await;
 
-    let (our, networking_keypair): (Identity, signature::Ed25519KeyPair) = if keyfile.is_ok() {
+    let (our, networking_keypair, _jwt_secret_bytes): (Identity, signature::Ed25519KeyPair, Vec<u8>) = if keyfile.is_ok() {
         // LOGIN flow
-        // get username and keyfile from disk
-        let (username, key) = bincode::deserialize::<(String, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+        // get username, keyfile, and jwt_secret from disk
+        let (username, key, jwt_secret) = bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
 
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/login", registration_port),
+            format!("http://localhost:{}/login", http_server_port),
             format!(
                 "Welcome back, {}. Click here to log in to your node.",
                 username
             ),
         );
-        println!("(http://localhost:{}/login)", registration_port);
+        println!("(http://localhost:{}/login)", http_server_port);
         if our_ip != "localhost" {
             println!(
                 "(if on a remote machine: http://{}:{}/login)",
-                our_ip, registration_port
+                our_ip, http_server_port
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<signature::Ed25519KeyPair>(1);
-        let networking_keypair = tokio::select! {
-            _ = register::login(tx,
-                                kill_rx,
-                                key,
-                                registration_port,
-                                http_server_port,
-                                &username)
-                => panic!("login failed"),
-            networking_keypair = async {
+        let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
+        let (networking_keypair, jwt_secret_bytes) = tokio::select! {
+            _ = register::login(
+                tx,
+                kill_rx,
+                key,
+                jwt_secret,
+                http_server_port,
+                &username
+            ) => panic!("login failed"),
+            (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("login failed")
-            } => networking_keypair,
+            } => (networking_keypair, jwt_secret_bytes),
         };
 
         // check if Identity for this username has correct networking keys,
@@ -203,32 +207,141 @@ async fn main() {
                 username
             ),
         };
-        (our_identity.clone(), networking_keypair)
+
+        //  bootstrap PM state from WAL file if it exists -- or fail out
+        let pm_bootstrap_bytes = match lfs::pm_bootstrap(home_directory_path.clone()).await {
+            Ok(maybe) => {
+                match maybe  {
+                    Some((bytes, _hash)) => bytes,
+                    None => panic!("failed to bootstrap from manifest to PM: no pm_uuid"),
+                }
+            },
+            Err(e) => panic!("failed to bootstrap from manifest to PM: {}", e),
+        };
+        //  start PM
+        let process_wasm_path = fs::canonicalize(home_directory_path)
+            .await
+            .unwrap()
+            .join("sequentialize/process_manager.wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path)
+            .await
+            .expect(format!("{:?}", &process_wasm_path).as_str());
+        kernel_message_sender
+            .send(KernelMessage {
+                id: rand::random(),
+                target: ProcessReference {
+                    node: our_identity.name.clone(),
+                    identifier: ProcessIdentifier::Name("kernel".into()),
+                },
+                rsvp: None,
+                message: Ok(TransitMessage::Request(TransitRequest {
+                    is_expecting_response: false,
+                    payload: TransitPayload {
+                        source: ProcessReference {
+                            node: our_identity.name.clone(),
+                            identifier: ProcessIdentifier::Name("kernel".into()),
+                        },
+                        json: Some(serde_json::to_string(&KernelRequest::StartProcess {
+                            id: PROCESS_MANAGER_ID,
+                            name: Some("process_manager".into()),
+                            wasm_bytes_uri: "fs://sequentialize/process_manager.wasm"
+                                .into(),  //  TODO: stop cheating
+                            send_on_panic: SendOnPanic::None,  //  TODO: enable Restart
+                        }).unwrap()),
+                        bytes: TransitPayloadBytes::Some(process_wasm_bytes),
+                    },
+                })),
+            })
+            .await
+            .unwrap();
+
+        let process_wasm_path = fs::canonicalize(home_directory_path)
+            .await
+            .unwrap()
+            .join("sequentialize/sequentialize.wasm");
+        let process_wasm_bytes = fs::read(&process_wasm_path)
+            .await
+            .expect(format!("{:?}", &process_wasm_path).as_str());
+        kernel_message_sender
+            .send(KernelMessage {
+                id: rand::random(),
+                target: ProcessReference {
+                    node: our_identity.name.clone(),
+                    identifier: ProcessIdentifier::Name("kernel".into()),
+                },
+                rsvp: None,
+                message: Ok(TransitMessage::Request(TransitRequest {
+                    is_expecting_response: false,
+                    payload: TransitPayload {
+                        source: ProcessReference {
+                            node: our_identity.name.clone(),
+                            identifier: ProcessIdentifier::Name("kernel".into()),
+                        },
+                        json: Some(serde_json::to_string(&KernelRequest::StartProcess {
+                            id: rand::random(),
+                            name: Some("sequentialize".into()),
+                            wasm_bytes_uri: "fs://sequentialize/sequentialize.wasm".into(),
+                            send_on_panic: SendOnPanic::None,
+                        }).unwrap()),
+                        bytes: TransitPayloadBytes::Some(process_wasm_bytes),
+                    },
+                })),
+            })
+            .await
+            .unwrap();
+
+        //  load
+        kernel_message_sender
+            .send(KernelMessage {
+                id: rand::random(),
+                target: ProcessReference {
+                    node: our_identity.name.clone(),
+                    identifier: ProcessIdentifier::Name("process_manager".into()),
+                },
+                rsvp: None,
+                message: Ok(TransitMessage::Request(TransitRequest {
+                    is_expecting_response: false,
+                    payload: TransitPayload {
+                        source: ProcessReference {
+                            node: our_identity.name.clone(),
+                            identifier: ProcessIdentifier::Name("kernel".into()),
+                        },
+                        json: Some(serde_json::to_string(&ProcessManagerCommand::Initialize {
+                            jwt_secret_bytes: Some(jwt_secret_bytes.clone().to_vec()),
+                        }).unwrap()),
+                        bytes: TransitPayloadBytes::Some(pm_bootstrap_bytes),
+                    },
+                })),
+            })
+            .await
+            .unwrap();
+
+        (our_identity.clone(), networking_keypair, jwt_secret_bytes)
     } else {
         // REGISTER flow
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/register", registration_port),
+            format!("http://localhost:{}/register", http_server_port),
             "Click here to register your node.",
         );
-        println!("(http://localhost:{}/register)", registration_port);
+        println!("(http://localhost:{}/register)", http_server_port);
         if our_ip != "localhost" {
             println!(
                 "(if on a remote machine: http://{}:{}/register)",
-                our_ip, registration_port
+                our_ip, http_server_port
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(Registration, Document, String)>(1);
-        let (registration, serialized_networking_keypair, signature) = tokio::select! {
-            _ = register::register(tx, kill_rx, registration_port, http_server_port, pki.clone())
+        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>, String)>(1);
+        let (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = tokio::select! {
+            _ = register::register(tx, kill_rx, http_server_port, http_server_port, pki.clone())
                 => panic!("registration failed"),
-            (registration, serialized_networking_keypair, signature) = async {
+            (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("registration failed")
-            } => (registration, serialized_networking_keypair, signature),
+            } => (registration, serialized_networking_keypair, jwt_secret_bytes, signature),
         };
 
         println!("generating disk encryption keys...");
@@ -253,6 +366,10 @@ async fn main() {
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
+        let jwtciphertext: Vec<u8> = cipher
+            .encrypt(&nonce, jwt_secret_bytes.as_ref())
+            .unwrap();
+
         // TODO: if IP is localhost, assign a router...
         let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
         let ws_port = find_open_port(9000).await.unwrap();
@@ -266,7 +383,7 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr3".into()]
+                vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
             } else {
                 vec![]
             },
@@ -307,14 +424,110 @@ async fn main() {
             bincode::serialize(&(
                 registration.username.clone(),
                 [nonce.deref().to_vec(), ciphertext].concat(),
+                [nonce.deref().to_vec(), jwtciphertext].concat(),
             ))
             .unwrap(),
         )
         .await
         .unwrap();
+
+        //  load in initial boot sequence
+        let mut boot_sequence_path = "boot_sequence.bin";
+        for i in 3..args.len() - 1 {
+            if args[i] == "--bs" {
+                boot_sequence_path = &args[i + 1];
+                break;
+            }
+        }
+        let boot_sequence = match fs::read(boot_sequence_path).await {
+            Ok(boot_sequence) => match bincode::deserialize::<Vec<BootOutboundRequest>>(&boot_sequence) {
+                Ok(bs) => bs,
+                Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
+            },
+            Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
+        };
+
+        // turn the boot sequence BootOutboundRequests into KernelMessages and send
+        for boot_request in boot_sequence {
+            kernel_message_sender
+                .send(KernelMessage {
+                    id: rand::random(),
+                    target: ProcessReference {
+                        node: our.name.clone(),
+                        identifier: boot_request.target_process,
+                    },
+                    rsvp: None,
+                    message: Ok(TransitMessage::Request(TransitRequest {
+                        is_expecting_response: false,
+                        payload: TransitPayload {
+                            source: ProcessReference {
+                                node: our.name.clone(),
+                                identifier: ProcessIdentifier::Name("kernel".into()),
+                            },
+                            json: boot_request.json,
+                            bytes: boot_request.bytes,
+                        },
+                    })),
+                })
+                .await
+                .unwrap();
+        }
+
+        let our_kernel = ProcessReference {
+            node: our.name.clone(),
+            identifier: ProcessIdentifier::Name("kernel".into()),
+        };
+
+        // send jwt_secret to http_bindings
+        let set_jwt_secret_message = KernelMessage {
+            id: rand::random(),
+            target: ProcessReference {
+                node: our.name.clone(),
+                identifier: ProcessIdentifier::Name("sequentialize".into()),
+            },
+            rsvp: None,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response: false,
+                payload: TransitPayload {
+                    source: our_kernel.clone(),
+                    json: Some(serde_json::to_string(&SequentializeRequest::QueueMessage {
+                        target_node: Some(our.name.clone()),
+                        target_process: ProcessIdentifier::Name("http_bindings".into()),
+                        json: Some(serde_json::to_string(
+                            &serde_json::json!({"action": "set-jwt-secret"})
+                        ).unwrap()),
+                    }).unwrap()),
+                    bytes: TransitPayloadBytes::Some(jwt_secret_bytes.to_vec()),
+                },
+            })),
+        };
+        kernel_message_sender.send(set_jwt_secret_message).await.unwrap();
+
+        // run sequentialize queue -- from boot sequence
+        let run_sequentialize_queue = KernelMessage {
+            id: rand::random(),
+            target: ProcessReference {
+                node: our.name.clone(),
+                identifier: ProcessIdentifier::Name("sequentialize".into()),
+            },
+            rsvp: None,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response: false,
+                payload: TransitPayload {
+                    source: our_kernel.clone(),
+                    json: Some(
+                        serde_json::to_string(&SequentializeRequest::RunQueue).unwrap()
+                    ),
+                    bytes: TransitPayloadBytes::None,
+                },
+            })),
+        };
+        kernel_message_sender.send(run_sequentialize_queue).await.unwrap();
+
         println!("registration complete!");
-        (our, networking_keypair)
+        (our, networking_keypair, jwt_secret_bytes)
     };
+
     let _ = kill_tx.send(true);
     let _ = print_sender
         .send(Printout {
@@ -334,61 +547,11 @@ async fn main() {
         .await
         .unwrap();
 
-    let mut boot_sequence_path = "boot_sequence.bin";
-    for i in 3..args.len() - 1 {
-        if args[i] == "--bs" {
-            boot_sequence_path = &args[i + 1];
-            break;
-        }
-    }
-    let boot_sequence_bin = match fs::read(boot_sequence_path).await {
-        Ok(boot_sequence) => match bincode::deserialize::<Vec<BinSerializableWrappedMessage>>(&boot_sequence) {
-            Ok(bs) => bs,
-            Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
-        },
-        Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
-    };
-
-    // turn the boot sequence BinSerializableWrappedMessages into WrappedMessages
-    for bin_message in boot_sequence_bin {
-        kernel_message_sender
-            .send(WrappedMessage {
-                id: bin_message.id,
-                target: ProcessNode {
-                    node: our.name.clone(),
-                    process: "kernel".into(),
-                },
-                rsvp: None,
-                message: Ok(Message {
-                    source: ProcessNode {
-                        node: our.name.clone(),
-                        process: "kernel".into(),
-                    },
-                    content: MessageContent {
-                        message_type: bin_message.message.content.message_type,
-                        payload: Payload {
-                            json: match bin_message.message.content.payload.json {
-                                Some(js) => Some(match serde_json::from_slice(&js) {
-                                    Ok(j) => j,
-                                    Err(e) => {
-                                        panic!("{:?}", format!("failed to deserialize json: {}", e))
-                                    }
-                                }),
-                                None => None,
-                            },
-                            bytes: bin_message.message.content.payload.bytes,
-                        },
-                    },
-                }),
-            })
-            .await
-            .unwrap();
-    }
-
     /*  we are currently running 4 I/O modules:
      *      terminal,
      *      websockets,
      *      filesystem,
+     *      fs,
      *      http-server,
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.
@@ -406,6 +569,7 @@ async fn main() {
         kernel_debug_message_receiver,
         net_message_sender.clone(),
         fs_message_sender,
+        lfs_message_sender,
         http_server_sender,
         http_client_message_sender,
     ));
@@ -430,6 +594,13 @@ async fn main() {
         print_sender.clone(),
         fs_message_receiver,
     ));
+    let lfs_handle = tokio::spawn(lfs::fs_sender(
+        our.name.clone(),
+        home_directory_path.into(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        lfs_message_receiver,
+    ));
     let http_server_handle = tokio::spawn(http_server::http_server(
         our.name.clone(),
         http_server_port,
@@ -449,6 +620,7 @@ async fn main() {
         term = terminal::terminal(
             &our,
             VERSION,
+            home_directory_path.into(),
             kernel_message_sender.clone(),
             kernel_debug_message_sender,
             print_sender.clone(),
@@ -463,6 +635,7 @@ async fn main() {
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},
         _ = http_client_handle => {"".into()},
+        _ = lfs_handle => {"".into()},
     };
     let _ = crossterm::terminal::disable_raw_mode();
     println!("");

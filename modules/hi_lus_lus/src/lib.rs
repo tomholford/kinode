@@ -1,8 +1,6 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types::WitProcessNode;
-use bindings::component::microkernel_process::types::WitProtomessageType;
-use bindings::component::microkernel_process::types::WitRequestTypeWithTarget;
+use bindings::component::microkernel_process::types;
 
 struct Component;
 
@@ -51,29 +49,26 @@ impl bindings::MicrokernelProcess for Component {
                         "target": target,
                         "contents": contents,
                     });
-                    let payload = bindings::component::microkernel_process::types::WitPayload {
+                    let payload = types::WitPayload {
                         json: Some(payload.to_string()),
-                        bytes: None,
+                        bytes: types::WitPayloadBytes {
+                            circumvent: types::WitCircumvent::False,
+                            content: None,
+                        },
                     };
-                    bindings::yield_results(Ok(
+                    bindings::send_requests(Ok((
                         vec![
-                            (
-                                bindings::WitProtomessage {
-                                    protomessage_type: WitProtomessageType::Request(
-                                        WitRequestTypeWithTarget {
-                                            is_expecting_response: false,
-                                            target: WitProcessNode {
-                                                node: target.into(),
-                                                process: "hi_lus_lus".into(),
-                                            },
-                                        }
-                                    ),
-                                    payload,
+                            types::WitProtorequest {
+                                is_expecting_response: false,
+                                target: types::WitProcessNode {
+                                    node: target.into(),
+                                    process: "hi_lus_lus".into(),
                                 },
-                                "".into(),
-                            )
-                        ].as_slice()
-                    ));
+                                payload,
+                            },
+                        ].as_slice(),
+                        "".into(),
+                    )));
                 } else {
                     bindings::print_to_terminal(0,
                         format!(

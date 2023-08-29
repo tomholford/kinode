@@ -11,14 +11,41 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use warp::{Filter, Rejection, Reply};
+use jwt::{SignWithKey, VerifyWithKey, Error};
+use hmac::Hmac;
+use sha2::Sha256;
+use serde::{Serialize, Deserialize};
 
 use crate::types::*;
 
-type RegistrationSender = mpsc::Sender<(Registration, Document, String)>;
+type RegistrationSender = mpsc::Sender<(Registration, Document, Vec<u8>, String)>;
+
+#[derive(Serialize, Deserialize)]
+struct JwtClaims {
+  username: String,
+  expiration: u64,
+}
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 pub const ITERATIONS: u32 = 1_000_000;
 pub const DISK_KEY_SALT: &'static [u8; 32] = b"742d35Cc6634C0532925a3b844Bc454e";
+
+fn generate_jwt(jwt_secret_bytes: &[u8], username: String) -> Option<String> {
+    let jwt_secret: Hmac<Sha256> = match Hmac::new_from_slice(&jwt_secret_bytes) {
+        Ok(secret) => secret,
+        Err(_) => return None,
+    };
+
+    let claims = JwtClaims {
+        username: username.clone(),
+        expiration: 0,
+    };
+
+    match claims.sign_with_key(&jwt_secret) {
+        Ok(token) => Some(token),
+        Err(_) => None,
+    }
+}
 
 /// Serve the registration page and receive POSTs and PUTs from it
 pub async fn register(
@@ -32,9 +59,11 @@ pub async fn register(
 
     let registration = Arc::new(Mutex::new(None));
     let networking_keypair = Arc::new(Mutex::new(None));
+    let jwt_secret = Arc::new(Mutex::new(None));
 
     let registration_post = registration.clone();
     let networking_keypair_post = networking_keypair.clone();
+    let jwt_secret_post = jwt_secret.clone();
 
     let check_address_route = warp::path!("check-address" / String).and_then({
         let pki = pki.clone();
@@ -112,6 +141,12 @@ pub async fn register(
 
                     let public_key = hex::encode(keypair.public_key().as_ref());
                     *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
+
+                    // Generate the jwt_secret
+                    let mut jwt_secret = [0u8; 32];
+                    ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
+                    *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
+
                     // Return a response to the POST request containing new networking key to be signed
                     warp::reply::html(public_key)
                 }))
@@ -123,6 +158,7 @@ pub async fn register(
                 .and(warp::any().map(move || tx.clone()))
                 .and(warp::any().map(move || registration.lock().unwrap().take().unwrap()))
                 .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || jwt_secret.lock().unwrap().take().unwrap()))
                 .and(warp::any().map(move || redir_port))
                 .and_then(handle_put)),
     ).or(check_address_route).or(check_username_route);
@@ -141,26 +177,38 @@ async fn handle_put(
     sender: RegistrationSender,
     registration: Registration,
     networking_keypair: Document,
+    jwt_secret_bytes: [u8; 32],
     redir_port: u16,
 ) -> Result<impl Reply, Rejection> {
+    let token = match generate_jwt(&jwt_secret_bytes, registration.username.clone()) {
+        Some(token) => token,
+        None => return Err(warp::reject()),
+    };
+
+    let response = warp::reply::html(redir_port.to_string());
+    let cookie_value = format!("uqbar-auth_{}={};", &registration.username, &token);
+    let response_with_cookie = warp::reply::with_header(response, "set-cookie", cookie_value);
+
     sender
-        .send((registration, networking_keypair, signature))
+        .send((registration, networking_keypair, jwt_secret_bytes.to_vec(), signature))
         .await
         .unwrap();
-    Ok(warp::reply::html(redir_port.to_string()))
+    Ok(response_with_cookie)
 }
 
 /// Serve the login page, just get a password
 pub async fn login(
-    tx: mpsc::Sender<signature::Ed25519KeyPair>,
+    tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
     kill_rx: oneshot::Receiver<bool>,
     keyfile: Vec<u8>,
+    jwt_secret_file: Vec<u8>,
     port: u16,
-    redir_port: u16,
     username: &str,
 ) {
+    let username = username.to_string();
     let login_page_content = include_str!("login.html");
-    let personalized_login_page = login_page_content.replace("${our}", &username);
+    let personalized_login_page = login_page_content.replace("${our}", username.as_str());
+    let redirect_to_login = warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
     let routes = warp::path("login").and(
         // 1. serve login.html right here
         warp::get()
@@ -171,10 +219,11 @@ pub async fn login(
                 .and(warp::body::content_length_limit(1024 * 16))
                 .and(warp::body::json())
                 .and(warp::any().map(move || keyfile.clone()))
+                .and(warp::any().map(move || jwt_secret_file.clone()))
+                .and(warp::any().map(move || username.clone()))
                 .and(warp::any().map(move || tx.clone()))
-                .and(warp::any().map(move || redir_port))
                 .and_then(handle_password)),
-    );
+    ).or(redirect_to_login);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)
@@ -188,17 +237,18 @@ pub async fn login(
 async fn handle_password(
     password: serde_json::Value,
     keyfile: Vec<u8>,
-    tx: mpsc::Sender<signature::Ed25519KeyPair>,
-    redir_port: u16,
+    jwt_secret_file: Vec<u8>,
+    username: String,
+    tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
 ) -> Result<impl Reply, Rejection> {
     let password = match password["password"].as_str() {
         Some(p) => p,
         None => return Err(warp::reject()),
     };
     // use password to decrypt networking keys
+    println!("decrypting saved networking key...");
     let nonce = digest::generic_array::GenericArray::from_slice(&keyfile[..12]);
 
-    println!("decrypting saved networking key...");
     let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
     pbkdf2::derive(
         PBKDF2_ALG,
@@ -212,7 +262,7 @@ async fn handle_password(
     let pkcs8_string: Vec<u8> = match cipher.decrypt(nonce, &keyfile[12..]) {
         Ok(p) => p,
         Err(e) => {
-            println!("failed to decrypt: {}", e);
+            println!("failed to decrypt networking keys: {}", e);
             return Err(warp::reject());
         }
     };
@@ -220,7 +270,31 @@ async fn handle_password(
         Ok(k) => k,
         Err(_) => return Err(warp::reject()),
     };
-    tx.send(networking_keypair).await.unwrap();
+
+    // TODO: check if jwt_secret_file is valid and then proceed to unwrap and decrypt. If there is a failure, generate a new jwt_secret and save it
+    // use password to decrypt jwt secret
+    println!("decrypting saved jwt secret...");
+    let jwt_nonce = digest::generic_array::GenericArray::from_slice(&jwt_secret_file[..12]);
+
+    let jwt_secret_bytes: Vec<u8> = match cipher.decrypt(jwt_nonce, &jwt_secret_file[12..]) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("failed to decrypt jwt secret: {}", e);
+            return Err(warp::reject());
+        }
+    };
+
+    let token = match generate_jwt(&jwt_secret_bytes, username.clone()) {
+        Some(token) => token,
+        None => return Err(warp::reject()),
+    };
+
+    let response = warp::reply::html("Success".to_string());
+    let cookie_value = format!("uqbar-auth_{}={};", &username, &token);
+    let response_with_cookie = warp::reply::with_header(response, "set-cookie", cookie_value);
+    // TODO: set auth cookie in response
+
+    tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
     // TODO unhappy paths where key has changed / can't be decrypted
-    Ok(warp::reply::html(redir_port.to_string()))
+    Ok(response_with_cookie)
 }

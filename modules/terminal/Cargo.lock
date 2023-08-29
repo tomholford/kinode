@@ -240,8 +240,10 @@ dependencies = [
 name = "terminal"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "cargo-component-bindings",
+ "serde",
  "serde_json",
  "wit-bindgen",
 ]

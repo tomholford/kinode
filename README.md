@@ -16,35 +16,24 @@ cargo install cargo-wasi
 cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
 
 # Build the runtime, along with a number of booted-at-startup WASM modules including process-manager, terminal, and http-bindings
-cargo build
+cargo build --release
 
 # Create the home directory for your node
 # If you boot multiple nodes, make sure each has their own home directory.
 mkdir home
 ```
 
-If desired, build additional components and copy them into your node's home directory like so. Available components to build:
-- file-transfer
-- hi-lus-lus
-- poast
-- sequencer
-
-```bash
-cd file-transfer
-cargo component build --target wasm32-unknown-unknown
-cp target/wasm32-unknown-unknown/debug/file-transfer.wasm ../home/file-transfer.wasm
-```
-Replace `file-transfer` with the desired component.
-
 ### Boot
 
 Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the second argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run home http://147.135.114.167:8083/blockchain.json
+cargo run --release home http://147.135.114.167:8083/blockchain.json
 ```
 There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
 
-If you want to set up a blockchain node locally, simply set this third argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
+Note that the `--release` flag is optional but should normally be included to enable better performance (while only adding a few seconds to build time).
+
+If you want to set up a blockchain node locally, simply set the second argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
 
 In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up, replacing your_name as necessary:
 `!message <<your_name>> process_manager {"type": "Start", "process_name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm"}`
@@ -85,32 +74,22 @@ mkdir home/${FIRST_NODE}
 mkdir home/${SECOND_NODE}
 mkdir home/${SECOND_NODE}/file_transfer
 mkdir home/${SECOND_NODE}/file_transfer_one_off
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${FIRST_NODE}/
-cp hi-lus-lus/target/wasm32-unknown-unknown/debug/hi_lus_lus.wasm home/${SECOND_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${FIRST_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/debug/file_transfer.wasm home/${SECOND_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${FIRST_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/debug/file_transfer_one_off.wasm home/${SECOND_NODE}/
 cp README.md home/${SECOND_NODE}/file_transfer/
 cp README.md home/${SECOND_NODE}/file_transfer_one_off/
 
-# For releases:
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
-cp hi-lus-lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${FIRST_NODE}/
-cp file-transfer/target/wasm32-unknown-unknown/release/file_transfer.wasm home/${SECOND_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown/release/file_transfer_one_off.wasm home/${FIRST_NODE}/
-cp file-transfer-one-off/target/wasm32-unknown-unknown//file_transfer_one_off.wasm home/${SECOND_NODE}/
+# Optionally add additional processes:
+cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
+cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
 
 # Terminal A: add hi++ apps to process_manager
-!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
-!message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
-!message tuna process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}
+!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
+!message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
+!message tuna process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
 
 # Terminal B: While A is still running add hi++ to process_manager
-!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm"}
-!message dolph process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm"}
-!message dolph process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm"}
+!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
+!message dolph process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
+!message dolph process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
 !message dolph hi_lus_lus {"target": "tuna", "action": "send", "contents": "hello from dolph"}
@@ -129,7 +108,7 @@ cp file-transfer-one-off/target/wasm32-unknown-unknown//file_transfer_one_off.wa
 !message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 
 # Terminal A: However, restarting a process will reset its state and messages will work since the process is running again:
-!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm"}
+!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm", "send_on_panic": "None"}
 !message tuna process_manager {"type": "Restart", "process_name": "hi_lus_lus"}
 !message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 

@@ -1,5 +1,17 @@
+use serde::{Serialize, Deserialize};
+
 use super::bindings::component::microkernel_process::types;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessReference {
+    pub node: String,
+    pub identifier: ProcessIdentifier,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProcessIdentifier {
+    Id(u64),
+    Name(String),
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TransitPayloadBytes {
     None,

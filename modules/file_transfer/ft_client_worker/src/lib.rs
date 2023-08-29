@@ -16,11 +16,11 @@ fn handle_next_message(
     match message {
         types::InboundMessage::Response(_) => Err(anyhow::anyhow!("unexpected Response")),
         types::InboundMessage::Request(types::InboundRequest {
-            is_expecting_response,
+            is_expecting_response: _,
             payload: types::InboundPayload {
                 source,
                 json,
-                bytes,
+                bytes: _,
             },
         }) => {
             match process_lib::parse_message_json(json)? {
@@ -28,13 +28,14 @@ fn handle_next_message(
                     target_node,
                     file_hash,
                     chunk_size,
-                    resume_file_hash,  //  TODO: resume if file exists
+                    resume_file_hash: _,  //  TODO: resume if file exists
                 } => {
                     //  (1): Start transfer with ft_server
                     //  (2): iteratively GetPiece and Append until have acquired whole file
                     //  (3): clean up
 
                     //  (1)
+                    print_to_terminal(1, "a");
                     let start_response = process_lib::send_and_await_receive(
                         target_node.clone(),
                         types::ProcessIdentifier::Name("ft_server".into()),
@@ -44,22 +45,27 @@ fn handle_next_message(
                         }),
                         types::OutboundPayloadBytes::None,
                     )?;
-                    let metadata = match start_response {
-                        Err(e) => Err(anyhow::anyhow!("couldn't Start transfer frm ft_server: {}", e)),
+                    print_to_terminal(1, "b");
+                    let (metadata, source) = match start_response {
+                        Err(e) => Err(anyhow::anyhow!("couldn't Start transfer from ft_server: {}", e)),
                         Ok(start_message) => {
                             let start_json = process_lib::get_json(&start_message)?;
                             match process_lib::parse_message_json(Some(start_json))? {
-                                ft_types::FileTransferResponse::Start(metadata) => Ok(metadata),
+                                ft_types::FileTransferResponse::Start(metadata) => {
+                                    Ok((metadata, process_lib::get_source(&start_message)))
+                                },
                                 _ => Err(anyhow::anyhow!("unexpected Response resulting from Start transfer from ft_server")),
                             }
                         },
                     }?;
+                    print_to_terminal(1, "c");
                     assert_eq!(target_node, source.node);
-                    let state = ft_types::ClientWorkerState {
+                    let mut state = ft_types::ClientWorkerState {
                         metadata,
                         current_file_hash: None,
                         next_piece_number: 0,
                     };
+                    print_to_terminal(1, "d");
 
                     //  (2)
                     while state.metadata.number_pieces > state.next_piece_number {
@@ -74,7 +80,7 @@ fn handle_next_message(
                         )?;
                         let bytes = process_lib::get_bytes(
                             match get_piece_response{
-                                Err(e) => Err(anyhow::anyhow!("unexpected Response resulting from Start transfer from ft_server")),
+                                Err(e) => Err(anyhow::anyhow!("unexpected Response resulting from Start transfer from ft_server: {:?}", e)),
                                 Ok(gpr) => Ok(gpr),
                             }?
                         )?;
@@ -83,7 +89,7 @@ fn handle_next_message(
                             our.node.clone(),
                             types::ProcessIdentifier::Name("lfs".into()),
                             Some(&ft_types::FsAction::Append(state.current_file_hash)), // lfs interface will reflect this
-                            types::OutboundPayloadBytes::None,
+                            types::OutboundPayloadBytes::Some(bytes),
                         )?;
                         let file_hash = match append_response {
                             Err(e) => Err(anyhow::anyhow!("couldn't Append file piece: {}", e)),

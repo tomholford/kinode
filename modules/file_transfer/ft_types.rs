@@ -7,12 +7,12 @@ pub struct ProcessAddress {
     pub id: u64,
     pub name: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct ProcessReference {
     pub node: String,
     pub identifier: ProcessIdentifier,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub enum ProcessIdentifier {
     Id(u64),
     Name(String),
@@ -58,12 +58,12 @@ pub enum ProcessManagerResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Append([u8; 32]),
+    Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
+    PmWrite,                     //  specific case for process manager persistance.
+    Delete([u8; 32]),
     Length([u8; 32]),
-    PmWrite                  //  specific case for process manager persistance.
-    // different backup add/remove requests
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
@@ -71,16 +71,16 @@ pub struct ReadChunkRequest {
     pub start: u64,
     pub length: u64,
 }
-
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    //  bytes are in payload_bytes, [old-fileHash, new_filehash, file_uuid]
+    //  bytes are in payload_bytes
     Read([u8; 32]),
     ReadChunk([u8; 32]),
     Write([u8; 32]),
-    Append([u8; 32]),   //  new file_hash [old too?]
+    Append([u8; 32]),
+    Delete([u8; 32]),
     Length(u64),
-                        //  use FileSystemError
+    //  use FileSystemError
 }
 
 // #[derive(Error, Debug, Serialize, Deserialize)]

@@ -58,7 +58,7 @@ fn handle_next_message(
                         types::ProcessIdentifier::Name("process_manager".into()),
                         Some(ft_types::ProcessManagerCommand::Start {
                             name: None,
-                            wasm_bytes_uri: "fs://sequentialize/file_transfer/ft_client_worker.wasm".into(),  //  TODO; should this be persisted when it becomes a file hash?
+                            wasm_bytes_uri: "fs://sequentialize/ft_client_worker.wasm".into(),  //  TODO; should this be persisted when it becomes a file hash?
                             send_on_panic: ft_types::SendOnPanic::None,
                             //  TODO: inform client and/or server_worker?
                             // send_on_panic: SendOnPanic::Requests(vec![
@@ -115,8 +115,9 @@ fn handle_next_message(
                 },
                 ft_types::FileTransferRequest::UpdateClientState { current_file_hash } => {
                     let s  = state.get_mut(&de_wit_process_reference(&source));
+                    let Some(s) = s else { panic!() };
                     s.current_file_hash = Some(current_file_hash);
-                    process_lib::persist_state(&our.node, state)?;
+                    let _ = process_lib::persist_state(&our.node, state)?;  //  TODO: handle error
 
                     process_lib::send_response(
                         Some(ft_types::FileTransferResponse::UpdateClientState),

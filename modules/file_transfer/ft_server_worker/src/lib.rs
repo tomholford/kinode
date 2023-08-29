@@ -119,13 +119,20 @@ fn handle_next_message(
                     let file_hash = state.metadata.key.file_hash.clone();
                     let chunk_size = state.metadata.chunk_size.clone();
                     let start = chunk_size * piece_number;
+                    let number_bytes_left = state.metadata.number_bytes - start;
+                    let length =
+                        if number_bytes_left > chunk_size {
+                            chunk_size
+                        } else {
+                            number_bytes_left
+                        };
                     let response = process_lib::send_and_await_receive(
                         our.node.clone(),
                         types::ProcessIdentifier::Name("lfs".into()),
                         Some(ft_types::FsAction::ReadChunk(ft_types::ReadChunkRequest {
                             file_hash,
                             start,
-                            length: chunk_size,
+                            length,
                         })),
                         types::OutboundPayloadBytes::None,
                     )?;

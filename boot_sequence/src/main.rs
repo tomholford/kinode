@@ -32,10 +32,14 @@ async fn start_process_via_kernel(process: &str, id: u64) -> BootOutboundRequest
     }
 }
 
-async fn save_bytes(process: &str) -> BootOutboundRequest {
+async fn save_bytes(process: &str, module_sub_dir: &str) -> BootOutboundRequest {
     let uri_string = format!("fs://sequentialize/{}.wasm", process);
-    let process_wasm_path =
-        format!("../modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
+    let process_wasm_path = format!(
+        "../modules/{}/{}/target/wasm32-unknown-unknown/release/{}.wasm",
+        module_sub_dir,
+        process,
+        process,
+    );
     let process_wasm_bytes = fs::read(&process_wasm_path).await.expect(&process_wasm_path);
     make_sequentialize_request(
         Some(serde_json::to_string(&SequentializeRequest::QueueMessage {
@@ -69,14 +73,17 @@ fn start_process_via_pm(process: &str) -> BootOutboundRequest {
 pub async fn pill() -> Vec<BootOutboundRequest> {
     //  add new processes_to_start here
     let mut processes_to_start = vec![
-        "process_manager",
-        "sequentialize",
-        "terminal",
-        "http_bindings",
-        "apps_home",
-        "http_proxy",
-        // "file_transfer",
-        "persist",
+        ("process_manager", ""),
+        ("sequentialize", ""),
+        ("terminal", ""),
+        ("http_bindings", ""),
+        ("apps_home", ""),
+        ("http_proxy", ""),
+        ("persist", ""),
+        ("ft_client", "file_transfer"),
+        ("ft_server", "file_transfer"),
+        ("ft_client_worker", "file_transfer"),
+        ("ft_server_worker", "file_transfer"),
     ];
 
     let mut boot_sequence: Vec<BootOutboundRequest> = Vec::new();
@@ -98,14 +105,14 @@ pub async fn pill() -> Vec<BootOutboundRequest> {
     ));
 
     //  copy wasm bytes into home dir
-    for process in &processes_to_start {
-        boot_sequence.push(save_bytes(process).await);
+    for (process, dir) in &processes_to_start {
+        boot_sequence.push(save_bytes(process, dir).await);
     }
 
     let _ = processes_to_start.drain(0..2);
 
     //  start other processes by messaging process_manager
-    for process in &processes_to_start {
+    for (process, _dir) in &processes_to_start {
         boot_sequence.push(start_process_via_pm(process));
     }
 

@@ -44,7 +44,7 @@ fn handle_next_message(our: &types::ProcessAddress) -> anyhow::Result<()> {
                         types::ProcessIdentifier::Name("process_manager".into()),
                         Some(ft_types::ProcessManagerCommand::Start {
                             name: None,
-                            wasm_bytes_uri: "fs://sequentialize/file_transfer/ft_server_worker.wasm".into(),  //  TODO; should this be persisted when it becomes a file hash?
+                            wasm_bytes_uri: "fs://sequentialize/ft_server_worker.wasm".into(),  //  TODO; should this be persisted when it becomes a file hash?
                             send_on_panic: ft_types::SendOnPanic::None,
                             //  TODO: inform server and/or client_worker?
                             // send_on_panic: SendOnPanic::Requests(vec![

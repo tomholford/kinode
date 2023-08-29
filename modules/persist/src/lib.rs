@@ -2,7 +2,7 @@ cargo_component_bindings::generate!();
 
 use serde::{Serialize, Deserialize};
 
-use bindings::print_to_terminal;
+use bindings::{MicrokernelProcess, print_to_terminal, receive};
 use bindings::component::microkernel_process::types;
 
 mod process_lib;
@@ -64,41 +64,45 @@ struct State {
     val: Option<u64>,
 }
 
-fn persist_state(our_name: &str, state: &State) -> anyhow::Result<types::WitMessage> {
+fn persist_state(
+    our_name: &str,
+    state: &State,
+) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>> {
     print_to_terminal(1, "process_manager: persist pm state");
-    process_lib::send_request_and_await_response(
+    process_lib::send_and_await_receive(
         our_name.into(),
-        "process_manager".into(),
+        types::ProcessIdentifier::Name("process_manager".into()),
         Some(ProcessManagerCommand::PersistState),
-        types::WitPayloadBytes {
-            circumvent: types::WitCircumvent::Send,
-            content: Some(bincode::serialize(state)?),
-        },
+        types::OutboundPayloadBytes::Circumvent(bincode::serialize(state)?),
     )
 }
 
 fn handle_message(
     state: &mut State,
     our_name: &str,
-    // process_name: &str,
 ) -> anyhow::Result<()> {
-    let (message, _context) = bindings::await_next_message()?;
-    match message.content.message_type {
-        types::WitMessageType::Request(_is_expecting_response) => {
-            match process_lib::parse_message_json(message.content.payload.json)? {
+    let (message, _context) = receive()?;
+
+    match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source: _,
+                json,
+                bytes,
+            },
+        }) => {
+            match process_lib::parse_message_json(json)? {
                 PersistRequest::Initialize => {
-                    match message.content.payload.bytes.content {
-                        None => {},
-                        Some(bytes) => {
+                    match bytes {
+                        types::InboundPayloadBytes::Some(bytes) => {
                             state.val = bincode::deserialize(&bytes[..])?;
                         },
+                        _ => {},
                     }
                     let _ = process_lib::send_response(
                         None::<State>,
-                        types::WitPayloadBytes {
-                            circumvent: types::WitCircumvent::False,
-                            content: None,
-                        },
+                        types::OutboundPayloadBytes::None,
                         None::<State>,
                     )?;
                 },
@@ -113,15 +117,15 @@ fn handle_message(
                     let _ = persist_state(our_name, state);
                 },
             }
-        }
-        types::WitMessageType::Response => {},
+        },
+        types::InboundMessage::Response(_) => {},
     }
+
     Ok(())
 }
 
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: types::WitProcessAddress) {
-    // fn run_process(our_name: String, process_name: String) {
+impl MicrokernelProcess for Component {
+    fn run_process(our: types::ProcessAddress) {
         print_to_terminal(1, "persist: begin");
 
         let mut state = State { val: None };

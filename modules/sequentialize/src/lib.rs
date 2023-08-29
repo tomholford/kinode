@@ -2,7 +2,7 @@ cargo_component_bindings::generate!();
 
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
-use bindings::{await_next_message, MicrokernelProcess, print_to_terminal, send_request_and_await_response};
+use bindings::{MicrokernelProcess, print_to_terminal, receive, send_and_await_receive};
 use bindings::component::microkernel_process::types;
 
 mod process_lib;
@@ -36,62 +36,71 @@ enum ReturnStatus {
 }
 
 struct QueueItem {
-    target: types::WitProcessReference,
-    payload: types::WitPayload,
+    target: types::ProcessReference,
+    payload: types::OutboundPayload,
 }
 
-fn en_wit_process_identifier(dewit: &ProcessIdentifier) -> types::WitProcessIdentifier {
+fn en_wit_process_identifier(dewit: &ProcessIdentifier) -> types::ProcessIdentifier {
     match dewit {
-        ProcessIdentifier::Id(id) => types::WitProcessIdentifier::Id(id.clone()),
-        ProcessIdentifier::Name(name) => types::WitProcessIdentifier::Name(name.clone()),
+        ProcessIdentifier::Id(id) => types::ProcessIdentifier::Id(id.clone()),
+        ProcessIdentifier::Name(name) => types::ProcessIdentifier::Name(name.clone()),
     }
 }
 
 fn handle_message(
     message_queue: &mut VecDeque<QueueItem>,
     our_name: &str,
-    // process_name: &str,
 ) -> anyhow::Result<ReturnStatus> {
-    let (message, _context) = await_next_message()?;
-    if our_name != message.source.node {
-        return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
-    }
-    match message.content.message_type {
-        types::WitMessageType::Request(_is_expecting_response) => {
-            match process_lib::parse_message_json(message.content.payload.json)? {
+    let (message, _context) = receive()?;
+
+    match message {
+        types::InboundMessage::Request(types::InboundRequest {
+            is_expecting_response: _,
+            payload: types::InboundPayload {
+                source,
+                json,
+                bytes,
+            },
+        }) => {
+            if our_name != source.node {
+                return Err(anyhow::anyhow!(
+                    "rejecting foreign Message from {:?}",
+                    source,
+                ));
+            }
+            match process_lib::parse_message_json(json)? {
                 SequentializeRequest::QueueMessage { target_node, target_process, json } => {
                     message_queue.push_back(QueueItem{
-                        target: types::WitProcessReference {
+                        target: types::ProcessReference {
                             node: match target_node {
                                 Some(n) => n,
                                 None => our_name.into(),
                             },
                             identifier: en_wit_process_identifier(&target_process),
                         },
-                        payload: types::WitPayload {
+                        payload: types::OutboundPayload {
                             json,
-                            bytes: message.content.payload.bytes,
+                            bytes: process_lib::make_outbound_bytes_from_noncircumvented_inbound(bytes)?,
                         },
                     });
                     Ok(ReturnStatus::AcceptNextInput)
                 },
                 SequentializeRequest::RunQueue => {
                     for item in message_queue {
-                        let _ = send_request_and_await_response(&item.target, &item.payload)?;
+                        let _ = send_and_await_receive(&item.target, &item.payload)?;
                     }
                     Ok(ReturnStatus::Done)
                 },
             }
         },
-        types::WitMessageType::Response => {
+        types::InboundMessage::Response(_) => {
             panic!("sequentialize: got unexpected Response: {:?}", message);
         },
     }
 }
 
 impl MicrokernelProcess for Component {
-    fn run_process(our: types::WitProcessAddress) {
-    // fn run_process(our_name: String, process_name: String) {
+    fn run_process(our: types::ProcessAddress) {
         print_to_terminal(1, "sequentialize: begin");
 
         let mut message_queue: VecDeque<QueueItem> = VecDeque::new();
@@ -100,7 +109,6 @@ impl MicrokernelProcess for Component {
             match handle_message(
                 &mut message_queue,
                 &our.node,
-                // &process_name,
             ) {
                 Ok(return_status) => {
                     match return_status {

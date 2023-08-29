@@ -74,7 +74,7 @@ pub async fn fs_sender(
 
     let manifest_path = lfs_directory_path.join("manifest.bin");
 
-    let mut manifest_file = fs::OpenOptions::new()
+    let manifest_file = fs::OpenOptions::new()
         .append(true)
         .read(true)
         .create(true)
@@ -99,12 +99,23 @@ pub async fn fs_sender(
     //  let wal_file = Arc::new(RwLock::new(wal_file));
 
     //  into main loop
-    while let Some(wrapped_message) = recv_in_fs.recv().await {
-        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { ref source, content: _ }), }
-                = wrapped_message else {
+    while let Some(kernel_message) = recv_in_fs.recv().await {
+        let KernelMessage {
+            ref id,
+            target: _,
+            rsvp: _,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response: _,
+                payload: TransitPayload {
+                    ref source,
+                    json: _,
+                    bytes: _,
+                }
+            })),
+        } = kernel_message else {
             println!(
                 "lfs: got weird message from {}: {}",
-                our_name, &wrapped_message,
+                our_name, &kernel_message,
             );
             continue;
         };
@@ -113,7 +124,7 @@ pub async fn fs_sender(
         if our_name != source.node {
             println!(
                 "lfs: request must come from our_name={}, got: {}",
-                our_name, &wrapped_message,
+                our_name, &kernel_message,
             );
             continue;
         }
@@ -133,7 +144,7 @@ pub async fn fs_sender(
         tokio::spawn(async move {
             if let Err(e) = handle_request(
                 our_name.clone(),
-                wrapped_message,
+                kernel_message,
                 lfs_directory_path_clone,
                 manifest_clone,
                 send_to_loop.clone(),
@@ -152,45 +163,45 @@ pub async fn fs_sender(
 
 async fn handle_request(
     our_name: String,
-    wrapped_message: WrappedMessage,
+    kernel_message: KernelMessage,
     lfs_directory_path: PathBuf,
     manifest: Manifest,
     send_to_loop: MessageSender,
     _send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
-    let WrappedMessage { id, target: _, rsvp, message: Ok(Message { source, content }), }
-            = wrapped_message else {
-        return Err(FileSystemError::LFSError { error: "got weird message".to_string() });
-    };
-    let Some(value) = content.payload.json.clone() else {
+    let KernelMessage {
+        ref id,
+        target: _,
+        rsvp,
+        message,
+    } = kernel_message;
+    let Ok(TransitMessage::Request(TransitRequest {
+        is_expecting_response,
+        payload: TransitPayload {
+            ref source,
+            json: Some(ref json),
+            ref bytes,
+        },
+    })) = message else {
         return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "missing payload".into(),
+            json: "".into(),
+            error: "not a Request with payload".into(),
         })
     };
 
-    // println!("got message: {:?}", value);
-
-    let MessageType::Request(is_expecting_response) = content.message_type else {
-        return Err(FileSystemError::BadJson {
-            json: content.payload.json,
-            error: "not a Request".into(),
-        })
-    };
-
-    let action: FsAction = match serde_json::from_value(value) {
+    let action: FsAction = match serde_json::from_str(json) {
         Ok(r) => r,
         Err(e) => {
             return Err(FileSystemError::BadJson {
-                json: content.payload.json,
+                json: json.into(),
                 error: format!("parse failed: {:?}", e),
             })
         }
     };
 
-    let response_payload = match action {
-        FsAction::Write=> {
-            let Some(data) = content.payload.bytes.content.clone() else {
+    let (json, bytes) = match action {
+        FsAction::Write => {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -198,11 +209,11 @@ async fn handle_request(
             let file_length = data.len() as u64;
 
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&data);
+            hasher.update(data);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  create and write underlying
-            let write_result = write_immutable(file_hash, &data, &lfs_directory_path).await;
+            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -222,13 +233,10 @@ async fn handle_request(
                 let _ = manifest.add_immutable(&record).await?;
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Write(file_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
         }
         FsAction::Read(file_hash) => {
             // obtain read locks.
@@ -246,13 +254,10 @@ async fn handle_request(
                         }
                     };
 
-                    Payload {
-                        json: Some(serde_json::to_value(FsResponse::Read(file_hash)).unwrap()),
-                        bytes: PayloadBytes {
-                            circumvent: Circumvent::False,
-                            content: Some(data),
-                        },
-                    }
+                    (
+                        Some(serde_json::to_string(&FsResponse::Read(file_hash)).unwrap()),
+                        TransitPayloadBytes::Some(data),
+                    )
                 }
             }
         },
@@ -271,13 +276,10 @@ async fn handle_request(
                         },
                     };
 
-                    Payload {
-                        json: Some(serde_json::to_value(FsResponse::Read(req.file_hash)).unwrap()),
-                        bytes: PayloadBytes {
-                            circumvent: Circumvent::False,
-                            content: Some(data),
-                        },
-                    }
+                    (
+                        Some(serde_json::to_string(&FsResponse::ReadChunk(req.file_hash)).unwrap()),
+                        TransitPayloadBytes::Some(data),
+                    )
                 }
             }
         },
@@ -297,8 +299,7 @@ async fn handle_request(
                     }
                 );
             }
-
-            let Some(data) = content.payload.bytes.content.clone() else {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "PmWrite".into() })
             };
 
@@ -332,26 +333,21 @@ async fn handle_request(
                 let _ = manifest.add_immutable(&record).await?;
             }
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Write(file_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
+            (
+                Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
         },
         FsAction::Delete(del) => {
             // todo command delete specifics.
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Delete(del)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
-        }, FsAction::Append(maybe_file_hash) => {
-            let Some(data) = content.payload.bytes.content.clone() else {
+            (
+                Some(serde_json::to_string(&FsResponse::Delete(del)).unwrap()),
+                TransitPayloadBytes::None,
+            )
+        },
+        FsAction::Append(maybe_file_hash) => {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -409,49 +405,42 @@ async fn handle_request(
 
             //  println!("appended to new_hash! {:?}", new_hash);
 
-            Payload {
-                json: Some(serde_json::to_value(FsResponse::Append(new_hash)).unwrap()),
-                bytes: PayloadBytes {
-                    circumvent: Circumvent::False,
-                    content: None,
-                },
-            }
-        }, FsAction::Length(file_hash) => {
+            (
+                Some(serde_json::to_string(&FsResponse::Append(new_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
+        },
+        FsAction::Length(file_hash) => {
             match manifest.get_by_hash(&file_hash).await {
                 None => return Err(FileSystemError::LFSError {
                     error: format!("no file found for hash: {:?}", file_hash),
                 }),
                 Some((file, _uuid)) => {
-                    Payload {
-                        json: Some(serde_json::to_value(FsResponse::Length(file.file_length)).unwrap()),
-                        bytes: PayloadBytes {
-                            circumvent: Circumvent::False,
-                            content: None,
-                        },
-                    }
+                    (
+                        Some(serde_json::to_string(&FsResponse::Length(file.file_length)).unwrap()),
+                        TransitPayloadBytes::None,
+                    )
                 }
             }
         },
     };
 
     if is_expecting_response {
-        let response = WrappedMessage {
-            id,
+        let response = KernelMessage {
+            id: id.clone(),
             target: ProcessReference {
                 node: our_name.clone(),
                 identifier: source.identifier.clone(),
             },
             rsvp,
-            message: Ok(Message {
+            message: Ok(TransitMessage::Response(TransitPayload {
                 source: ProcessReference {
                     node: our_name.clone(),
                     identifier: ProcessIdentifier::Name("lfs".into()),
                 },
-                content: MessageContent {
-                    message_type: MessageType::Response,
-                    payload: response_payload,
-                },
-            }),
+                json,
+                bytes,
+            })),
         };
 
         let _ = send_to_loop.send(response).await;
@@ -573,8 +562,8 @@ fn make_error_message(
     id: u64,
     source_identifier: ProcessIdentifier,
     error: FileSystemError,
-) -> WrappedMessage {
-    WrappedMessage {
+) -> KernelMessage {
+    KernelMessage {
         id,
         target: ProcessReference {
             node: our_name.clone(),
@@ -586,11 +575,11 @@ fn make_error_message(
                 node: our_name,
                 identifier: ProcessIdentifier::Name("lfs".into()),
             },
-            timestamp: get_current_unix_time().unwrap(), //  TODO: handle error?
-            content: UqbarErrorContent {
+            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
+            payload: UqbarErrorPayload {
                 kind: error.kind().into(),
                 // message: format!("{}", error),
-                message: serde_json::to_value(error).unwrap(), //  TODO: handle error?
+                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
                 context: serde_json::to_value("").unwrap(),
             },
         }),

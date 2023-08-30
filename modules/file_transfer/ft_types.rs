@@ -110,6 +110,7 @@ pub struct FileTransferMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileTransferRequest {
+    Initialize,                                                                                                 //  pm to client
     GetFile { target_node: String, file_hash: [u8; 32], chunk_size: u64, resume_file_hash: Option<[u8; 32]> },  //  user to client to client_worker
     Start { file_hash: [u8; 32], chunk_size: u64 },                                                             //  client_worker to server
     StartWorker { client_worker: ProcessReference, file_hash: [u8; 32], chunk_size: u64 },                      //  server to server_worker

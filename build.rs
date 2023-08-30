@@ -17,7 +17,7 @@ fn main() {
     }
 
     // Tell Cargo that if the given file changes, to rerun this build script.
-    const APPS: [&str; 11] = [
+    const APPS: [&str; 12] = [
         "apps_home",
         // "file_transfer",
         // "file_transfer_one_off",
@@ -27,6 +27,7 @@ fn main() {
         "process_manager",
         "terminal",
         // "sequencer",
+        "explorer",
         "sequentialize",
         "persist",
         "file_transfer/ft_client",

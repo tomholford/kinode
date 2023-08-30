@@ -1,21 +1,6 @@
 use crate::types::*;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct HttpClientRequest {
-    uri: String,
-    method: String,
-    headers: HashMap<String, String>,
-    body: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct HttpClientResponse {
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-}
 
 // Test http_client with these commands in the terminal
 // !message tuna http_client {"method": "GET", "uri": "https://jsonplaceholder.typicode.com/posts", "headers": {}, "body": ""}
@@ -29,56 +14,83 @@ pub async fn http_client(
     print_tx: PrintSender,
 ) {
     while let Some(message) = recv_in_client.recv().await {
-        tokio::spawn(handle_message(
-            our_name.clone(),
-            send_to_loop.clone(),
-            message,
-            print_tx.clone(),
-        ));
+        let KernelMessage {
+            id,
+            target: _,
+            rsvp,
+            message: Ok(TransitMessage::Request(TransitRequest {
+                is_expecting_response,
+                payload: TransitPayload {
+                    source,
+                    json,
+                    bytes: _,
+                }
+            })),
+        } = message.clone() else {
+            panic!("http_client: bad message");
+        };
+
+        let our_name = our_name.clone();
+        let send_to_loop = send_to_loop.clone();
+        let print_tx = print_tx.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = handle_message(
+                our_name.clone(),
+                send_to_loop.clone(),
+                id,
+                rsvp,
+                is_expecting_response,
+                source.clone(),
+                json,
+                print_tx.clone(),
+            ).await {
+                send_to_loop.send(
+                    make_error_message(
+                        our_name.clone(),
+                        id,
+                        source.clone().identifier,
+                        e,
+                    )
+                ).await.unwrap();
+            }
+        });
     }
 }
 
 async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
-    km: KernelMessage,
+    id: u64,
+    rsvp: Option<ProcessReference>,
+    is_expecting_response: bool,
+    source: ProcessReference,
+    json: Option<String>,
     _print_tx: PrintSender,
-) {
-    let KernelMessage {
-        ref id,
-        target: _,
-        ref rsvp,
-        message: Ok(TransitMessage::Request(TransitRequest {
-            ref is_expecting_response,
-            payload: TransitPayload {
-                ref source,
-                ref json,
-                bytes: _,
-            }
-        })),
-    } = km else {
-        panic!("filesystem: unexpected Error")  //  TODO: implement error handling
-    };
-
-
+) -> Result<(), HttpClientError> {
     let target =
-        if *is_expecting_response {
+        if is_expecting_response {
             ProcessReference {
                 node: our.clone(),
                 identifier: source.identifier.clone(),
             }
         } else {
-            let Some(rsvp) = rsvp else { panic!("http_client: no rsvp"); };
+            let Some(rsvp) = rsvp else {
+                return Err(HttpClientError::BadRsvp);
+            };
             rsvp.clone()
         };
 
     let Some(ref json) = json else {
-        panic!("http_client: request must have JSON payload, got: {:?}", km);
+        return Err(HttpClientError::NoJson);
     };
 
     let req: HttpClientRequest = match serde_json::from_str(json) {
         Ok(req) => req,
-        Err(e) => panic!("http_client: failed to parse request: {:?}", e),
+        Err(e) => return Err(HttpClientError::BadJson {
+            json: json.to_string(),
+            error: format!("{}", e) }
+        ),
     };
 
     let client = reqwest::Client::new();
@@ -88,7 +100,9 @@ async fn handle_message(
         "PUT" => client.put(req.uri),
         "POST" => client.post(req.uri),
         "DELETE" => client.delete(req.uri),
-        _ => panic!("Unsupported HTTP method: {}", req.method),
+        method => {
+            return Err(HttpClientError::BadMethod { method: method.into() });
+        }
     };
 
     let request = request_builder
@@ -99,7 +113,9 @@ async fn handle_message(
 
     let response = match client.execute(request).await {
         Ok(response) => response,
-        Err(e) => panic!("http_client: failed to execute request: {:?}", e),
+        Err(e) => {
+            return Err(HttpClientError::RequestFailed { error: format!("{}", e) });
+        }
     };
 
     let http_client_response = HttpClientResponse {
@@ -122,6 +138,8 @@ async fn handle_message(
     };
 
     send_to_loop.send(message).await.unwrap();
+
+    Ok(())
 }
 
 //
@@ -159,4 +177,41 @@ fn deserialize_headers(hashmap: HashMap<String, String>) -> HeaderMap {
         header_map.insert(key_name, value_header);
     }
     header_map
+}
+
+fn make_error_message(
+    our_name: String,
+    id: u64,
+    source: ProcessIdentifier,
+    error: HttpClientError,
+) -> KernelMessage {
+    KernelMessage {
+        id,
+        target: ProcessReference {
+            node: our_name.clone(),
+            identifier: source,
+        },
+        rsvp: None,
+        message: Err(UqbarError {
+            source: ProcessReference {
+                node: our_name,
+                identifier: ProcessIdentifier::Name("http_client".into()),
+            },
+            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
+            payload: UqbarErrorPayload {
+                kind: error.kind().into(),
+                // message: format!("{}", error),
+                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
+                context: serde_json::to_value("").unwrap(),
+            },
+        }),
+    }
+}
+
+//  TODO: factor our with microkernel
+fn get_current_unix_time() -> anyhow::Result<u64> {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(t) => Ok(t.as_secs()),
+        Err(e) => Err(e.into()),
+    }
 }

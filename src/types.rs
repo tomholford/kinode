@@ -315,6 +315,10 @@ pub struct ProcessMetadata {
     pub send_on_panic: SendOnPanic,
 }
 
+//
+// filesystem.rs types                                      
+//
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
@@ -453,6 +457,79 @@ pub enum FileSystemEntryType {
     Symlink,
     File,
     Dir,
+}
+
+//
+// http_client.rs types
+//
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpClientRequest {
+    pub uri: String,
+    pub method: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpClientResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+}
+
+impl HttpClientError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            HttpClientError::BadRsvp { .. } => "BadRsvp",
+            HttpClientError::NoJson { .. } => "NoJson",
+            HttpClientError::BadJson { .. } => "BadJson",
+            HttpClientError::BadMethod { .. } => "BadMethod",
+            HttpClientError::RequestFailed { .. } => "RequestFailed",
+        }
+    }
+}
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum HttpClientError {
+    #[error("http_client: rsvp is None but message is expecting response")]
+    BadRsvp,
+    #[error("http_client: no json in request")]
+    NoJson,
+    #[error("http_client: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.", json)]
+    BadJson { json: String, error: String, },
+    #[error("http_client: http method not supported: {:?}", method)]
+    BadMethod { method: String },
+    #[error("http_client: failed to execute request {:?}", error)]
+    RequestFailed { error: String },
+}
+
+//
+// http_server.rs types
+//
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
+}
+
+impl HttpServerError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            HttpServerError::NoJson { .. } => "NoJson",
+            HttpServerError::NoBytes { .. } => "NoBytes",
+            HttpServerError::BadJson { .. } => "BadJson",
+        }
+    }
+}
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum HttpServerError {
+    #[error("http_client: json is None")]
+    NoJson,
+    #[error("http_client: bytes are None")]
+    NoBytes,
+    #[error("http_client: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.", json)]
+    BadJson { json: String, error: String, },
 }
 
 // keygen types

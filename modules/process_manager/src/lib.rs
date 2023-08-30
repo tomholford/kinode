@@ -264,6 +264,13 @@ fn begin_start_process(
         },
     }
 
+    //  if process already exists, copy persisted_state_handle:
+    //   used in reboot so processes need not persist every Initialize
+    let persisted_state_handle = match processes.get(&id) {
+        None => None,
+        Some(process) => process.persisted_state_handle,
+    };
+
     //  store in memory until get KernelResponse::StartProcess
     processes.insert(
         id.clone(),
@@ -277,7 +284,7 @@ fn begin_start_process(
                 wasm_bytes_uri: wasm_bytes_uri.clone(),
                 send_on_panic: send_on_panic.clone(),
             },
-            persisted_state_handle: None,
+            persisted_state_handle,
         },
     );
     if let Some(ref n) = name {

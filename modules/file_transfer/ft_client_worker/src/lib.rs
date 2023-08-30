@@ -8,6 +8,50 @@ mod process_lib;
 
 struct Component;
 
+fn determine_if_resume(
+    our: &types::ProcessAddress,
+    resume_file_hash: Option<[u8; 32]>,
+    chunk_size: u64,
+) -> (Option<[u8; 32]>, u64) {
+    let from_scratch = (None, 0);
+    match determine_if_resume_inner(our, resume_file_hash, chunk_size) {
+        Ok(r) => r,
+        Err(e) => {
+            print_to_terminal(
+                1,
+                &format!(
+                    "ft_client_worker: failed to resume; starting from scratch. Error: {}",
+                    e
+                )
+            );
+            from_scratch
+        },
+    }
+}
+
+fn determine_if_resume_inner(
+    our: &types::ProcessAddress,
+    resume_file_hash: Option<[u8; 32]>,
+    chunk_size: u64,
+) -> anyhow::Result<(Option<[u8; 32]>, u64)> {
+    let resume_file_hash = resume_file_hash.ok_or(anyhow::anyhow!(""))?;
+    let length_response = process_lib::send_and_await_receive(
+        our.node.clone(),
+        types::ProcessIdentifier::Name("lfs".into()),
+        Some(ft_types::FsAction::Length(resume_file_hash)),
+        types::OutboundPayloadBytes::None,
+    )??;
+    let length_json =  process_lib::get_json(&length_response)?;
+    let ft_types::FsResponse::Length(length) = process_lib::parse_message_json(Some(length_json))? else {
+        return Err(anyhow::anyhow!(""));
+    };
+    if length % chunk_size != 0 {
+        return Err(anyhow::anyhow!(""));
+    }
+    let piece_number = length / chunk_size;
+    Ok((Some(resume_file_hash), piece_number))
+}
+
 fn handle_next_message(
     our: &types::ProcessAddress,
 ) -> anyhow::Result<()> {
@@ -18,7 +62,7 @@ fn handle_next_message(
         types::InboundMessage::Request(types::InboundRequest {
             is_expecting_response: _,
             payload: types::InboundPayload {
-                source,
+                source: _,
                 json,
                 bytes: _,
             },
@@ -28,7 +72,7 @@ fn handle_next_message(
                     target_node,
                     file_hash,
                     chunk_size,
-                    resume_file_hash: _,  //  TODO: resume if file exists
+                    resume_file_hash,  //  TODO: resume if file exists
                 } => {
                     //  (1): Start transfer with ft_server
                     //  (2): iteratively GetPiece and Append until have acquired whole file
@@ -60,10 +104,15 @@ fn handle_next_message(
                     }?;
                     print_to_terminal(1, "c");
                     assert_eq!(target_node, source.node);
+                    let (current_file_hash, next_piece_number) = determine_if_resume(
+                        &our,
+                        resume_file_hash,
+                        chunk_size,
+                    );
                     let mut state = ft_types::ClientWorkerState {
                         metadata,
-                        current_file_hash: None,
-                        next_piece_number: 0,
+                        current_file_hash,
+                        next_piece_number,
                     };
                     print_to_terminal(1, "d");
 

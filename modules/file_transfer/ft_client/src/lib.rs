@@ -36,21 +36,36 @@ fn handle_next_message(
             payload: types::InboundPayload {
                 source,
                 json,
-                bytes: _,
+                bytes,
             },
         }) => {
             match process_lib::parse_message_json(json)? {
                 //  TODO: maintain & persist state about ongoing transfers
                 //        resume rather than starting from scratch when appropriate
+                ft_types::FileTransferRequest::Initialize => {
+                    match bytes {
+                        types::InboundPayloadBytes::Some(bytes) => {
+                            *state = bincode::deserialize(&bytes[..])?;
+                        },
+                        _ => {},
+                    }
+                    let _ = process_lib::send_response(
+                        None::<ft_types::FileTransferResponse>,
+                        types::OutboundPayloadBytes::None,
+                        None::<ft_types::FileTransferContext>,
+                    )?;
+                    Ok(())
+                },
                 ft_types::FileTransferRequest::GetFile {
                     target_node,
                     file_hash,
                     chunk_size,
-                    resume_file_hash,
+                    mut resume_file_hash,
                 } => {
                     //  (1) spin up ft_client_worker to handle upload
-                    //  (2) add to state
-                    //  (3) send GetFile to client_worker to begin download
+                    //  (2) check if resumable
+                    //  (3) update state
+                    //  (4) send GetFile to client_worker to begin download
 
                     //  (1)
                     let response = process_lib::send_and_await_receive(
@@ -84,6 +99,23 @@ fn handle_next_message(
                     }?;
 
                     //  (2)
+                    let mut key = None;
+                    match resume_file_hash {
+                        Some(_) => {},
+                        None => {
+                            for (k, val) in state.iter() {
+                                if (val.target_node == target_node) & (val.file_hash == file_hash) {
+                                    key = Some(k.clone());
+                                    resume_file_hash = val.current_file_hash.clone();
+                                }
+                            }
+                        },
+                    };
+
+                    //  (3)
+                    if let Some(key) = key {
+                        let _ = state.remove(&key);
+                    };
                     state.insert(
                         ft_types::ProcessReference {
                             node: our.node.clone(),
@@ -97,7 +129,7 @@ fn handle_next_message(
                         },
                     );
 
-                    //  (3)
+                    //  (4)
                     process_lib::send_one_request(
                         false,
                         &our.node,
@@ -125,6 +157,55 @@ fn handle_next_message(
                         None::<ft_types::FileTransferContext>,
                     )?;
 
+                    Ok(())
+                },
+                ft_types::FileTransferRequest::DisplayOngoing => {
+                    let mut lengths: HashMap<ft_types::ProcessReference, u64> = HashMap::new();
+                    for (key, val) in state.iter() {
+                        let Some(current_file_hash) = val.current_file_hash else {
+                            continue;
+                        };
+                        let length_response = process_lib::send_and_await_receive(
+                            our.node.clone(),
+                            types::ProcessIdentifier::Name("lfs".into()),
+                            Some(ft_types::FsAction::Length(current_file_hash)),
+                            types::OutboundPayloadBytes::None,
+                        )??;
+                        let length_json =  process_lib::get_json(&length_response)?;
+                        let ft_types::FsResponse::Length(length) = process_lib::parse_message_json(Some(length_json))? else {
+                            return Err(anyhow::anyhow!(""));
+                        };
+                        lengths.insert(key.clone(), length);
+                    }
+
+                    print_to_terminal(0, "file_transfer: ongoing downloads:");
+                    print_to_terminal(0, "****");
+                    for (key, val) in state.iter() {
+                        print_to_terminal(0, &format!(
+                            "remote://{}/{:?}",
+                            val.target_node,
+                            val.file_hash,
+                        ));
+                        match lengths.get(key) {
+                            None => {},
+                            Some(length) => {
+                                print_to_terminal(0, &format!(
+                                    "  number_bytes: {}",
+                                    length,
+                                ));
+                            },
+                        }
+                        print_to_terminal(0, &format!(
+                            "  chunk size: {}",
+                            val.chunk_size,
+                        ));
+                        // print_to_terminal(0, &format!(
+                        //     "  chunks received / total: {} / {}",
+                        //     val.received_pieces.len(),
+                        //     val.metadata.number_pieces,
+                        // ));
+                    }
+                    print_to_terminal(0, "****");
                     Ok(())
                 },
                 _ => Err(anyhow::anyhow!("unexpected Request")),

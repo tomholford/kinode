@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::time::{Duration, interval};
 use uuid;
 
 use crate::types::*;
 use crate::lfs::manifest::{Manifest, BackupImmutable, BackupAppendable, ManifestRecord, FileType, InMemoryFile};
-
+use crate::lfs::wal::{WAL, ToDelete};
 mod manifest;
+mod wal;
 
 // const CHUNK_SIZE: u64 = 256 * 1024; // 256kb
 
@@ -21,6 +23,7 @@ mod manifest;
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
+    Replace([u8; 32]),
     Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
@@ -82,15 +85,15 @@ pub async fn fs_sender(
         .await
         .expect("fs: failed to open manifest file");
 
-    let _wal_path = lfs_directory_path.join("wal.bin");
+    let wal_path = lfs_directory_path.join("wal.bin");
 
-    // let mut wal_file = fs::OpenOptions::new()
-    //     .append(true)
-    //     .read(true)
-    //     .create(true)
-    //     .open(&wal_path)
-    //     .await
-    //     .expect("fs: failed to open WAL file");
+    let mut wal_file = fs::OpenOptions::new()
+        .append(true)
+        .read(true)
+        .create(true)
+        .open(&wal_path)
+        .await
+        .expect("fs: failed to open WAL file");
 
     //  in memory details about files.
     let manifest = Manifest::load(manifest_file, &lfs_directory_path).await.expect("manifest load failed!");
@@ -98,66 +101,87 @@ pub async fn fs_sender(
     //  println!("whole manifest {:?}", manifest);
     //  let wal_file = Arc::new(RwLock::new(wal_file));
 
+    let wal = WAL::load(wal_file, &lfs_directory_path).await.expect("wal load failed!");
+
+    //  interval for deleting/(flushing)
+    let mut interval = interval(Duration::from_secs(60));
+
     //  into main loop
-    while let Some(kernel_message) = recv_in_fs.recv().await {
-        let KernelMessage {
-            ref id,
-            target: _,
-            rsvp: _,
-            message: Ok(TransitMessage::Request(TransitRequest {
-                is_expecting_response: _,
-                payload: TransitPayload {
-                    ref source,
-                    json: _,
-                    bytes: _,
+    loop {
+        tokio::select! {
+            Some(kernel_message) = recv_in_fs.recv() => {
+                let KernelMessage {
+                    ref id,
+                    target: _,
+                    rsvp: _,
+                    message: Ok(TransitMessage::Request(TransitRequest {
+                        is_expecting_response: _,
+                        payload: TransitPayload {
+                            ref source,
+                            json: _,
+                            bytes: _,
+                        }
+                    })),
+                } = kernel_message else {
+                    println!(
+                        "lfs: got weird message from {}: {}",
+                        our_name, &kernel_message,
+                    );
+                    continue;
+                };
+        
+                let source_identifier = &source.identifier;
+                if our_name != source.node {
+                    println!(
+                        "lfs: request must come from our_name={}, got: {}",
+                        our_name, &kernel_message,
+                    );
+                    continue;
                 }
-            })),
-        } = kernel_message else {
-            println!(
-                "lfs: got weird message from {}: {}",
-                our_name, &kernel_message,
-            );
-            continue;
-        };
 
-        let source_identifier = &source.identifier;
-        if our_name != source.node {
-            println!(
-                "lfs: request must come from our_name={}, got: {}",
-                our_name, &kernel_message,
-            );
-            continue;
-        }
+            //  internal structures have Arc::clone setup.
+            let manifest_clone = manifest.clone();
+            let wal_clone = wal.clone();
 
-        //  internal structures have Arc::clone setup.
-        let manifest_clone = manifest.clone();
+            // let wal_file_clone = wal_file.clone();
+            let lfs_directory_path_clone = lfs_directory_path.clone();
+            let our_name = our_name.clone();
+            let source_identifier = source_identifier.clone();
+            let id = id.clone();
+            let send_to_loop = send_to_loop.clone();
+            let send_to_terminal = send_to_terminal.clone();
 
-        // let wal_file_clone = wal_file.clone();
-        let lfs_directory_path_clone = lfs_directory_path.clone();
-
-        let our_name = our_name.clone();
-        let source_identifier = source_identifier.clone();
-        let id = id.clone();
-        let send_to_loop = send_to_loop.clone();
-        let send_to_terminal = send_to_terminal.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_request(
-                our_name.clone(),
-                kernel_message,
-                lfs_directory_path_clone,
-                manifest_clone,
-                send_to_loop.clone(),
-                send_to_terminal,
-            )
-            .await
-            {
-                send_to_loop
-                    .send(make_error_message(our_name.into(), id, source_identifier, e))
-                    .await
-                    .unwrap();
+            tokio::spawn(async move {
+                if let Err(e) = handle_request(
+                    our_name.clone(),
+                    kernel_message,
+                    lfs_directory_path_clone,
+                    manifest_clone,
+                    wal_clone,
+                    send_to_loop.clone(),
+                    send_to_terminal,
+                )
+                .await
+                {
+                    send_to_loop
+                        .send(make_error_message(our_name.into(), id, source_identifier, e))
+                        .await
+                        .unwrap();
+                }
+            });
             }
-        });
+            _ = interval.tick() => {
+                //  println!("in flush");
+                //  note be careful about deadlocks in this case.
+                let wal_clone = wal.clone();
+                let manifest_clone = manifest.clone();
+
+                tokio::spawn(async move {
+                    let _ = wal_clone.flush(manifest_clone).await;
+                });
+                
+            }
+        }
     }
 }
 
@@ -166,6 +190,7 @@ async fn handle_request(
     kernel_message: KernelMessage,
     lfs_directory_path: PathBuf,
     manifest: Manifest,
+    wal: WAL,
     send_to_loop: MessageSender,
     _send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
@@ -199,6 +224,8 @@ async fn handle_request(
         }
     };
 
+    //  println!("got action! {:?}", action);
+
     let (json, bytes) = match action {
         FsAction::Write => {
             let TransitPayloadBytes::Some(ref data) = bytes else {
@@ -211,6 +238,14 @@ async fn handle_request(
             let mut hasher = blake3::Hasher::new();
             hasher.update(data);
             let file_hash: [u8; 32] = hasher.finalize().into();
+
+            //  if file exists, just return.
+            if manifest.get_by_hash(&file_hash).await.is_some() {  
+                (
+                    Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                    TransitPayloadBytes::None,
+                )
+            } else {
 
             //  create and write underlying
             let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
@@ -237,7 +272,8 @@ async fn handle_request(
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
                 TransitPayloadBytes::None,
             )
-        }
+            }
+        },
         FsAction::Read(file_hash) => {
             // obtain read locks.
             match manifest.get_by_hash(&file_hash).await {
@@ -283,6 +319,59 @@ async fn handle_request(
                 }
             }
         },
+        FsAction::Replace(old_file_hash) => {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
+                return Err(FileSystemError::BadBytes { action: "Write".into() })
+            };
+
+            let file_uuid = uuid::Uuid::new_v4().as_u128();
+            let file_length = data.len() as u64;
+
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(data);
+            let file_hash: [u8; 32] = hasher.finalize().into();
+
+            // add delete entry for previous hash, if it exists
+            if let Some(_) = manifest.get_by_hash(&old_file_hash).await {
+                let _ = wal.add_delete(ToDelete::Immutable(file_hash)).await;
+            }
+            
+
+            //  if file exists, just return.
+            if manifest.get_by_hash(&file_hash).await.is_some() {  
+                (
+                    Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                    TransitPayloadBytes::None,
+                )
+            } else {
+
+            //  create and write underlying
+            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
+            if let Err(e) = write_result {
+                return Err(FileSystemError::LFSError {
+                    error: format!("write failed: {}", e),
+                });
+            } else {
+                //  append to manifest
+                let backup = BackupImmutable {
+                    file_uuid,
+                    file_hash,
+                    file_length,
+                    backup: Vec::new(),
+                };
+
+                let record = ManifestRecord::BackupI(backup);
+
+
+                let _ = manifest.add_immutable(&record).await?;
+            }
+
+            (
+                Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
+            }
+        },
         // specific process manager write:
         FsAction::PmWrite => {
             let ProcessIdentifier::Name(ref source_process) = source.identifier else {
@@ -305,13 +394,19 @@ async fn handle_request(
 
             let file_uuid = PM_UUID;
 
-            //  TODO old hash deletes.
-
             //  create new immutable file
             let mut hasher = blake3::Hasher::new();
             hasher.update(&data);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
+            //  doublecheck if ever needed
+            if manifest.get_by_hash(&file_hash).await.is_some() {  
+                (
+                    Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                    TransitPayloadBytes::None,
+                )
+            } else {
+            let prev_hash = manifest.get_by_uuid(&file_uuid).await.map(|file| file.hash);
 
             //  write underlying
             let write_result = write_immutable(file_hash, &data, &lfs_directory_path).await;
@@ -331,15 +426,32 @@ async fn handle_request(
                 let record = ManifestRecord::BackupI(backup);
 
                 let _ = manifest.add_immutable(&record).await?;
+
+                if let Some(old_hash) = prev_hash {
+                    let _ = wal.add_delete(ToDelete::Immutable(old_hash)).await;
+                }
             }
 
             (
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
                 TransitPayloadBytes::None,
             )
+        }
         },
         FsAction::Delete(del) => {
-            // todo command delete specifics.
+            let (file, uuid) = manifest.get_by_hash(&del).await.ok_or(FileSystemError::LFSError {
+                error: format!("no file found for hash: {:?}", del),
+            })?;
+
+            //   branch on mutable or not
+            match file.file_type {
+                FileType::Immutable => {
+                    let _ = wal.add_delete(ToDelete::Immutable(del)).await;
+                },
+                FileType::Appendable => {
+                    let _ = wal.add_delete(ToDelete::Mutable(uuid)).await;
+                }
+            };
 
             (
                 Some(serde_json::to_string(&FsResponse::Delete(del)).unwrap()),

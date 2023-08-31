@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
-
+use super::wal::{ToDelete};
 use crate::types::FileSystemError;
 
 //   ON-DISK, MANIFEST
@@ -49,12 +49,6 @@ pub struct InMemoryFile {
     pub hasher: Hasher,
     pub file_length: u64,
 }
-
-// move to be deleted to wal/memory
-// enum ToDelete {
-//     Mutable(u128),
-//     Immutable([u8; 32]),
-// }
 
 pub struct Manifest {
     pub manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>>,
@@ -155,6 +149,51 @@ impl Manifest {
         Ok(())
     }
 
+    pub async fn add_delete(&self, file: &ToDelete) -> Result<(), FileSystemError> {
+        let file_uuid = match file {
+            ToDelete::Mutable(uuid) => *uuid,
+            ToDelete::Immutable(hash) => {
+                if let Some((_, uuid)) = self.get_by_hash(hash).await {
+                    uuid
+                } else {
+                    return Err(FileSystemError::LFSError {
+                        error: "File hash not found".to_string(),
+                    });
+                }
+            }
+        };
+
+        if file_uuid == 0 {
+            return Ok(());
+        }
+        
+        let entry = ManifestRecord::Delete(file_uuid.clone());
+        
+        // serialize and write to on-disk manifest
+        let mut manifest_file = self.manifest_file.write().await;
+        let serialized_entry = bincode::serialize(&entry).unwrap();
+        let entry_length = serialized_entry.len() as u64;
+
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&entry_length.to_le_bytes());
+        buffer.extend_from_slice(&serialized_entry);
+
+        if let Err(e) = manifest_file.write_all(&buffer).await {
+            return Err(FileSystemError::LFSError {
+                error: format!("write failed: {}", e),
+            });
+        }
+
+        // remove from in-memory manifest
+        let mut wmanifest = self.manifest.write().await;
+        if let Some(file) = wmanifest.remove(&file_uuid) {
+            let mut whash_index = self.hash_index.write().await;
+            whash_index.remove(&file.hash);
+        }
+        
+        Ok(())
+    }
+
     // note: in-mem only
     pub async fn insert(&self, file_uuid: u128, new_file: InMemoryFile) -> Result<(), FileSystemError> {
         let mut wmanifest = self.manifest.write().await;
@@ -170,7 +209,6 @@ impl Manifest {
 
         Ok(())
     }
-
 }
 
 impl Clone for Manifest {
@@ -238,9 +276,11 @@ async fn load_manifest(
                 current_position += 8 + metadata_length as u64;
             }
             Ok(ManifestRecord::Delete(delete)) => {
-                // to_delete.push(ToDelete::Mutable(delete));
-                manifest.remove(&delete);
-
+                if delete != 0 {
+                    // pmwrite case special
+                    manifest.remove(&delete);
+                }
+                
                 current_position += 8 + metadata_length as u64;
             }
 

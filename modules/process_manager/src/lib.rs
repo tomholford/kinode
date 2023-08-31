@@ -74,6 +74,7 @@ pub enum FileSystemSeekFrom {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
+    Replace([u8; 32]),
     Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
@@ -550,6 +551,31 @@ fn handle_message (
                     )?;
                 },
                 ProcessManagerCommand::PersistState => {
+                    let identifier =  de_wit_process_identifier(&source.identifier);
+
+                    let id = match identifier {
+                        ProcessIdentifier::Id(ref id) => id,
+                        ProcessIdentifier::Name(ref name) => {
+                            names
+                                .get(name)
+                                .ok_or(anyhow::anyhow!(
+                                    "cannot PersistState: '{}' not registered",
+                                    name,
+                                ))?
+                        },
+                    };
+                    let persisted_state_handle = match processes.get(&id) {
+                        None => None,
+                        Some(process) => process.persisted_state_handle,
+                    };
+
+                    // if previous handle exists, replace it.
+                    let action = match persisted_state_handle {
+                        None => FsAction::Write,
+                        Some(handle) => FsAction::Replace(handle),
+                    };
+
+                    
                     match source.identifier {
                         types::ProcessIdentifier::Id(_) => {},
                         types::ProcessIdentifier::Name(ref name) => {
@@ -572,10 +598,10 @@ fn handle_message (
                         true,
                         our_name,
                         types::ProcessIdentifier::Name("lfs".into()),
-                        Some(FsAction::Write),
+                        Some(action),
                         types::OutboundPayloadBytes::AttachCircumvented,
                         Some(Context::Persist {
-                            identifier: de_wit_process_identifier(&source.identifier)
+                            identifier,
                         }),
                     )?;
                 },

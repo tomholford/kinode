@@ -22,7 +22,7 @@ enum EthRpcAction {
 #[derive(Debug, Serialize, Deserialize)]
 struct EthEventSubscription {
     addresses: Option<Vec<String>>,
-    event: Option<String>, // aka topic0. TODO subscribing to multiple events...
+    event: Option<Vec<String>>, // aka topic0
     topic1: Option<U256>,
     topic2: Option<U256>,
     topic3: Option<U256>,
@@ -144,8 +144,8 @@ pub async fn eth_rpc(
                 }
 
                 // TODO is there a cleaner way to do all of this?
-                if let Some(event) = sub.event {
-                    filter = filter.event(&event);
+                if let Some(events) = sub.event {
+                    filter = filter.events(&events);
                 }
                 if let Some(topic1) = sub.topic1 {
                     filter = filter.topic1(topic1);

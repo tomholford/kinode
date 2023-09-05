@@ -47,6 +47,8 @@ impl bindings::MicrokernelProcess for Component {
                 // TODO hardcoded goerli deployments
                 "SubscribeEvents": {
                     "addresses": ["0x83cc06a336cf7B37ed16A94eEE4aFb7644C50842"],
+                    "from_block": 14212933,
+                    "to_block": null,
                     "events": [
                         "CreateEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
                         "ModifyEntry(uint64,address,uint256,bytes32,uint48,uint64[])",

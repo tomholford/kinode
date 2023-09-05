@@ -22,6 +22,8 @@ enum EthRpcAction {
 #[derive(Debug, Serialize, Deserialize)]
 struct EthEventSubscription {
     addresses: Option<Vec<String>>,
+    from_block: Option<u64>,
+    to_block: Option<u64>,
     event: Option<Vec<String>>, // aka topic0
     topic1: Option<U256>,
     topic2: Option<U256>,
@@ -144,6 +146,12 @@ pub async fn eth_rpc(
                 }
 
                 // TODO is there a cleaner way to do all of this?
+                if let Some(from_block) = sub.from_block {
+                    filter = filter.from_block(from_block);
+                }
+                if let Some(to_block) = sub.to_block {
+                    filter = filter.to_block(to_block);
+                }
                 if let Some(events) = sub.event {
                     filter = filter.events(&events);
                 }

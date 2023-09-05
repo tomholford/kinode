@@ -14,27 +14,9 @@ use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum EthRpcAction {
-    Call(EthRpcCall),
-    SendTransaction(EthRpcCall),
-    DeployContract,
     SubscribeBlocks,
     SubscribeEvents(EthEventSubscription),
     Unsubscribe(u64),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct EthRpcCall {
-    contract_address: String,
-    gas: Option<U256>,
-    gas_price: Option<U256>,
-    // transaction_type // EIP1559, EIP2930, Optimism
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DeployContract {
-    constructor_args: Token, // TODO for some reason Tokens aren't json serializable? fix this
-    gas: Option<U256>,
-    gas_price: Option<U256>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -70,20 +52,6 @@ pub async fn eth_rpc(
     // TODO: use a real chain
     let anvil = Anvil::new().spawn(); // TODO goerli, optimism
 
-    // TODO allow arbitrary wallets, not just [0]. Also arbitrary seeds, external wallets, etc.
-    let wallet: LocalWallet = anvil.keys()[0].clone().into();
-    
-    print_tx.send(Printout {
-        verbosity: 0,
-        content: format!("eth_rpc: wallet: {:?}", wallet.address()),
-    }).await;
-
-    // connect to the network
-    let Ok(provider) = Provider::<Http>::try_from(anvil.endpoint()) else {
-        panic!("eth_rpc: couldn't connect to http endpoint");
-    };
-    let client = SignerMiddleware::new(provider, wallet.with_chain_id(anvil.chain_id()));
-
     let Ok(ws_rpc) = Provider::<Ws>::connect(anvil.ws_endpoint()).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
@@ -96,7 +64,6 @@ pub async fn eth_rpc(
         let our_name = our_name.clone();
         let send_to_loop = send_to_loop.clone();
         let ws_rpc = ws_rpc.clone();
-        let client = client.clone();
         let print_tx = print_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_message(
@@ -104,7 +71,6 @@ pub async fn eth_rpc(
                 send_to_loop.clone(),
                 message,
                 ws_rpc,
-                client,
                 print_tx,
             ).await {
                 send_to_loop.send(
@@ -125,7 +91,6 @@ async fn handle_message(
     send_to_loop: MessageSender,
     wm: WrappedMessage,
     ws_rpc: Provider<Ws>,
-    client: SignerMiddleware<Provider<Http>, LocalWallet>,
     print_tx: PrintSender,
 ) -> Result<(), EthRpcError>  {
     print_tx.send(Printout {
@@ -167,144 +132,6 @@ async fn handle_message(
     };
 
     match action {
-        EthRpcAction::Call(eth_rpc_call) => {
-            let Ok(address) = eth_rpc_call.contract_address.parse::<Address>() else {
-                return Err(EthRpcError::Error { 
-                    error: format!("eth_rpc: couldn't parse address: {:?}", eth_rpc_call.contract_address)
-                });
-            };
-
-            let mut call_request = TransactionRequest::new()
-                .to(address)
-                .data(call_data);
-            // gas limit
-            call_request = match eth_rpc_call.gas {
-                Some(gas) => call_request.gas(gas),
-                None => call_request
-            };
-            // gas price
-            call_request = match eth_rpc_call.gas_price {
-                Some(gas_price) => call_request.gas_price(gas_price),
-                None => call_request
-            };
-
-            let Ok(call_result) = client.call(&TypedTransaction::Legacy(call_request), None).await else {
-                return Err(EthRpcError::Error { error: format!("eth_rpc: call failed") });
-            };
-
-            send_to_loop.send(
-                WrappedMessage {
-                    id: id.clone(),
-                    target: target,
-                    rsvp: None,
-                    message: Ok(Message {
-                        source: ProcessNode {
-                            node: our,
-                            process: "eth_rpc".to_string(),
-                        },
-                        content: MessageContent {
-                            message_type: MessageType::Response,
-                            payload: Payload {
-                                json: None,
-                                bytes: PayloadBytes{
-                                    circumvent: Circumvent::False,
-                                    content: Some(call_result.as_ref().to_vec()),
-                                },
-                            },
-                        },
-                    }),
-                }
-            ).await.unwrap();
-        }
-        EthRpcAction::SendTransaction(eth_rpc_call) => {
-            let address: Address = eth_rpc_call.contract_address.parse().unwrap(); // TODO unwrap
-
-            let mut call_request = TransactionRequest::new()
-                .to(address)
-                .data(call_data);
-            // gas limit
-            call_request = match eth_rpc_call.gas {
-                Some(gas) => call_request.gas(gas),
-                None => call_request
-            };
-            // gas price
-            call_request = match eth_rpc_call.gas_price {
-                Some(gas_price) => call_request.gas_price(gas_price),
-                None => call_request
-            };
-
-            let Ok(pending) = client.send_transaction(TypedTransaction::Legacy(call_request), None).await else {
-                return Err(EthRpcError::Error { error: format!("eth_rpc: send_transaction failed") });
-            };
-            let Some(rx) = pending.await.unwrap() else {
-                return Err(EthRpcError::Error { error: format!("eth_rpc: send_transaction execution failed") });
-            };
-
-            send_to_loop.send(
-                WrappedMessage {
-                    id: id.clone(),
-                    target: target,
-                    rsvp: None,
-                    message: Ok(Message {
-                        source: ProcessNode {
-                            node: our,
-                            process: "eth_rpc".to_string(),
-                        },
-                        content: MessageContent {
-                            message_type: MessageType::Response,
-                            payload: Payload {
-                                json: Some(serde_json::to_value(rx).unwrap()),
-                                bytes: PayloadBytes{
-                                    circumvent: Circumvent::False,
-                                    content: None
-                                },
-                            },
-                        },
-                    }),
-                }
-            ).await.unwrap();
-        }
-        EthRpcAction::DeployContract => {
-            // TODO I have a feeling we will delete this functionality
-            let factory = ContractFactory::new(Default::default(), call_data.into(), client.clone().into());
-            let contract = factory
-                .deploy(())  // TODO should pass these in from json arguments
-                .unwrap()
-                .send()
-                .await
-                .unwrap();
-
-            let _ = print_tx.send(Printout {
-                verbosity: 0,
-                content: format!("eth_rpc: deployed"),
-            }).await;
-
-            let address = contract.address();
-
-            send_to_loop.send(
-                WrappedMessage {
-                    id: id.clone(),
-                    target: target,
-                    rsvp: None,
-                    message: Ok(Message {
-                        source: ProcessNode {
-                            node: our,
-                            process: "eth_rpc".to_string(),
-                        },
-                        content: MessageContent {
-                            message_type: MessageType::Response,
-                            payload: Payload {
-                                json: None,
-                                bytes: PayloadBytes{
-                                    circumvent: Circumvent::False,
-                                    content: Some(address.as_ref().to_vec()),
-                                },
-                            },
-                        },
-                    }),
-                }
-            ).await.unwrap();
-        }
         EthRpcAction::SubscribeBlocks => {
             // TODO must make this a tokio thread so that we can cancel it
             print_tx.send(Printout {

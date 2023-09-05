@@ -22,6 +22,7 @@ pub enum ManifestRecord {
 pub struct BackupImmutable {
     pub file_uuid: u128,
     pub file_hash: [u8; 32],
+    pub process: Option<u64>,
     pub file_length: u64,
     pub backup: Vec<[u8; 32]>,
 }
@@ -30,6 +31,7 @@ pub struct BackupImmutable {
 pub struct BackupAppendable {
     pub file_uuid: u128,
     pub file_hash: [u8; 32],
+    pub process: Option<u64>,
     // file_hashes vec + ranges vs in-mem?
     pub file_length: u64,
     pub backup: Vec<[u8; 32]>,
@@ -52,6 +54,7 @@ pub struct InMemoryFile {
 
 pub struct Manifest {
     pub manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>>,
+    pub process_state: Arc<RwLock<HashMap<u64, InMemoryFile>>>,
     pub hash_index: Arc<RwLock<HashMap<[u8; 32], u128>>>,
     pub manifest_file: Arc<RwLock<fs::File>>,
 }
@@ -59,15 +62,17 @@ pub struct Manifest {
 impl Manifest {
     pub async fn load(manifest_file: fs::File, lfs_directory_path: &PathBuf) -> io::Result<Self> {
         let mut manifest = HashMap::new();
+        let mut process_state = HashMap::new();
         let mut hash_index = HashMap::new();
         let mut manifest_file = manifest_file;
 
-        load_manifest(&mut manifest_file, &mut manifest).await?;
+        load_manifest(&mut manifest_file, &mut manifest, &mut process_state).await?;
 
         verify_manifest(&mut manifest, &lfs_directory_path, &mut hash_index).await?;
 
         Ok(Self {
             manifest: Arc::new(RwLock::new(manifest)),
+            process_state: Arc::new(RwLock::new(process_state)),
             hash_index: Arc::new(RwLock::new(hash_index)),
             manifest_file: Arc::new(RwLock::new(manifest_file)),
         })
@@ -77,7 +82,7 @@ impl Manifest {
         let read_lock = self.manifest.read().await;
         read_lock.get(uuid).cloned()
     }
-    
+
     pub async fn get_by_hash(&self, file_hash: &[u8; 32]) -> Option<(InMemoryFile, u128)> {
         let read_lock = self.hash_index.read().await;
         if let Some(uuid) = read_lock.get(file_hash) {
@@ -87,6 +92,11 @@ impl Manifest {
             }
         }
         None
+    }
+
+    pub async fn get_by_process(&self, process: &u64) -> Option<InMemoryFile> {
+        let read_lock = self.process_state.read().await;
+        read_lock.get(process).cloned()
     }
 
     pub async fn add_immutable(
@@ -110,6 +120,18 @@ impl Manifest {
         if let ManifestRecord::BackupI(immutable) = entry {
             let mut wmanifest = self.manifest.write().await;
             let mut whash_index = self.hash_index.write().await;
+
+            if let Some(process) = immutable.process {
+                let mut wprocess_state = self.process_state.write().await;
+                wprocess_state.insert(process,
+                    InMemoryFile {
+                        hash: immutable.file_hash,
+                        file_type: FileType::Immutable,
+                        hasher: Hasher::new(),
+                        file_length: immutable.file_length,
+                    },
+                );
+            }
 
             wmanifest.insert(
                 immutable.file_uuid,
@@ -145,7 +167,7 @@ impl Manifest {
             });
         }
 
-        // note todo: in-memory structures not updated here, outside of function.W
+        // note todo: in-memory structures not updated here, outside of function.
         Ok(())
     }
 
@@ -164,11 +186,11 @@ impl Manifest {
         };
 
         if file_uuid == 0 {
-            return Ok(());
+            return Ok(());  // pmwrite case
         }
-        
+
         let entry = ManifestRecord::Delete(file_uuid.clone());
-        
+
         // serialize and write to on-disk manifest
         let mut manifest_file = self.manifest_file.write().await;
         let serialized_entry = bincode::serialize(&entry).unwrap();
@@ -190,7 +212,7 @@ impl Manifest {
             let mut whash_index = self.hash_index.write().await;
             whash_index.remove(&file.hash);
         }
-        
+
         Ok(())
     }
 
@@ -215,6 +237,7 @@ impl Clone for Manifest {
     fn clone(&self) -> Self {
         Self {
             manifest: Arc::clone(&self.manifest),
+            process_state: Arc::clone(&self.process_state),
             hash_index: Arc::clone(&self.hash_index),
             manifest_file: Arc::clone(&self.manifest_file),
         }
@@ -224,6 +247,7 @@ impl Clone for Manifest {
 async fn load_manifest(
     manifest_file: &mut fs::File,
     manifest: &mut HashMap<u128, InMemoryFile>,
+    process_state: &mut HashMap<u64, InMemoryFile>,
 ) -> Result<(), io::Error> {
     let mut current_position = 0;
 
@@ -250,6 +274,18 @@ async fn load_manifest(
 
         match record_metadata {
             Ok(ManifestRecord::BackupI(immutable)) => {
+                if let Some(process) = immutable.process {
+                    process_state.insert(
+                        process,
+                        InMemoryFile {
+                            hash: immutable.file_hash,
+                            file_type: FileType::Immutable,
+                            hasher: Hasher::new(),
+                            file_length: immutable.file_length,
+                        },
+                    );
+                }
+
                 manifest.insert(
                     immutable.file_uuid,
                     InMemoryFile {
@@ -263,6 +299,19 @@ async fn load_manifest(
                 current_position += 8 + metadata_length as u64;
             }
             Ok(ManifestRecord::BackupA(appendable)) => {
+                // inspect
+                if let Some(process) = appendable.process {
+                    process_state.insert(
+                        process,
+                        InMemoryFile {
+                            hash: appendable.file_hash,
+                            file_type: FileType::Appendable,
+                            hasher: Hasher::new(),
+                            file_length: appendable.file_length,
+                        },
+                    );
+                }
+
                 manifest.insert(
                     appendable.file_uuid,
                     InMemoryFile {
@@ -280,7 +329,7 @@ async fn load_manifest(
                     // pmwrite case special
                     manifest.remove(&delete);
                 }
-                
+
                 current_position += 8 + metadata_length as u64;
             }
 

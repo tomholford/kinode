@@ -27,9 +27,12 @@ pub enum FsAction {
     Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
-    PmWrite,                     //  specific case for process manager persistance.
     Delete([u8; 32]),
     Length([u8; 32]),
+    //  process_manager specifics
+    PmWrite,
+    PmSave(u64),
+    PmRead(u64),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -129,7 +132,7 @@ pub async fn fs_sender(
                     );
                     continue;
                 };
-        
+
                 let source_identifier = &source.identifier;
                 if our_name != source.node {
                     println!(
@@ -179,7 +182,7 @@ pub async fn fs_sender(
                 tokio::spawn(async move {
                     let _ = wal_clone.flush(manifest_clone).await;
                 });
-                
+
             }
         }
     }
@@ -240,7 +243,7 @@ async fn handle_request(
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  if file exists, just return.
-            if manifest.get_by_hash(&file_hash).await.is_some() {  
+            if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
                     TransitPayloadBytes::None,
@@ -258,6 +261,7 @@ async fn handle_request(
                 let backup = BackupImmutable {
                     file_uuid,
                     file_hash,
+                    process: None,
                     file_length,
                     backup: Vec::new(),
                 };
@@ -335,10 +339,10 @@ async fn handle_request(
             if let Some(_) = manifest.get_by_hash(&old_file_hash).await {
                 let _ = wal.add_delete(ToDelete::Immutable(file_hash)).await;
             }
-            
+
 
             //  if file exists, just return.
-            if manifest.get_by_hash(&file_hash).await.is_some() {  
+            if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
                     TransitPayloadBytes::None,
@@ -356,6 +360,7 @@ async fn handle_request(
                 let backup = BackupImmutable {
                     file_uuid,
                     file_hash,
+                    process: None,
                     file_length,
                     backup: Vec::new(),
                 };
@@ -400,7 +405,7 @@ async fn handle_request(
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  doublecheck if ever needed
-            if manifest.get_by_hash(&file_hash).await.is_some() {  
+            if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
                     TransitPayloadBytes::None,
@@ -419,6 +424,7 @@ async fn handle_request(
                 let backup = BackupImmutable {
                     file_uuid,
                     file_hash,
+                    process: None,
                     file_length: data.len() as u64,
                     backup: Vec::new(),
                 };
@@ -437,6 +443,79 @@ async fn handle_request(
                 TransitPayloadBytes::None,
             )
         }
+        },
+        FsAction::PmRead(id) => {
+            // obtain read locks.
+            match manifest.get_by_process(&id).await {
+                None => return Err(FileSystemError::LFSError {
+                    error: format!("no file found for process id: {:?}", id),
+                }),
+                Some(file) => {
+                    let data = match file.file_type {
+                        FileType::Appendable => {
+                            //  read_appendable(uuid, &lfs_directory_path, None, None).await?
+                            //  restructure to get file_uuid, read from that. or just keep u64 as file_handle.
+                            Vec::new()
+                        }
+                        FileType::Immutable => {
+                            read_immutable(&file.hash, &lfs_directory_path, None, None).await?
+                        }
+                    };
+
+                    (
+                        Some(serde_json::to_string(&FsResponse::Read(file.hash)).unwrap()),
+                        TransitPayloadBytes::Some(data),
+                    )
+                }
+            }
+        },
+        FsAction::PmSave(id) => {
+            let TransitPayloadBytes::Some(ref data) = bytes else {
+                return Err(FileSystemError::BadBytes { action: "Write".into() })
+            };
+
+            //  note sort of unnecessary file_uuid
+            let file_uuid = uuid::Uuid::new_v4().as_u128();
+            let file_length = data.len() as u64;
+
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(data);
+            let file_hash: [u8; 32] = hasher.finalize().into();
+
+            //  if file exists, just return.
+            if manifest.get_by_hash(&file_hash).await.is_some() {
+                (
+                    Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                    TransitPayloadBytes::None,
+                )
+            } else {
+            //  create and write underlying
+            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
+            if let Err(e) = write_result {
+                return Err(FileSystemError::LFSError {
+                    error: format!("write failed: {}", e),
+                });
+            } else {
+                //  append to manifest
+                let backup = BackupImmutable {
+                    file_uuid,
+                    file_hash,
+                    process: Some(id),
+                    file_length,
+                    backup: Vec::new(),
+                };
+
+                let record = ManifestRecord::BackupI(backup);
+
+
+                let _ = manifest.add_immutable(&record).await?;
+            }
+
+            (
+                Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
+                TransitPayloadBytes::None,
+            )
+            }
         },
         FsAction::Delete(del) => {
             let (file, uuid) = manifest.get_by_hash(&del).await.ok_or(FileSystemError::LFSError {
@@ -499,6 +578,7 @@ async fn handle_request(
             let backup = BackupAppendable {
                 file_uuid: uuid,
                 file_hash: new_hash,
+                process: None,
                 file_length: file.file_length + chunk_length,
                 backup: Vec::new(),
             };

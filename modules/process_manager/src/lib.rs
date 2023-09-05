@@ -78,9 +78,12 @@ pub enum FsAction {
     Append(Option<[u8; 32]>),
     Read([u8; 32]),
     ReadChunk(ReadChunkRequest),
-    PmWrite,                     //  specific case for process manager persistance.
     Delete([u8; 32]),
     Length([u8; 32]),
+    //  process_manager specifics
+    PmWrite,
+    PmSave(u64),
+    PmRead(u64),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -146,7 +149,6 @@ pub struct ProcessMetadata {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Process {
     metadata: ProcessMetadata,
-    persisted_state_handle: Option<[u8; 32]>,
 }
 
 type Names = HashMap<String, u64>;
@@ -202,6 +204,29 @@ fn persist_pm_state(
         Some(FsAction::PmWrite),
         types::OutboundPayloadBytes::Some(bincode::serialize(processes)?),
     )
+}
+
+fn read_process_state(
+    our_name: &str,
+    process_id: u64,
+) -> Option<Vec<u8>> {
+    let response = process_lib::send_and_await_receive(
+        our_name.into(),
+        types::ProcessIdentifier::Name("lfs".into()),
+        Some(FsAction::PmRead(process_id.clone())),
+        types::OutboundPayloadBytes::None,
+    ).ok()?;
+
+    if let Ok(response) = response {
+        match process_lib::get_bytes(
+            response,
+        ) {
+            Ok(bytes) => return Some(bytes),
+            Err(_) => return None,
+        };
+    } else {
+        return None;
+    }
 }
 
 fn derive_names(processes: &Processes) -> Names {
@@ -265,28 +290,20 @@ fn begin_start_process(
         },
     }
 
-    //  if process already exists, copy persisted_state_handle:
-    //   used in reboot so processes need not persist every Initialize
-    let persisted_state_handle = match processes.get(&id) {
-        None => None,
-        Some(process) => process.persisted_state_handle,
-    };
-
     //  store in memory until get KernelResponse::StartProcess
     processes.insert(
         id.clone(),
         Process {
             metadata: ProcessMetadata {
-                our: ProcessAddress {
-                    node: our_name.into(),
-                    id: id.clone(),
-                    name: name.clone(),
-                },
-                wasm_bytes_uri: wasm_bytes_uri.clone(),
-                send_on_panic: send_on_panic.clone(),
+            our: ProcessAddress {
+                node: our_name.into(),
+                id: id.clone(),
+                name: name.clone(),
             },
-            persisted_state_handle,
+            wasm_bytes_uri: wasm_bytes_uri.clone(),
+            send_on_panic: send_on_panic.clone(),
         },
+    }
     );
     if let Some(ref n) = name {
         names.insert(n.clone(), id.clone());
@@ -345,47 +362,23 @@ fn queue_reboot_messages(
         None::<Context>,
     )?;
 
-    if let Some(handle) = process.persisted_state_handle {
-        let response = process_lib::send_and_await_receive(
+    if let Some(bytes) = read_process_state(our_name, process_id.clone()) {
+        let initialize_request = process_lib::make_request(
+            false,
             our_name.into(),
-            types::ProcessIdentifier::Name("lfs".into()),
-            Some(FsAction::Read(handle)),
-            types::OutboundPayloadBytes::None,
+            types::ProcessIdentifier::Name(sequentialize_process_name.into()),
+            Some(SequentializeRequest::QueueMessage {
+                target_node: Some(our_name.into()),
+                target_process: ProcessIdentifier::Id(process_id.clone()),
+                json: Some(
+                    serde_json::to_string(&serde_json::json!({"Initialize": null}))?
+                ),
+            }),
+            types::OutboundPayloadBytes::Some(bytes),
+            None::<Context>,
         )?;
+        Ok(vec![start_request, initialize_request])
 
-        let response_payload = match response {
-            Ok(types::InboundMessage::Request(request)) => request.payload,
-            Ok(types::InboundMessage::Response(payload)) => payload,
-            Err(e) => panic!("process_manager: got error queueing reboot messages: {:?}", e),
-        };
-        let outbound_bytes = process_lib::make_outbound_bytes_from_noncircumvented_inbound(
-            response_payload.bytes,
-        )?;
-
-        match process_lib::parse_message_json(response_payload.json)? {
-            FsResponse::Read(_) => {
-                let initialize_request = process_lib::make_request(
-                    false,
-                    our_name.into(),
-                    types::ProcessIdentifier::Name(sequentialize_process_name.into()),
-                    Some(SequentializeRequest::QueueMessage {
-                        target_node: Some(our_name.into()),
-                        target_process: ProcessIdentifier::Id(process_id.clone()),
-                        json: Some(
-                            serde_json::to_string(&serde_json::json!({"Initialize": null}))?
-                        ),
-                    }),
-                    outbound_bytes,
-                    None::<Context>,
-                )?;
-                Ok(vec![start_request, initialize_request])
-            },
-            _ => {
-                Err(
-                    anyhow::anyhow!("got unexpected Fs Response while reading persisted state")
-                )
-            },
-        }
     } else {
         Ok(vec![start_request])
     }
@@ -564,18 +557,7 @@ fn handle_message (
                                 ))?
                         },
                     };
-                    let persisted_state_handle = match processes.get(&id) {
-                        None => None,
-                        Some(process) => process.persisted_state_handle,
-                    };
 
-                    // if previous handle exists, replace it.
-                    let action = match persisted_state_handle {
-                        None => FsAction::Write,
-                        Some(handle) => FsAction::Replace(handle),
-                    };
-
-                    
                     match source.identifier {
                         types::ProcessIdentifier::Id(_) => {},
                         types::ProcessIdentifier::Name(ref name) => {
@@ -598,7 +580,7 @@ fn handle_message (
                         true,
                         our_name,
                         types::ProcessIdentifier::Name("lfs".into()),
-                        Some(action),
+                        Some(FsAction::PmSave(id.clone())),
                         types::OutboundPayloadBytes::AttachCircumvented,
                         Some(Context::Persist {
                             identifier,
@@ -743,9 +725,6 @@ fn handle_message (
                                 .ok_or(anyhow::anyhow!(
                                     "did not find process corresponding to lfs Write"
                                 ))?;
-                            process.persisted_state_handle = Some(handle);
-
-                            let _response = persist_pm_state(&our_name, processes);
 
                             process_lib::send_response(
                                 Some(ProcessManagerResponse::PersistState(handle)),

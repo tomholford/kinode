@@ -1,1 +1,9 @@
-{}
+{
+    "tuna": {
+        "name": "Tuna",
+        "address": "0x0",
+        "networking_key": "0x0",
+        "ws_routing": null,
+        "allowed_routers": []
+    }
+}

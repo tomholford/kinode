@@ -44,15 +44,12 @@ impl EthRpcError {
 
 pub async fn eth_rpc(
     our_name: String,
+    rpc_url: String,
     send_to_loop: MessageSender,
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
 ) {
-    // Fake chain
-    // TODO: use a real chain
-    let anvil = Anvil::new().spawn(); // TODO goerli, optimism
-
-    let Ok(ws_rpc) = Provider::<Ws>::connect(anvil.ws_endpoint()).await else {
+    let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
 

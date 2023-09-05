@@ -42,32 +42,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
-async fn indexing(blockchain_url: String, pki: OnchainPKI, _print_sender: PrintSender) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-    loop {
-        interval.tick().await;
-        let response = match reqwest::get(&blockchain_url).await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    response
-                } else {
-                    continue;
-                }
-            }
-            Err(_) => continue,
-        };
-        let json = match response.json::<serde_json::Value>().await {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-        let mut pki = pki.write().await;
-        *pki = match serde_json::from_value::<HashMap<String, Identity>>(json) {
-            Ok(pki) => pki,
-            Err(_) => continue,
-        };
-    }
-}
-
 #[tokio::main]
 async fn main() {
     // For use with https://github.com/tokio-rs/console
@@ -82,8 +56,7 @@ async fn main() {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let blockchain_url = &args[2];
-    // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
+    let rpc_url = &args[2];
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -114,18 +87,8 @@ async fn main() {
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
+    // TODO this should be injected into net from a process
     let (pki, local): (OnchainPKI, bool) = 'get_chain: {
-        if let Ok(response) = reqwest::get(blockchain_url).await {
-            if response.status().is_success() {
-                if let Ok(pki) = response.json::<HashMap<String, Identity>>().await {
-                    break 'get_chain (Arc::new(RwLock::new(pki)), false);
-                }
-            }
-        }
-        println!(
-            "failed to fetch PKI from {}, falling back to local blockchain.json",
-            blockchain_url
-        );
         let blockchain = std::fs::File::open("blockchain.json").unwrap();
         let json: serde_json::Value = serde_json::from_reader(blockchain).unwrap();
         (
@@ -294,9 +257,10 @@ async fn main() {
         };
 
         // make POST
+        // TODO this needs to be a transaction sent to an actual RPC endpoint
         if !local {
             let response = reqwest::Client::new()
-                .post(blockchain_url)
+                .post(rpc_url)
                 .body(bincode::serialize(&id_transaction).unwrap())
                 .send()
                 .await
@@ -498,11 +462,6 @@ async fn main() {
         print_sender.clone(),
         net_message_receiver,
     ));
-    let indexing_handle = tokio::spawn(indexing(
-        blockchain_url.clone(),
-        pki.clone(),
-        print_sender.clone(),
-    ));
     let fs_handle = tokio::spawn(filesystem::fs_sender(
         our.name.clone(),
         home_directory_path.into(),
@@ -532,6 +491,7 @@ async fn main() {
     ));
     let eth_rpc_handle = tokio::spawn(eth_rpc::eth_rpc(
         our.name.clone(),
+        rpc_url.clone(),
         kernel_message_sender.clone(),
         eth_rpc_receiver,
         print_sender.clone(),
@@ -552,7 +512,6 @@ async fn main() {
         },
         _ = kernel_handle => {"".into()},
         _ = net_handle => {"".into()},
-        _ = indexing_handle => {"".into()},
         _ = fs_handle => {"".into()},
         _ = http_server_handle => {"".into()},
         _ = http_client_handle => {"".into()},

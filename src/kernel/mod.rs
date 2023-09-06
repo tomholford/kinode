@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 
-use wasmtime_wasi::preview2::{wasi, Table, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::preview2::{DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
@@ -730,6 +730,7 @@ async fn handle_response(
 
 /// create a specific process, and generate a task that will run it.
 async fn make_process_loop(
+    home_directory_path: String,
     metadata: t::ProcessMetadata,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
@@ -741,6 +742,12 @@ async fn make_process_loop(
     let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
     let on_panic = metadata.on_panic.clone();
 
+    // let dir = std::env::current_dir().unwrap();
+    let dir = cap_std::fs::Dir::open_ambient_dir(
+        home_directory_path,
+        cap_std::ambient_authority()
+    ).unwrap();
+
     let component =
         Component::new(&engine, wasm_bytes).expect("make_process_loop: couldn't read file");
 
@@ -750,10 +757,11 @@ async fn make_process_loop(
     let mut table = Table::new();
     let wasi = WasiCtxBuilder::new()
         .inherit_stdio()
+        .push_preopened_dir(dir, DirPerms::all(), FilePerms::all(), &"")
         .build(&mut table)
         .unwrap();
 
-    wasi::command::add_to_linker(&mut linker).unwrap();
+    wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
     let mut store = Store::new(
         engine,
         ProcessWasi {
@@ -1034,6 +1042,7 @@ async fn handle_kernel_request(
 /// start that process.
 async fn handle_kernel_response(
     our_name: String,
+    home_directory_path: String,
     km: t::KernelMessage,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
@@ -1084,6 +1093,7 @@ async fn handle_kernel_response(
 
     start_process(
         our_name,
+        home_directory_path,
         km.id,
         &payload.bytes,
         send_to_loop,
@@ -1106,6 +1116,7 @@ async fn get_process_bytes(process: &str) -> Vec<u8> {
 
 async fn start_process(
     our_name: String,
+    home_directory_path: String,
     km_id: u64,
     km_payload_bytes: &Vec<u8>,
     send_to_loop: t::MessageSender,
@@ -1158,6 +1169,7 @@ async fn start_process(
         process_id,
         tokio::spawn(
             make_process_loop(
+                home_directory_path,
                 metadata.clone(),
                 send_to_loop.clone(),
                 send_to_terminal.clone(),
@@ -1198,6 +1210,7 @@ async fn start_process(
 /// if this dies, it's over
 async fn make_event_loop(
     our_name: String,
+    home_directory_path: String,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1240,6 +1253,7 @@ async fn make_event_loop(
         // HERE is where the boot sequence goes?
         start_process(
             our_name.clone(),
+            home_directory_path.clone(),
             0,       // id doesn't matter
             &get_process_bytes("sequentialize").await, // bytes of wasm app
             send_to_loop.clone(),
@@ -1260,6 +1274,7 @@ async fn make_event_loop(
         .await;
         start_process(
             our_name.clone(),
+            home_directory_path.clone(),
             0,       // id doesn't matter
             &get_process_bytes("terminal").await, // bytes of wasm app
             send_to_loop.clone(),
@@ -1275,6 +1290,27 @@ async fn make_event_loop(
                 name: Some("terminal".into()),
                 wasm_bytes_uri: "terminal.wasm".into(),
                 on_panic: t::OnPanic::Restart,
+            },
+        )
+        .await;
+        start_process(
+            our_name.clone(),
+            home_directory_path.clone(),
+            0,       // id doesn't matter
+            &get_process_bytes("key_value").await, // bytes of wasm app
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &mut senders,
+            &mut process_handles,
+            &engine,
+            StartProcessMetadata {
+                source: t::Address {
+                    node: our_name.clone(),
+                    process: t::ProcessId::Name("kernel".into()),
+                },
+                name: Some("key_value".into()),
+                wasm_bytes_uri: "key_value.wasm".into(),
+                on_panic: t::OnPanic::None,
             },
         )
         .await;
@@ -1359,6 +1395,7 @@ async fn make_event_loop(
                                 t::Message::Response(_) => {
                                     handle_kernel_response(
                                         our_name.clone(),
+                                        home_directory_path.clone(),
                                         kernel_message,
                                         send_to_loop.clone(),
                                         send_to_terminal.clone(),
@@ -1403,6 +1440,7 @@ async fn make_event_loop(
 /// kernel entry point. creates event loop which contains all WASM processes
 pub async fn kernel(
     our: t::Identity,
+    home_directory_path: String,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     recv_in_loop: t::MessageReceiver,
@@ -1424,6 +1462,7 @@ pub async fn kernel(
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our.name.clone(),
+            home_directory_path,
             recv_in_loop,
             network_error_recv,
             recv_debug_in_loop,

@@ -27,3 +27,14 @@ impl PartialEq<u64> for ProcessId {
         }
     }
 }
+
+pub fn parse_message_ipc<T>(json_string: Option<String>) -> anyhow::Result<T>
+where
+    for<'a> T: serde::Deserialize<'a>
+{
+    let parsed: T = serde_json::from_str(
+        json_string.ok_or(anyhow::anyhow!("json payload empty"))?
+                   .as_str()
+    )?;
+    Ok(parsed)
+}

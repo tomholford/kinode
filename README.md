@@ -114,6 +114,9 @@ cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home
 
 !message tuna kernel {"type": "Restart", "process_name": "file_transfer"}
 !message dolph kernel {"type": "Restart", "process_name": "file_transfer"}
+
+!message hosted key_value {"Write": {"key": [6, 9], "val": [4, 2, 0]}}
+!message hosted key_value {"Read": {"key": [6, 9]}}
 ```
 
 ## Bumping deps

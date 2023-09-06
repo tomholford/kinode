@@ -1,10 +1,9 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types;
-use serde_json::json;
+use bindings::component::uq_process::types::*;
+use bindings::{print_to_terminal, receive, send_request, UqProcess};
 use serde::{Deserialize, Serialize};
-
-mod process_lib;
+use serde_json::json;
 
 struct Component;
 
@@ -27,40 +26,36 @@ struct EthEvent {
     transactionLogIndex: String,
 }
 
-// sol! {
-//     function totalSupply() external view returns (uint256);
-//     function balanceOf(address account) external view returns (uint256);
-//     function transfer(address recipient, uint256 amount) external returns (bool);
-//     function allowance(address owner, address spender) external view returns (uint256);
-//     function approve(address spender, uint256 amount) external returns (bool);
-//     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-// }
-
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: String, dap: String) {
+impl UqProcess for Component {
+    fn init(our: Address) {
         bindings::print_to_terminal(0, "pqi_indexer: start");
 
-        let event_sub_res = process_lib::send_request_and_await_response(
-            our.clone(),
-            "eth_rpc".to_string(),
-            Some(json!({
-                // TODO hardcoded goerli deployments
-                "SubscribeEvents": {
-                    "addresses": ["0x83cc06a336cf7B37ed16A94eEE4aFb7644C50842"],
-                    "from_block": 14212933,
-                    "to_block": null,
-                    "events": [
-                        "CreateEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
-                        "ModifyEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
-                    ],
-                    "topic1": null,
-                    "topic2": null,
-                    "topic3": null,
-                }})),
-            types::WitPayloadBytes {
-                circumvent: types::WitCircumvent::False,
-                content: None
+        let event_sub_res = send_request( // TODO send_and_await_response
+            &Address{
+                node: our.node.clone(),
+                process: ProcessId::Name("eth_rpc".to_string()),
             },
+            &Request{
+                inherit: false, // TODO what
+                expects_response: true,
+                metadata: None,
+                ipc: Some(json!({
+                    // TODO hardcoded goerli deployments
+                    "SubscribeEvents": {
+                        "addresses": ["0x83cc06a336cf7B37ed16A94eEE4aFb7644C50842"],
+                        "from_block": 14212933,
+                        "to_block": null,
+                        "events": [
+                            "CreateEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
+                            "ModifyEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
+                        ],
+                        "topic1": null,
+                        "topic2": null,
+                        "topic3": null,
+                }}).to_string()),
+            },
+            None,
+            None, 
         );
 
         // event_sub_res.content.payload.json.map(|json| {
@@ -70,25 +65,26 @@ impl bindings::MicrokernelProcess for Component {
         bindings::print_to_terminal(0, "eth-demo: subscribed to events");
 
         loop {
-            bindings::print_to_terminal(0, "a");
-            let (message, _) = bindings::await_next_message().unwrap();  //  TODO: handle error properly
-            bindings::print_to_terminal(0, "b");
-            let Some(message_from_loop_string) = message.content.payload.json else {
-                bindings::print_to_terminal(0, "eth demo requires json payload");
-                return
+            let Ok((source, message)) = receive() else {
+                print_to_terminal(0, "pqi_indexer: got network error");
+                continue;
+            };
+            let Message::Request(request) = message else {
+                print_to_terminal(0, "pqi_indexer: got unexpected message");
+                continue;
+            };
+            let Ok(msg) = serde_json::from_str::<AllActions>(&request.ipc.unwrap_or_default()) else {
+                print_to_terminal(0, "pqi_indexer: got invalid message");
+                continue;
             };
 
-            if let Ok(message_from_loop) = serde_json::from_str::<AllActions>(message_from_loop_string.as_str()) {
-                match message_from_loop {
-                    AllActions::EventSubscription(subscription) => {
-                        bindings::print_to_terminal(0, format!("event subscription: {:?}", subscription).as_str());
-                    }
-                    _ => {
-                        bindings::print_to_terminal(0, format!("eth_demo: unknown message {:?}", message_from_loop_string).as_str());
-                    }
+            match msg {
+                AllActions::EventSubscription(subscription) => {
+                    bindings::print_to_terminal(0, format!("event subscription: {:?}", subscription).as_str());
                 }
-            } else {
-                bindings::print_to_terminal(0, format!("eth_demo: failed to parse json message {:?}", message_from_loop_string).as_str());
+                _ => {
+                    bindings::print_to_terminal(0, format!("eth_demo: unknown message {:?}", msg).as_str());
+                }
             }
         }
     }

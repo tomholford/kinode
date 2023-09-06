@@ -62,11 +62,6 @@ pub async fn eth_rpc(
         let send_to_loop = send_to_loop.clone();
         let print_tx = print_tx.clone();
 
-        print_tx.send(Printout {
-            verbosity: 0,
-            content: "eth_rpc: got message".to_string(),
-        }).await;
-
         let KernelMessage {
             id,
             source,
@@ -101,19 +96,17 @@ pub async fn eth_rpc(
         let Some(json) = json.clone() else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
         };
-    
-        let Ok(action) = serde_json::from_value::<EthRpcAction>(
-            serde_json::Value::String(json.clone())
-        ) else {
+
+        let Ok(action) = serde_json::from_str::<EthRpcAction>(&json) else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse json: {:?}", json) });
         };
 
         match action {
             EthRpcAction::SubscribeEvents(sub) => {
-                print_tx.send(Printout {
-                    verbosity: 0,
-                    content: format!("eth_rpc: subscribing to events: {:?}", sub),
-                }).await;
+                // print_tx.send(Printout {
+                //     verbosity: 0,
+                //     content: format!("eth_rpc: subscribing to events: {:?}", sub),
+                // }).await;
 
                 let id: u64 = rand::random();
                 send_to_loop.send(
@@ -174,10 +167,10 @@ pub async fn eth_rpc(
                     };
         
                     while let Some(event) = stream.next().await {
-                        print_tx.send(Printout {
-                            verbosity: 0,
-                            content: format!("eth_rpc: got event: {:?}", event),
-                        }).await;
+                        // print_tx.send(Printout {
+                        //     verbosity: 0,
+                        //     content: format!("eth_rpc: got event: {:?}", event),
+                        // }).await;
                         send_to_loop.send(
                             KernelMessage {
                                 id: rand::random(),

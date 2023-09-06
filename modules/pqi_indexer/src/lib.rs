@@ -62,7 +62,7 @@ impl UqProcess for Component {
         //     bindings::print_to_terminal(0, format!("event subscription response: {:?}", json).as_str());
         // });
 
-        bindings::print_to_terminal(0, "eth-demo: subscribed to events");
+        bindings::print_to_terminal(0, "pqi_indexer: subscribed to events");
 
         loop {
             let Ok((source, message)) = receive() else {

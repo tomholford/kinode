@@ -4426,6 +4426,7 @@ dependencies = [
  "elliptic-curve",
  "ethers",
  "futures",
+ "getrandom",
  "hasher",
  "hex",
  "hmac",

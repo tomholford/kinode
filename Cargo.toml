@@ -21,6 +21,7 @@ digest = "0.10"
 elliptic-curve = { version = "0.13.5", features = ["ecdh"] }
 ethers = "2.0"
 futures = "0.3"
+getrandom = "0.2.10"
 hasher = "*"
 hex = "0.4.3"
 http = "0.2.9"

@@ -68,10 +68,10 @@ fn persist_state(
     our_name: &str,
     state: &State,
 ) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>> {
-    print_to_terminal(1, "process_manager: persist pm state");
+    print_to_terminal(1, "kernel: persist pm state");
     process_lib::send_and_await_receive(
         our_name.into(),
-        types::ProcessIdentifier::Name("process_manager".into()),
+        types::ProcessIdentifier::Name("kernel".into()),
         Some(ProcessManagerCommand::PersistState),
         types::OutboundPayloadBytes::Circumvent(bincode::serialize(state)?),
     )

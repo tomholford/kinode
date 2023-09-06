@@ -25,7 +25,7 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type MessageResult = Result<Option<NetworkMessage>, NetworkError>;
+type MessageResult = Result<Option<NetworkMessage>, NetworkErrorKind>;
 type ErrorShuttle = Option<oneshot::Sender<MessageResult>>;
 
 #[derive(Clone)]
@@ -59,12 +59,6 @@ pub enum NetworkMessage {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum NetworkError {
-    Timeout,
-    Offline,
-}
-
 /// contains identity and encryption keys, used in initial handshake.
 /// parsed from Text websocket message
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +77,7 @@ pub async fn networking(
     keypair: Ed25519KeyPair,
     pki: OnchainPKI,
     kernel_message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
     mut message_rx: MessageReceiver,
 ) {
@@ -134,6 +129,7 @@ pub async fn networking(
                     pki.clone(),
                     peers.clone(),
                     kernel_message_tx.clone(),
+                    network_error_tx.clone(),
                     print_tx.clone(),
                     km,
                 ));
@@ -149,11 +145,12 @@ async fn sender(
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
     km: KernelMessage,
 ) {
     if km.target.node == our.name {
-        handle_incoming_message(&our, km.message, peers.clone(), print_tx.clone()).await;
+        handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
         return;
     }
     let start = std::time::Instant::now();
@@ -182,8 +179,17 @@ async fn sender(
     match result {
         Ok(()) => return,
         Err(e) => {
-            let _ = kernel_message_tx
-                .send(make_kernel_response(&our, km, e))
+            let _ = network_error_tx
+                .send(WrappedNetworkError {
+                    id: km.id,
+                    source: km.source,
+                    error: NetworkError {
+                        kind: e,
+                        target: km.target,
+                        message: km.message,
+                        payload: km.payload,
+                    },
+                })
                 .await;
         }
     }
@@ -301,7 +307,7 @@ async fn message_to_peer(
     peers: Peers,
     km: KernelMessage,
     kernel_message_tx: MessageSender,
-) -> Result<(), NetworkError> {
+) -> Result<(), NetworkErrorKind> {
     let target = &km.target.node;
     let mut peers_write = peers.write().await;
     if let Some(peer) = peers_write.get_mut(target) {
@@ -313,7 +319,7 @@ async fn message_to_peer(
             .send((NetworkMessage::Raw(km.clone()), Some(result_tx)));
         drop(peers_write);
 
-        match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
+        match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
             Ok(_) => return Ok(()),
             Err(e) => {
                 // if a message to a "known peer" fails, before throwing error,
@@ -335,7 +341,7 @@ async fn message_to_peer(
     match pki_read.get(target) {
         // peer does not exist in PKI!
         None => {
-            return Err(NetworkError::Offline);
+            return Err(NetworkErrorKind::Offline);
         }
         // peer exists in PKI
         Some(peer_id) => {
@@ -363,7 +369,7 @@ async fn message_to_peer(
                             )
                             .await;
                             if conn.is_err() {
-                                return Err(NetworkError::Offline);
+                                return Err(NetworkErrorKind::Offline);
                             }
                             return message_to_peer(
                                 our,
@@ -377,7 +383,7 @@ async fn message_to_peer(
                             .await;
                         }
                     }
-                    return Err(NetworkError::Offline);
+                    return Err(NetworkErrorKind::Offline);
                 }
                 //
                 //  peer does not have direct routing info, need to use router
@@ -403,7 +409,7 @@ async fn message_to_peer(
                         if let Ok(()) = res {
                             if result_rx
                                 .await
-                                .unwrap_or(Err(NetworkError::Timeout))
+                                .unwrap_or(Err(NetworkErrorKind::Timeout))
                                 .is_ok()
                             {
                                 return Ok(());
@@ -413,43 +419,38 @@ async fn message_to_peer(
                     //
                     // we tried all available routers and none of them worked!
                     //
-                    return Err(NetworkError::Offline);
+                    return Err(NetworkErrorKind::Offline);
                 }
             }
         }
     }
 }
 
+/// net module only handles requests, will never return a response
 async fn handle_incoming_message(
     our: &Identity,
-    message: Result<TransitMessage, UqbarError>,
+    km: KernelMessage,
     peers: Peers,
     print_tx: PrintSender,
 ) {
-    let Ok(message) = message else {
-        return;  //  TODO: handle error?
+    let data = match km.message {
+        Message::Response(_) => return,
+        Message::Request(request) => match request.ipc {
+            None => return,
+            Some(ipc) => ipc,
+        },
     };
 
-    let payload = match message {
-        TransitMessage::Request(request) => request.payload,
-        TransitMessage::Response(payload) => payload,
-    };
-
-    if payload.source.node != our.name {
+    if km.source.node != our.name {
         let _ = print_tx
             .send(Printout {
                 verbosity: 0,
-                content: format!(
-                    "\x1b[3;32m{}: {}\x1b[0m",
-                    payload.source.node,
-                    // payload.json,
-                    payload.json.as_ref().unwrap_or(&"".to_string()),
-                ),
+                content: format!("\x1b[3;32m{}: {}\x1b[0m", km.source.node, data,),
             })
             .await;
     } else {
-        // available commands: peers
-        match payload.json.unwrap_or("".to_string()).as_str() {
+        // available commands: "peers"
+        match data.as_str() {
             "peers" => {
                 let peer_read = peers.read().await;
                 let _ = print_tx
@@ -475,38 +476,13 @@ async fn handle_incoming_message(
  *  networking utils
  */
 
-fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, NetworkingError> {
+fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, NetworkErrorKind> {
     // if we have the same public IP as target, route locally,
     // otherwise they will appear offline due to loopback stuff
     let ip = if our_ip == ip { "localhost" } else { ip };
     match url::Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
         Ok(v) => Ok(v),
-        Err(_) => Err(NetworkingError::PeerOffline),
-    }
-}
-
-fn make_kernel_response(our: &Identity, km: KernelMessage, err: NetworkError) -> KernelMessage {
-    KernelMessage {
-        id: km.id,
-        target: ProcessReference {
-            node: our.name.clone(),
-            identifier: match km.message {
-                Err(e) => e.source.identifier,
-                Ok(m) => match m {
-                    TransitMessage::Request(request) => request.payload.source.identifier,
-                    TransitMessage::Response(payload) => payload.source.identifier,
-                },
-            },
-        },
-        rsvp: None,
-        message: Ok(TransitMessage::Response(TransitPayload {
-            source: ProcessReference {
-                node: our.name.clone(),
-                identifier: ProcessIdentifier::Name("net".into()),
-            },
-            json: Some(serde_json::to_string(&err).unwrap_or("".into())),
-            bytes: TransitPayloadBytes::None,
-        })),
+        Err(_) => Err(NetworkErrorKind::Offline),
     }
 }
 

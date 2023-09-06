@@ -34,29 +34,33 @@ pub async fn http_server(
             while let Some(km) = recv_in_server.recv().await {
                 let KernelMessage {
                     id,
+                    source,
                     target: _,
                     rsvp: _,
-                    message: Ok(TransitMessage::Response(TransitPayload {
-                        source,
-                        json,
-                        bytes,
-                    })),
+                    message: Message::Response((Ok(
+                        Response {
+                            ipc,
+                            metadata: _,
+                        }),
+                        _context)),
+                    payload,
                 } = km.clone() else {
+                    // TODO don't panic
                     panic!("http_server: bad message");
                 };
 
                 if let Err(e) = http_handle_messages(
                     http_response_senders.clone(),
                     id,
-                    json,
-                    bytes,
+                    ipc,
+                    payload,
                     print_tx.clone()
                 ).await {
                     send_to_loop.send(
                         make_error_message(
                             our_name.clone(),
                             id.clone(),
-                            source.clone().identifier,
+                            source.clone(),
                             e
                         )
                     ).await.unwrap();
@@ -70,7 +74,7 @@ async fn http_handle_messages(
     http_response_senders: HttpResponseSenders,
     id: u64,
     json: Option<String>,
-    bytes: TransitPayloadBytes,
+    payload: Option<Payload>,
     _print_tx: PrintSender,
 ) -> Result<(), HttpServerError> {
     let Some(ref json) = json else {
@@ -86,7 +90,7 @@ async fn http_handle_messages(
         }
     };
 
-    let TransitPayloadBytes::Some(bytes) = bytes else {
+    let Some(payload) = payload else {
         return Err(HttpServerError::NoBytes)
     };
 
@@ -96,7 +100,7 @@ async fn http_handle_messages(
             let _ = channel.send(HttpResponse {
                 status: request.status,
                 headers: request.headers,
-                body: Some(bytes.clone()),
+                body: Some(payload.bytes),
             });
         }
         None => {
@@ -164,28 +168,31 @@ async fn handler(
     let id: u64 = rand::random();
     let message = KernelMessage {
         id: id.clone(),
-        target: ProcessReference {
+        source: Address {
             node: our.clone(),
-            identifier: ProcessIdentifier::Name("http_bindings".into()),
+            process: ProcessId::Name("http_server".into()),
+        },
+        target: Address {
+            node: our.clone(),
+            process: ProcessId::Name("http_bindings".into()),
         },
         rsvp: None, // TODO I believe this is correct
-        message: Ok(TransitMessage::Request(TransitRequest {
-            is_expecting_response: true,
-            payload: TransitPayload {
-                source: ProcessReference {
-                    node: our.clone(),
-                    identifier: ProcessIdentifier::Name("http_server".into()),
-                },
-                json: Some(serde_json::json!({
-                    "action": "request".to_string(),
-                    "method": method.to_string(),
-                    "path": path_str,
-                    "headers": serialize_headers(&headers),
-                    "query_params": query_params,
-                }).to_string()),
-                bytes: TransitPayloadBytes::Some(body.to_vec()), // TODO None sometimes
-            },
-        })),
+        message: Message::Request(Request {
+            inherit: false,
+            expects_response: true,
+            ipc: Some(serde_json::json!({
+                "action": "request".to_string(),
+                "method": method.to_string(),
+                "path": path_str,
+                "headers": serialize_headers(&headers),
+                "query_params": query_params,
+            }).to_string()),
+            metadata: None,
+        }),
+        payload: Some(Payload {
+            mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
+            bytes: body.to_vec(),
+        }),
     };
 
     let (response_sender, response_receiver) = oneshot::channel();
@@ -270,28 +277,22 @@ async fn is_port_available(bind_addr: &str) -> bool {
 fn make_error_message(
     our_name: String,
     id: u64,
-    source: ProcessIdentifier,
+    target: Address,
     error: HttpServerError,
 ) -> KernelMessage {
     KernelMessage {
         id,
-        target: ProcessReference {
+        source: Address {
             node: our_name.clone(),
-            identifier: source,
+            process: ProcessId::Name("http_server".into()),
         },
+        target,
         rsvp: None,
-        message: Err(UqbarError {
-            source: ProcessReference {
-                node: our_name,
-                identifier: ProcessIdentifier::Name("http_client".into()),
-            },
-            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-            payload: UqbarErrorPayload {
-                kind: error.kind().into(),
-                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
-                context: serde_json::to_value("").unwrap(),
-            },
-        }),
+        message: Message::Response((Err(UqbarError {
+            kind: error.kind().into(),
+            message: Some(serde_json::to_string(&error).unwrap()),
+        }), None)),
+        payload: None,
     }
 }
 

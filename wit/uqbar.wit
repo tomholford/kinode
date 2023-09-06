@@ -1,0 +1,142 @@
+package component:uq-process
+
+interface types {
+    // JSON is passed over WASM boundary as a string.
+    type json = string
+
+    // context is a string of UTF-8 JSON.
+    // it is used when building a Request to save information
+    // that will not be part of a Response, in order to more
+    // easily handle ("contextualize") that Response.
+    type context = json
+
+    variant process-id {
+        id(u64),
+        name(string),
+    }
+
+    // TODO better name for this
+    record address {
+        node: string,
+        process: process-id,
+    }
+
+    record payload {
+        mime: option<string>,
+        bytes: list<u8>,
+    }
+
+    record request {
+        // if true, this request inherits context AND payload of incipient
+        // request, and cannot have its own context.
+        inherit: bool,
+        // if true, this request expects a response
+        expects-response: bool,
+        ipc: option<json>,
+        metadata: option<json>,
+        // to grab payload, use get_payload()
+    }
+
+    record response {
+        ipc: option<json>,
+        metadata: option<json>,
+        // to grab payload, use get_payload()
+    }
+
+    // a message can be a request or a response.
+    // within a response, there is a result which surfaces any error
+    // that happened because of a request.
+    // a successful response will contain the context of the request
+    // it matches, if any was set.
+    variant message {
+        request(request),
+        response(tuple<result<response, uqbar-error>, option<context>>),
+    }
+
+    record uqbar-error {
+        kind: string,
+        message: option<json>,
+    }
+
+    // network errors come from trying to send a message to another node.
+    // a message can fail by timing out, or by the node being entirely unreachable (offline).
+    // in either case, the message is not delivered, and the process that sent it
+    // receives that message along with any assigned context and/or payload,
+    // and is free to handle it as it sees fit.
+    // note that if the message is a response, the process can issue a response again,
+    // and it will be directed to the same (remote) request as the original.
+    record network-error {
+        kind: network-error-kind,
+        message: message,
+        payload: option<payload>,
+    }
+
+    enum network-error-kind {
+        offline,
+        timeout,
+    }
+
+    // on-panic is a setting that determines what happens when a process panics.
+    // NOTE: requests should have expects-response set to false, will always be set to that by kernel
+    variant on-panic {
+        none,
+        restart,
+        requests(list<tuple<address, request, option<payload>>>),
+    }
+}
+
+world uq-process {
+    use types.{
+        json,
+        context,
+        address,
+        process-id,
+
+        payload,
+        request,
+        response,
+        message,
+
+        uqbar-error,
+        network-error,
+        network-error-kind,
+        on-panic,
+    }
+
+    // entry point to all programs
+    export init: func(our: address)
+
+    // system utils:
+
+    import print-to-terminal: func(verbosity: u8, message: string)
+    import get-unix-time: func() -> u64
+    import get-insecure-uniform-u64: func() -> u64
+    import get-eth-block: func() -> u64
+
+    // process management:
+
+    import set-on-panic: func(on-panic: on-panic)
+
+    // maybe have this?
+    // import spawn: func(id: process-id, request: option<request>) -> result<process-id, uqbar-error>
+
+    // message I/O:
+
+    // ingest next message when it arrives along with its source.
+    // almost all long-running processes will call this in a loop
+    import receive: func() -> result<tuple<address, message>, tuple<network-error, option<context>>>
+
+    // gets payload, if any, of the message we just received
+    import get-payload: func() -> option<payload>
+
+    // send message(s) to target(s)
+    import send-request: func(target: address, request: request, context: option<context>, payload: option<payload>)
+    import send-requests: func(requests: list<tuple<address, request, option<context>, option<payload>>>)
+    import send-response: func(response: response, payload: option<payload>)
+    import send-error: func(error: uqbar-error)
+
+    // send a single request, then block (internally) until its response
+    import send-and-await-response:
+        func(target: address, request: request, context: option<context>, payload: option<payload>) ->
+            tuple<address, response, option<context>>
+}

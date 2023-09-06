@@ -41,7 +41,7 @@ fn handle_next_message(our: &types::ProcessAddress) -> anyhow::Result<()> {
                     //  (1)
                     let response = process_lib::send_and_await_receive(
                         our.node.clone(),
-                        types::ProcessIdentifier::Name("process_manager".into()),
+                        types::ProcessIdentifier::Name("kernel".into()),
                         Some(ft_types::ProcessManagerCommand::Start {
                             name: None,
                             wasm_bytes_uri: "fs://sequentialize/ft_server_worker.wasm".into(),  //  TODO; should this be persisted when it becomes a file hash?

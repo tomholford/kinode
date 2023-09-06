@@ -1,33 +1,24 @@
 cargo_component_bindings::generate!();
-
-use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
-use bindings::{MicrokernelProcess, print_to_terminal, receive, send_and_await_receive};
-use bindings::component::microkernel_process::types;
-
 mod process_lib;
-
 struct Component;
+use bindings::{component::uq_process::types::*, UqProcess};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessReference {
-    pub node: String,
-    pub process: ProcessIdentifier,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ProcessIdentifier {
-    Id(u64),
-    Name(String),
-}
-#[derive(Debug, Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+mod kernel_types;
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum SequentializeRequest {
-    QueueMessage {
-        target_node: Option<String>,
-        target_process: ProcessIdentifier,
-        json: Option<String>,
-    },
+enum SequentializeRequest {
+    QueueMessage(QueueMessage),
     RunQueue,
+}
+
+#[derive(Serialize, Deserialize)]
+struct QueueMessage {
+    target: kernel_types::ProcessId,
+    request: kernel_types::Request,
 }
 
 enum ReturnStatus {
@@ -35,91 +26,76 @@ enum ReturnStatus {
     AcceptNextInput,
 }
 
-struct QueueItem {
-    target: types::ProcessReference,
-    payload: types::OutboundPayload,
-}
-
-fn en_wit_process_identifier(dewit: &ProcessIdentifier) -> types::ProcessIdentifier {
-    match dewit {
-        ProcessIdentifier::Id(id) => types::ProcessIdentifier::Id(id.clone()),
-        ProcessIdentifier::Name(name) => types::ProcessIdentifier::Name(name.clone()),
-    }
-}
-
 fn handle_message(
-    message_queue: &mut VecDeque<QueueItem>,
+    message_queue: &mut VecDeque<(QueueMessage, Option<kernel_types::Payload>)>,
     our_name: &str,
 ) -> anyhow::Result<ReturnStatus> {
-    let (message, _context) = receive()?;
+    let Ok((source, message)) = bindings::receive() else {
+        return Err(anyhow::anyhow!("sequentialize: receive() failed"));
+    };
 
     match message {
-        types::InboundMessage::Request(types::InboundRequest {
-            is_expecting_response: _,
-            payload: types::InboundPayload {
-                source,
-                json,
-                bytes,
-            },
-        }) => {
+        Message::Request(Request { ipc, .. }) => {
             if our_name != source.node {
                 return Err(anyhow::anyhow!(
                     "rejecting foreign Message from {:?}",
                     source,
                 ));
             }
-            match process_lib::parse_message_json(json)? {
-                SequentializeRequest::QueueMessage { target_node, target_process, json } => {
-                    message_queue.push_back(QueueItem{
-                        target: types::ProcessReference {
-                            node: match target_node {
-                                Some(n) => n,
-                                None => our_name.into(),
-                            },
-                            identifier: en_wit_process_identifier(&target_process),
-                        },
-                        payload: types::OutboundPayload {
-                            json,
-                            bytes: process_lib::make_outbound_bytes_from_noncircumvented_inbound(bytes)?,
-                        },
-                    });
+            let Some(json) = ipc else {
+                return Err(anyhow::anyhow!(
+                    "rejecting Message without IPC payload from {:?}",
+                    source,
+                ));
+            };
+            match serde_json::from_str::<SequentializeRequest>(&json)? {
+                SequentializeRequest::QueueMessage(message) => {
+                    let payload = bindings::get_payload();
+                    message_queue.push_back((message, kernel_types::de_wit_payload(payload)));
                     Ok(ReturnStatus::AcceptNextInput)
-                },
+                }
                 SequentializeRequest::RunQueue => {
-                    for item in message_queue {
-                        let _ = send_and_await_receive(&item.target, &item.payload)?;
+                    for item in message_queue.drain(..) {
+                        let _ = bindings::send_request(
+                            &Address {
+                                node: our_name.into(),
+                                process: kernel_types::en_wit_process_id(item.0.target),
+                            },
+                            &kernel_types::en_wit_request(item.0.request),
+                            None,
+                            Some(&kernel_types::en_wit_payload(item.1).unwrap()),
+                        );
                     }
                     Ok(ReturnStatus::Done)
-                },
+                }
             }
-        },
-        types::InboundMessage::Response(_) => {
-            panic!("sequentialize: got unexpected Response: {:?}", message);
-        },
+        }
+        Message::Response(_) => {
+            // we don't care about these
+            Ok(ReturnStatus::AcceptNextInput)
+        }
     }
 }
 
-impl MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
-        print_to_terminal(1, "sequentialize: begin");
+impl UqProcess for Component {
+    fn init(our: Address) {
+        bindings::print_to_terminal(1, "sequentialize: begin");
 
-        let mut message_queue: VecDeque<QueueItem> = VecDeque::new();
+        let mut message_queue: VecDeque<(QueueMessage, Option<kernel_types::Payload>)> = VecDeque::new();
 
         loop {
-            match handle_message(
-                &mut message_queue,
-                &our.node,
-            ) {
-                Ok(return_status) => {
-                    match return_status {
-                        ReturnStatus::Done => return,
-                        ReturnStatus::AcceptNextInput => {},
-                    }
+            match handle_message(&mut message_queue, &our.node) {
+                Ok(return_status) => match return_status {
+                    ReturnStatus::Done => return,
+                    ReturnStatus::AcceptNextInput => {}
                 },
                 Err(e) => {
-                    print_to_terminal(0, format!("sequentialize: error: {:?}", e).as_str());
+                    bindings::print_to_terminal(
+                        0,
+                        format!("sequentialize: error: {:?}", e).as_str(),
+                    );
                     panic!("sequentialize: error: {:?}", e);
-                },
+                }
             };
         }
     }

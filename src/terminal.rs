@@ -1,14 +1,17 @@
 use crossterm::{
     cursor,
-    event::{EnableBracketedPaste, DisableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+        KeyModifiers,
+    },
     execute,
     style::Print,
     terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
 };
 use futures::{future::FutureExt, StreamExt};
 use std::collections::VecDeque;
-use std::io::{stdout, Write, BufWriter};
-use std::fs::{File, OpenOptions, read_to_string};
+use std::fs::{read_to_string, File, OpenOptions};
+use std::io::{stdout, BufWriter, Write};
 
 use crate::types::*;
 
@@ -151,19 +154,31 @@ pub async fn terminal(
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
     // DEMO: default to false
-    let mut verbose_mode: bool = false;
+    let mut verbose_mode: bool = true;
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 
-    let history_path = std::fs::canonicalize(&home_directory_path).unwrap().join(".terminal_history");
+    let history_path = std::fs::canonicalize(&home_directory_path)
+        .unwrap()
+        .join(".terminal_history");
     let history = read_to_string(&history_path).unwrap_or_default();
-    let history_handle = OpenOptions::new().append(true).create(true).open(&history_path).unwrap();
+    let history_handle = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&history_path)
+        .unwrap();
     let history_writer = BufWriter::new(history_handle);
     // TODO make adjustable max history length
     let mut command_history = CommandHistory::new(1000, history, history_writer);
 
-    let log_path = std::fs::canonicalize(&home_directory_path).unwrap().join(".terminal_log");
-    let log_handle = OpenOptions::new().append(true).create(true).open(&log_path).unwrap();
+    let log_path = std::fs::canonicalize(&home_directory_path)
+        .unwrap()
+        .join(".terminal_log");
+    let log_handle = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+        .unwrap();
     let mut log_writer = BufWriter::new(log_handle);
 
     loop {
@@ -563,26 +578,22 @@ pub async fn terminal(
                                     let _err = event_loop.send(
                                         KernelMessage {
                                             id: rand::random(),
-                                            target: ProcessReference {
+                                            source: Address {
                                                 node: our.name.clone(),
-                                                identifier: ProcessIdentifier::Name(
-                                                    "terminal".into()
-                                                ),
+                                                process: ProcessId::Name("terminal".into()),
+                                            },
+                                            target: Address {
+                                                node: our.name.clone(),
+                                                process: ProcessId::Name("terminal".into()),
                                             },
                                             rsvp: None,
-                                            message: Ok(TransitMessage::Request(TransitRequest {
-                                                is_expecting_response: false,
-                                                payload: TransitPayload {
-                                                    source: ProcessReference {
-                                                        node: our.name.clone(),
-                                                        identifier: ProcessIdentifier::Name(
-                                                            "terminal".into()
-                                                        ),
-                                                    },
-                                                    json: None,
-                                                    bytes: TransitPayloadBytes::Some(bincode::serialize(&command).unwrap())  //  TODO: handle?
-                                                },
-                                            }))
+                                            message: Message::Request(Request {
+                                                inherit: false,
+                                                expects_response: false,
+                                                ipc: Some(command),
+                                                metadata: None,
+                                            }),
+                                            payload: None,
                                         }
                                     ).await;
                                 },

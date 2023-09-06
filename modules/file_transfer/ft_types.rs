@@ -83,16 +83,6 @@ pub enum FsResponse {
     //  use FileSystemError
 }
 
-// #[derive(Error, Debug, Serialize, Deserialize)]
-// pub enum NetworkingError {
-//     #[error("Peer is offline or otherwise unreachable")]
-//     PeerOffline,
-//     #[error("Message delivery failed due to timeout")]
-//     MessageTimeout,
-//     #[error("Some bug in the networking code")]
-//     NetworkingBug,
-// }
-
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub struct FileTransferKey {
     pub client: String,

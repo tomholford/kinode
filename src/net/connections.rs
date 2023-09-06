@@ -20,7 +20,7 @@ pub async fn build_routed_connection(
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
-) -> Result<(), NetworkError> {
+) -> Result<(), NetworkErrorKind> {
     // println!("build_routed_connection\r");
     let peers_write = peers.write().await;
     if let Some(router_peer) = peers_write.get(&router) {
@@ -49,21 +49,21 @@ pub async fn build_routed_connection(
         ));
         // println!("d\r");
         // 3. receive the target's handshake and validate it
-        let their_handshake = match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
+        let their_handshake = match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
             Ok(Some(NetworkMessage::HandshakeAck { handshake, .. })) => handshake,
             Err(e) => return Err(e),
-            _ => return Err(NetworkError::Offline),
+            _ => return Err(NetworkErrorKind::Offline),
         };
         // println!("f\r");
         let their_id = match pki.read().await.get(&target) {
             Some(id) => id.clone(),
-            None => return Err(NetworkError::Offline),
+            None => return Err(NetworkErrorKind::Offline),
         };
         // println!("g\r");
         let (their_ephemeral_pk, nonce) =
             match validate_handshake(&their_handshake, &their_id, nonce) {
                 Ok(v) => v,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
         // println!("h\r");
         let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
@@ -143,7 +143,7 @@ pub async fn build_routed_connection(
             }
         }
     }
-    Err(NetworkError::Offline)
+    Err(NetworkErrorKind::Offline)
 }
 
 /// returns JoinHandle to active_peer if created
@@ -156,7 +156,7 @@ pub async fn build_connection(
     peers: Peers,
     mut websocket: WebSocket,
     kernel_message_tx: MessageSender,
-) -> Result<JoinHandle<String>, NetworkError> {
+) -> Result<JoinHandle<String>, NetworkErrorKind> {
     // println!("build_connection\r");
     let (cipher, nonce, their_id) = match target {
         Some(target) => {
@@ -170,12 +170,12 @@ pub async fn build_connection(
                 .await;
             let their_handshake = match get_handshake(&mut websocket).await {
                 Ok(h) => h,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let (their_ephemeral_pk, nonce) =
                 match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
                     Ok(v) => v,
-                    Err(_) => return Err(NetworkError::Offline),
+                    Err(_) => return Err(NetworkErrorKind::Offline),
                 };
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
             let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
@@ -185,11 +185,11 @@ pub async fn build_connection(
             // no target yet, wait for handshake to come in, then reply
             let their_handshake = match get_handshake(&mut websocket).await {
                 Ok(h) => h,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let their_id = match pki.read().await.get(&their_handshake.from) {
                 Some(id) => id.clone(),
-                None => return Err(NetworkError::Offline),
+                None => return Err(NetworkErrorKind::Offline),
             };
             let (their_ephemeral_pk, nonce) = match validate_handshake(
                 &their_handshake,
@@ -197,7 +197,7 @@ pub async fn build_connection(
                 their_handshake.nonce.clone(),
             ) {
                 Ok(v) => v,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
@@ -325,13 +325,13 @@ async fn active_routed_peer(
 async fn ack_waiter(mut ack_rx: UnboundedReceiver<NetworkMessage>, shuttle: ErrorShuttle) {
     match timeout(TIMEOUT, ack_rx.recv()).await {
         Ok(Some(NetworkMessage::Nack(_))) => {
-            let _ = shuttle.unwrap().send(Err(NetworkError::Offline));
+            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Offline));
         }
         Ok(Some(msg)) => {
             let _ = shuttle.unwrap().send(Ok(Some(msg)));
         }
         _ => {
-            let _ = shuttle.unwrap().send(Err(NetworkError::Timeout));
+            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Timeout));
         }
     }
 }
@@ -363,7 +363,7 @@ async fn maintain_connection(
                 if bytes.len() > message_max_size {
                     // println!("message too large\r");
                     let _ = match result_tx {
-                        Some(tx) => tx.send(Err(NetworkError::Timeout)),
+                        Some(tx) => tx.send(Err(NetworkErrorKind::Timeout)),
                         None => Ok(()),
                     };
                     continue;
@@ -614,7 +614,7 @@ async fn peer_handler(
                     if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
                             if socket_tx.is_closed() {
-                                let _ = result_tx.unwrap().send(Err(NetworkError::Offline));
+                                let _ = result_tx.unwrap().send(Err(NetworkErrorKind::Offline));
                             } else {
                                 let _ = socket_tx.send((
                                     NetworkMessage::Msg {
@@ -631,7 +631,7 @@ async fn peer_handler(
                 }
                 _ => {
                     if socket_tx.is_closed() {
-                        result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                        result_tx.unwrap().send(Err(NetworkErrorKind::Offline)).unwrap();
                     } else {
                         let _ = socket_tx.send((message, result_tx));
                     }

@@ -16,16 +16,16 @@ pub async fn http_client(
     while let Some(message) = recv_in_client.recv().await {
         let KernelMessage {
             id,
+            source,
             target: _,
             rsvp,
-            message: Ok(TransitMessage::Request(TransitRequest {
-                is_expecting_response,
-                payload: TransitPayload {
-                    source,
-                    json,
-                    bytes: _,
-                }
-            })),
+            message: Message::Request(Request {
+                inherit: _,
+                expects_response: is_expecting_response,
+                ipc: json,
+                metadata: _,
+            }),
+            payload: _,
         } = message.clone() else {
             panic!("http_client: bad message");
         };
@@ -49,7 +49,7 @@ pub async fn http_client(
                     make_error_message(
                         our_name.clone(),
                         id,
-                        source.clone().identifier,
+                        source,
                         e,
                     )
                 ).await.unwrap();
@@ -62,18 +62,15 @@ async fn handle_message(
     our: String,
     send_to_loop: MessageSender,
     id: u64,
-    rsvp: Option<ProcessReference>,
-    is_expecting_response: bool,
-    source: ProcessReference,
+    rsvp: Option<Address>,
+    expects_response: bool,
+    source: Address,
     json: Option<String>,
     _print_tx: PrintSender,
 ) -> Result<(), HttpClientError> {
     let target =
-        if is_expecting_response {
-            ProcessReference {
-                node: our.clone(),
-                identifier: source.identifier.clone(),
-            }
+        if expects_response {
+            source.clone()
         } else {
             let Some(rsvp) = rsvp else {
                 return Err(HttpClientError::BadRsvp);
@@ -124,17 +121,21 @@ async fn handle_message(
     };
 
     let message = KernelMessage {
-        id: id.clone(),
+        id,
+        source,
         target,
         rsvp: None,
-        message: Ok(TransitMessage::Response(TransitPayload {
-            source: ProcessReference {
-                node: our.clone(),
-                identifier: ProcessIdentifier::Name("http_client".into()),
-            },
-            json: Some(serde_json::to_string(&http_client_response).unwrap()),
-            bytes: TransitPayloadBytes::Some(response.bytes().await.unwrap().to_vec()),
-        })),
+        message: Message::Response((Ok(
+            Response {
+                ipc: Some(serde_json::to_string(&http_client_response).unwrap()),
+                metadata: None,
+            }),
+            None,
+        )),
+        payload: Some(Payload {
+            mime: Some("application/json".into()),
+            bytes: response.bytes().await.unwrap().to_vec(),
+        }),
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -182,29 +183,22 @@ fn deserialize_headers(hashmap: HashMap<String, String>) -> HeaderMap {
 fn make_error_message(
     our_name: String,
     id: u64,
-    source: ProcessIdentifier,
+    source: Address,
     error: HttpClientError,
 ) -> KernelMessage {
     KernelMessage {
         id,
-        target: ProcessReference {
+        source: source.clone(),
+        target: Address {
             node: our_name.clone(),
-            identifier: source,
+            process: source.process.clone(),
         },
         rsvp: None,
-        message: Err(UqbarError {
-            source: ProcessReference {
-                node: our_name,
-                identifier: ProcessIdentifier::Name("http_client".into()),
-            },
-            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-            payload: UqbarErrorPayload {
-                kind: error.kind().into(),
-                // message: format!("{}", error),
-                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
-                context: serde_json::to_value("").unwrap(),
-            },
-        }),
+        message: Message::Response((Err(UqbarError {
+            kind: error.kind().into(),
+            message: Some(serde_json::to_string(&error).unwrap()),  //  TODO: handle error?
+        }), None)),
+        payload: None,
     }
 }
 

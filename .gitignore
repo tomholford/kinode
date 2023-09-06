@@ -4,6 +4,4 @@ target/
 *.swp
 /home
 blockchain.json
-boot_sequence.bin
-boot_sequence/*.wasm
 modules/**/wit

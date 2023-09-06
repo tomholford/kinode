@@ -90,7 +90,7 @@ pub async fn fs_sender(
 
     let wal_path = lfs_directory_path.join("wal.bin");
 
-    let mut wal_file = fs::OpenOptions::new()
+    let wal_file = fs::OpenOptions::new()
         .append(true)
         .read(true)
         .create(true)
@@ -113,28 +113,7 @@ pub async fn fs_sender(
     loop {
         tokio::select! {
             Some(kernel_message) = recv_in_fs.recv() => {
-                let KernelMessage {
-                    ref id,
-                    target: _,
-                    rsvp: _,
-                    message: Ok(TransitMessage::Request(TransitRequest {
-                        is_expecting_response: _,
-                        payload: TransitPayload {
-                            ref source,
-                            json: _,
-                            bytes: _,
-                        }
-                    })),
-                } = kernel_message else {
-                    println!(
-                        "lfs: got weird message from {}: {}",
-                        our_name, &kernel_message,
-                    );
-                    continue;
-                };
-
-                let source_identifier = &source.identifier;
-                if our_name != source.node {
+                if our_name != kernel_message.source.node {
                     println!(
                         "lfs: request must come from our_name={}, got: {}",
                         our_name, &kernel_message,
@@ -149,8 +128,8 @@ pub async fn fs_sender(
             // let wal_file_clone = wal_file.clone();
             let lfs_directory_path_clone = lfs_directory_path.clone();
             let our_name = our_name.clone();
-            let source_identifier = source_identifier.clone();
-            let id = id.clone();
+            let source = kernel_message.source.clone();
+            let id = kernel_message.id;
             let send_to_loop = send_to_loop.clone();
             let send_to_terminal = send_to_terminal.clone();
 
@@ -167,7 +146,7 @@ pub async fn fs_sender(
                 .await
                 {
                     send_to_loop
-                        .send(make_error_message(our_name.into(), id, source_identifier, e))
+                        .send(make_error_message(our_name.into(), id, source, e))
                         .await
                         .unwrap();
                 }
@@ -198,30 +177,29 @@ async fn handle_request(
     _send_to_terminal: PrintSender,
 ) -> Result<(), FileSystemError> {
     let KernelMessage {
-        ref id,
-        target: _,
+        id,
+        source,
         rsvp,
         message,
+        payload,
+        ..
     } = kernel_message;
-    let Ok(TransitMessage::Request(TransitRequest {
-        is_expecting_response,
-        payload: TransitPayload {
-            ref source,
-            json: Some(ref json),
-            ref bytes,
-        },
-    })) = message else {
+    let Message::Request(Request {
+        expects_response,
+        ipc: Some(json_string),
+        ..
+    }) = message else {
         return Err(FileSystemError::BadJson {
             json: "".into(),
             error: "not a Request with payload".into(),
         })
     };
 
-    let action: FsAction = match serde_json::from_str(json) {
+    let action: FsAction = match serde_json::from_str(&json_string) {
         Ok(r) => r,
         Err(e) => {
             return Err(FileSystemError::BadJson {
-                json: json.into(),
+                json: json_string.into(),
                 error: format!("parse failed: {:?}", e),
             })
         }
@@ -229,29 +207,29 @@ async fn handle_request(
 
     //  println!("got action! {:?}", action);
 
-    let (json, bytes) = match action {
+    let (ipc, bytes) = match action {
         FsAction::Write => {
-            let TransitPayloadBytes::Some(ref data) = bytes else {
+            let Some(ref payload) = payload else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
             let file_uuid = uuid::Uuid::new_v4().as_u128();
-            let file_length = data.len() as u64;
+            let file_length = payload.bytes.len() as u64;
 
             let mut hasher = blake3::Hasher::new();
-            hasher.update(data);
+            hasher.update(&payload.bytes);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  if file exists, just return.
             if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                    TransitPayloadBytes::None,
+                    None,
                 )
             } else {
 
             //  create and write underlying
-            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
+            let write_result = write_immutable(file_hash, &payload.bytes, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -274,7 +252,7 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
             }
         },
@@ -296,7 +274,7 @@ async fn handle_request(
 
                     (
                         Some(serde_json::to_string(&FsResponse::Read(file_hash)).unwrap()),
-                        TransitPayloadBytes::Some(data),
+                        Some(data),
                     )
                 }
             }
@@ -318,21 +296,21 @@ async fn handle_request(
 
                     (
                         Some(serde_json::to_string(&FsResponse::ReadChunk(req.file_hash)).unwrap()),
-                        TransitPayloadBytes::Some(data),
+                        Some(data),
                     )
                 }
             }
         },
         FsAction::Replace(old_file_hash) => {
-            let TransitPayloadBytes::Some(ref data) = bytes else {
+            let Some(ref payload) = payload else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
             let file_uuid = uuid::Uuid::new_v4().as_u128();
-            let file_length = data.len() as u64;
+            let file_length = payload.bytes.len() as u64;
 
             let mut hasher = blake3::Hasher::new();
-            hasher.update(data);
+            hasher.update(&payload.bytes);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             // add delete entry for previous hash, if it exists
@@ -345,12 +323,12 @@ async fn handle_request(
             if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                    TransitPayloadBytes::None,
+                    None,
                 )
             } else {
 
             //  create and write underlying
-            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
+            let write_result = write_immutable(file_hash, &payload.bytes, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -373,27 +351,27 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
             }
         },
         // specific process manager write:
         FsAction::PmWrite => {
-            let ProcessIdentifier::Name(ref source_process) = source.identifier else {
+            let ProcessId::Name(ref source_process) = source.process else {
                 return Err(
                     FileSystemError::LFSError {
-                        error: "Only process_manager can write to PmWrite 0".into()
+                        error: "Only kernel can write to PmWrite 0".into()
                     }
                 );
             };
-            if "process_manager" != source_process {
+            if "kernel" != source_process {
                 return Err(
                     FileSystemError::LFSError {
-                        error: "Only process_manager can write to PmWrite 1".into()
+                        error: "Only kernel can write to PmWrite 1".into()
                     }
                 );
             }
-            let TransitPayloadBytes::Some(ref data) = bytes else {
+            let Some(ref payload) = payload else {
                 return Err(FileSystemError::BadBytes { action: "PmWrite".into() })
             };
 
@@ -401,20 +379,20 @@ async fn handle_request(
 
             //  create new immutable file
             let mut hasher = blake3::Hasher::new();
-            hasher.update(&data);
+            hasher.update(&payload.bytes);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  doublecheck if ever needed
             if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                    TransitPayloadBytes::None,
+                    None,
                 )
             } else {
             let prev_hash = manifest.get_by_uuid(&file_uuid).await.map(|file| file.hash);
 
             //  write underlying
-            let write_result = write_immutable(file_hash, &data, &lfs_directory_path).await;
+            let write_result = write_immutable(file_hash, &payload.bytes, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -425,7 +403,7 @@ async fn handle_request(
                     file_uuid,
                     file_hash,
                     process: None,
-                    file_length: data.len() as u64,
+                    file_length: payload.bytes.len() as u64,
                     backup: Vec::new(),
                 };
 
@@ -440,7 +418,7 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
         }
         },
@@ -464,33 +442,33 @@ async fn handle_request(
 
                     (
                         Some(serde_json::to_string(&FsResponse::Read(file.hash)).unwrap()),
-                        TransitPayloadBytes::Some(data),
+                        Some(data),
                     )
                 }
             }
         },
         FsAction::PmSave(id) => {
-            let TransitPayloadBytes::Some(ref data) = bytes else {
+            let Some(ref payload) = payload else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
             //  note sort of unnecessary file_uuid
             let file_uuid = uuid::Uuid::new_v4().as_u128();
-            let file_length = data.len() as u64;
+            let file_length = payload.bytes.len() as u64;
 
             let mut hasher = blake3::Hasher::new();
-            hasher.update(data);
+            hasher.update(&payload.bytes);
             let file_hash: [u8; 32] = hasher.finalize().into();
 
             //  if file exists, just return.
             if manifest.get_by_hash(&file_hash).await.is_some() {
                 (
                     Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                    TransitPayloadBytes::None,
+                    None,
                 )
             } else {
             //  create and write underlying
-            let write_result = write_immutable(file_hash, data, &lfs_directory_path).await;
+            let write_result = write_immutable(file_hash, &payload.bytes, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -513,7 +491,7 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Write(file_hash)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
             }
         },
@@ -534,11 +512,11 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Delete(del)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
         },
         FsAction::Append(maybe_file_hash) => {
-            let TransitPayloadBytes::Some(ref data) = bytes else {
+            let Some(ref payload) = payload else {
                 return Err(FileSystemError::BadBytes { action: "Write".into() })
             };
 
@@ -563,12 +541,12 @@ async fn handle_request(
                 (new_file, uuid)
             };
 
-            let chunk_length = data.len() as u64;
+            let chunk_length = payload.bytes.len() as u64;
             let mut temp_hasher = file.hasher.clone();
-            temp_hasher.update(&data);
+            temp_hasher.update(&payload.bytes);
             let new_hash: [u8; 32] = temp_hasher.finalize().into();
 
-            let write_result = write_appendable(uuid, &data, &lfs_directory_path).await;
+            let write_result = write_appendable(uuid, &payload.bytes, &lfs_directory_path).await;
             if let Err(e) = write_result {
                 return Err(FileSystemError::LFSError {
                     error: format!("write failed: {}", e),
@@ -599,7 +577,7 @@ async fn handle_request(
 
             (
                 Some(serde_json::to_string(&FsResponse::Append(new_hash)).unwrap()),
-                TransitPayloadBytes::None,
+                None,
             )
         },
         FsAction::Length(file_hash) => {
@@ -610,29 +588,32 @@ async fn handle_request(
                 Some((file, _uuid)) => {
                     (
                         Some(serde_json::to_string(&FsResponse::Length(file.file_length)).unwrap()),
-                        TransitPayloadBytes::None,
+                        None,
                     )
                 }
             }
         },
     };
 
-    if is_expecting_response {
+    if expects_response {
         let response = KernelMessage {
             id: id.clone(),
-            target: ProcessReference {
+            source: Address {
                 node: our_name.clone(),
-                identifier: source.identifier.clone(),
+                process: ProcessId::Name("lfs".into()),
             },
+            target: source.clone(),
             rsvp,
-            message: Ok(TransitMessage::Response(TransitPayload {
-                source: ProcessReference {
-                    node: our_name.clone(),
-                    identifier: ProcessIdentifier::Name("lfs".into()),
-                },
-                json,
-                bytes,
-            })),
+            message: Message::Response((Ok(Response {
+                ipc,
+                metadata: None,
+            }), None)),
+            payload: Some(
+                Payload {
+                    mime: None,
+                    bytes: bytes.unwrap_or_default(),
+                }
+            )
         };
 
         let _ = send_to_loop.send(response).await;
@@ -752,29 +733,22 @@ pub async fn read_immutable(file_hash: &[u8; 32], lfs_directory_path: &PathBuf, 
 fn make_error_message(
     our_name: String,
     id: u64,
-    source_identifier: ProcessIdentifier,
+    target: Address,
     error: FileSystemError,
 ) -> KernelMessage {
     KernelMessage {
         id,
-        target: ProcessReference {
+        source: Address {
             node: our_name.clone(),
-            identifier: source_identifier,
+            process: ProcessId::Name("lfs".into()),
         },
+        target,
         rsvp: None,
-        message: Err(UqbarError {
-            source: ProcessReference {
-                node: our_name,
-                identifier: ProcessIdentifier::Name("lfs".into()),
-            },
-            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-            payload: UqbarErrorPayload {
-                kind: error.kind().into(),
-                // message: format!("{}", error),
-                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
-                context: serde_json::to_value("").unwrap(),
-            },
-        }),
+        message: Message::Response((Err(UqbarError {
+            kind: error.kind().into(),
+            message: Some(serde_json::to_string(&error).unwrap()),
+            }), None)),
+        payload: None,
     }
 }
 

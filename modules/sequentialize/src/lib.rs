@@ -1,19 +1,24 @@
 cargo_component_bindings::generate!();
-
-use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
-use bindings::{await_next_message, MicrokernelProcess, print_to_terminal, send_request_and_await_response};
-use bindings::component::microkernel_process::types;
-
 mod process_lib;
-
 struct Component;
+use bindings::{component::uq_process::types::*, UqProcess};
 
-#[derive(Debug, Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+mod kernel_types;
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
+    QueueMessage(QueueMessage),
     RunQueue,
+}
+
+#[derive(Serialize, Deserialize)]
+struct QueueMessage {
+    target: kernel_types::ProcessId,
+    request: kernel_types::Request,
 }
 
 enum ReturnStatus {
@@ -21,75 +26,76 @@ enum ReturnStatus {
     AcceptNextInput,
 }
 
-struct QueueItem {
-    target: types::WitProcessNode,
-    payload: types::WitPayload,
-}
-
 fn handle_message(
-    message_queue: &mut VecDeque<QueueItem>,
+    message_queue: &mut VecDeque<(QueueMessage, Option<kernel_types::Payload>)>,
     our_name: &str,
-    process_name: &str,
 ) -> anyhow::Result<ReturnStatus> {
-    let (message, _context) = await_next_message()?;
-    if our_name != message.source.node {
-        return Err(anyhow::anyhow!("rejecting foreign Message from {:?}", message.source));
-    }
-    match message.content.message_type {
-        types::WitMessageType::Request(_is_expecting_response) => {
-            match process_lib::parse_message_json(message.content.payload.json)? {
-                SequentializeRequest::QueueMessage { target_node, target_process, json } => {
-                    message_queue.push_back(QueueItem{
-                        target: types::WitProcessNode {
-                            node: match target_node {
-                                Some(n) => n,
-                                None => our_name.into(),
-                            },
-                            process: target_process,
-                        },
-                        payload: types::WitPayload {
-                            json,
-                            bytes: message.content.payload.bytes,
-                        },
-                    });
+    let Ok((source, message)) = bindings::receive() else {
+        return Err(anyhow::anyhow!("sequentialize: receive() failed"));
+    };
+
+    match message {
+        Message::Request(Request { ipc, .. }) => {
+            if our_name != source.node {
+                return Err(anyhow::anyhow!(
+                    "rejecting foreign Message from {:?}",
+                    source,
+                ));
+            }
+            let Some(json) = ipc else {
+                return Err(anyhow::anyhow!(
+                    "rejecting Message without IPC payload from {:?}",
+                    source,
+                ));
+            };
+            match serde_json::from_str::<SequentializeRequest>(&json)? {
+                SequentializeRequest::QueueMessage(message) => {
+                    let payload = bindings::get_payload();
+                    message_queue.push_back((message, kernel_types::de_wit_payload(payload)));
                     Ok(ReturnStatus::AcceptNextInput)
-                },
+                }
                 SequentializeRequest::RunQueue => {
-                    for item in message_queue {
-                        let _ = send_request_and_await_response(&item.target, &item.payload)?;
+                    for item in message_queue.drain(..) {
+                        let _ = bindings::send_request(
+                            &Address {
+                                node: our_name.into(),
+                                process: kernel_types::en_wit_process_id(item.0.target),
+                            },
+                            &kernel_types::en_wit_request(item.0.request),
+                            None,
+                            Some(&kernel_types::en_wit_payload(item.1).unwrap()),
+                        );
                     }
                     Ok(ReturnStatus::Done)
-                },
+                }
             }
-        },
-        types::WitMessageType::Response => {
-            panic!("{process_name}: got unexpected Response: {:?}", message);
-        },
+        }
+        Message::Response(_) => {
+            // we don't care about these
+            Ok(ReturnStatus::AcceptNextInput)
+        }
     }
 }
 
-impl MicrokernelProcess for Component {
-    fn run_process(our_name: String, process_name: String) {
-        print_to_terminal(1, "sequentialize: begin");
+impl UqProcess for Component {
+    fn init(our: Address) {
+        bindings::print_to_terminal(1, "sequentialize: begin");
 
-        let mut message_queue: VecDeque<QueueItem> = VecDeque::new();
+        let mut message_queue: VecDeque<(QueueMessage, Option<kernel_types::Payload>)> = VecDeque::new();
 
         loop {
-            match handle_message(
-                &mut message_queue,
-                &our_name,
-                &process_name,
-            ) {
-                Ok(return_status) => {
-                    match return_status {
-                        ReturnStatus::Done => return,
-                        ReturnStatus::AcceptNextInput => {},
-                    }
+            match handle_message(&mut message_queue, &our.node) {
+                Ok(return_status) => match return_status {
+                    ReturnStatus::Done => return,
+                    ReturnStatus::AcceptNextInput => {}
                 },
                 Err(e) => {
-                    print_to_terminal(0, format!("{}: error: {:?}", process_name, e).as_str());
-                    panic!("{}: error: {:?}", process_name, e);
-                },
+                    bindings::print_to_terminal(
+                        0,
+                        format!("sequentialize: error: {:?}", e).as_str(),
+                    );
+                    panic!("sequentialize: error: {:?}", e);
+                }
             };
         }
     }

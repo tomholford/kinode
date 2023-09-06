@@ -1,17 +1,29 @@
+use ring::digest;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
-use ring::digest;
 
-pub type MessageSender = tokio::sync::mpsc::Sender<WrappedMessage>;
-pub type MessageReceiver = tokio::sync::mpsc::Receiver<WrappedMessage>;
+//
+// internal message pipes between kernel and runtime modules
+//
+
+// keeps the from address so we know where to pipe error
+pub type NetworkErrorSender = tokio::sync::mpsc::Sender<WrappedNetworkError>;
+pub type NetworkErrorReceiver = tokio::sync::mpsc::Receiver<WrappedNetworkError>;
+
+pub type MessageSender = tokio::sync::mpsc::Sender<KernelMessage>;
+pub type MessageReceiver = tokio::sync::mpsc::Receiver<KernelMessage>;
 
 pub type PrintSender = tokio::sync::mpsc::Sender<Printout>;
 pub type PrintReceiver = tokio::sync::mpsc::Receiver<Printout>;
 
 pub type DebugSender = tokio::sync::mpsc::Sender<DebugCommand>;
 pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
+
+//
+// types used for UQI: uqbar's identity system
+//
 
 pub type OnchainPKI = Arc<RwLock<HashMap<String, Identity>>>;
 
@@ -42,199 +54,131 @@ pub struct IdentityTransaction {
     pub nonce: String,
 }
 
+//
+// process-facing kernel types, used for process
+// management and message-passing
+// matches types in uqbar.wit
+//
+
+pub type Context = String; // JSON-string
+
+#[derive(Clone, Debug, Eq, Hash, Serialize, Deserialize)]
+pub enum ProcessId {
+    Id(u64),
+    Name(String),
+}
+
+impl PartialEq for ProcessId {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ProcessId::Id(i1), ProcessId::Id(i2)) => i1 == i2,
+            (ProcessId::Name(s1), ProcessId::Name(s2)) => s1 == s2,
+            _ => false,
+        }
+    }
+}
+impl PartialEq<&str> for ProcessId {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            ProcessId::Id(_) => false,
+            ProcessId::Name(s) => s == other,
+        }
+    }
+}
+impl PartialEq<u64> for ProcessId {
+    fn eq(&self, other: &u64) -> bool {
+        match self {
+            ProcessId::Id(i) => i == other,
+            ProcessId::Name(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessNode {
+pub struct Address {
     pub node: String,
-    pub process: String,
+    pub process: ProcessId,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Payload {
-    pub json: Option<serde_json::Value>,
-    pub bytes: PayloadBytes,
+    pub mime: Option<String>, // MIME type
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PayloadBytes {
-    pub circumvent: Circumvent,
-    pub content: Option<Vec<u8>>,
+pub struct Request {
+    pub inherit: bool,
+    pub expects_response: bool,
+    pub ipc: Option<String>,      // JSON-string
+    pub metadata: Option<String>, // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Circumvent {
-    False,         //  do not circumvent
-    Send,          //  circumvent with these bytes
-    Circumvented,  //  we were circumvented
-    Receive,       //  copy circumventing bytes into this message
+pub struct Response {
+    pub ipc: Option<String>,      // JSON-string
+    pub metadata: Option<String>, // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WrappedMessage {
-    pub id: u64,
-    pub target: ProcessNode,
-    pub rsvp: Rsvp,
-    pub message: Result<Message, UqbarError>,
+pub enum Message {
+    Request(Request),
+    Response((Result<Response, UqbarError>, Option<Context>)),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UqbarError {
-    pub source: ProcessNode,
-    pub timestamp: u64,
-    pub content: UqbarErrorContent,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UqbarErrorContent {
     pub kind: String,
-    pub message: serde_json::Value,
-    pub context: serde_json::Value,
-}
-
-//  kernel sets in case, e.g.,
-//   A requests response from B does not request response from C
-//   -> kernel sets `Some(A) = Rsvp` for B's request to C
-pub type Rsvp = Option<ProcessNode>;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Message {
-    pub source: ProcessNode,
-    pub content: MessageContent,
+    pub message: Option<String>, // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MessageContent {
-    pub message_type: MessageType,
-    pub payload: Payload,
-}
-
-// TODO this is a hack to get around the fact that serde_json::Value
-//      is not serializable using bincode.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSerializablePayload {
-    pub json: Option<Vec<u8>>,
-    pub bytes: Option<Vec<u8>>,
+pub struct NetworkError {
+    pub kind: NetworkErrorKind,
+    pub target: Address, // what the message was trying to reach
+    pub message: Message,
+    pub payload: Option<Payload>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSerializableWrappedMessage {
+pub enum NetworkErrorKind {
+    Offline,
+    Timeout,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum OnPanic {
+    None,
+    Restart,
+    Requests(Vec<(Address, Request, Option<Payload>)>),
+}
+
+//
+// kernel types that runtime modules use
+//
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessMetadata {
+    pub our: Address,
+    pub wasm_bytes_uri: String,
+    pub on_panic: OnPanic,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KernelMessage {
     pub id: u64,
-    pub target_process: String,
-    //  target node assigned by runtime to "our"
-    //  rsvp assigned by runtime (as None)
-    pub message: BinSerializableMessage,
+    pub source: Address,
+    pub target: Address,
+    pub rsvp: Rsvp,
+    pub message: Message,
+    pub payload: Option<Payload>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSerializableMessage {
-    //  source assigned by runtime
-    pub content: BinSerializableMessageContent,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BinSerializableMessageContent {
-    pub message_type: MessageType,
-    pub payload: BinSerializablePayload,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum MessageType {
-    Request(bool),
-    Response,
-}
-
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum NetworkingError {
-    #[error("Peer is offline or otherwise unreachable")]
-    PeerOffline,
-    #[error("Message delivery failed due to timeout")]
-    MessageTimeout,
-    #[error("Some bug in the networking code")]
-    NetworkingBug,
-}
-impl std::fmt::Display for ProcessNode {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{{ node: {}, process: {} }}",
-            self.node,
-            self.process,
-        )
-    }
-}
-
-impl std::fmt::Display for PayloadBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let bytes_string = match self.content {
-            Some(_) => "Some(<elided>)",
-            None => "None",
-        };
-        write!(
-            f,
-            "{{ circumvent: {:?}, bytes: {} }}",
-            self.circumvent,
-            bytes_string,
-        )
-    }
-}
-
-impl std::fmt::Display for Payload {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{{ json: {:?}, bytes: {} }}",
-            self.json,
-            self.bytes,
-        )
-    }
-}
-
-impl std::fmt::Display for Message {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{{ source: {}, content: {} }}",
-            self.source,
-            self.content,
-        )
-    }
-}
-
-impl std::fmt::Display for MessageContent {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{{ message_type: {:?}, payload: {} }}",
-            self.message_type,
-            self.payload,
-        )
-    }
-}
-
-impl std::fmt::Display for WrappedMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let rsvp = match self.rsvp {
-            Some(ref rsvp) => format!("{}", rsvp),
-            None => "None".into(),
-        };
-        let message = match self.message {
-            Ok(ref m) => format!("{}", m),
-            Err(ref e) => format!("{:?}", e),
-        };
-        write!(
-            f,
-            "{{ id: {}, target: {}, rsvp: {}, message: {} }}",
-            self.id,
-            self.target,
-            rsvp,
-            message,
-        )
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum DebugCommand {
-    Toggle,
-    Step,
+pub struct WrappedNetworkError {
+    pub id: u64,
+    pub source: Address,
+    pub error: NetworkError,
 }
 
 /// A terminal printout. Verbosity level is from low to high, and for
@@ -246,52 +190,100 @@ pub struct Printout {
     pub content: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RequestOnPanic {
-    pub target: ProcessNode,
-    pub payload: Payload,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum SendOnPanic {
-    None,
-    Restart,
-    Requests(Vec<RequestOnPanic>),
-}
+//  kernel sets in case, e.g.,
+//   A requests response from B does not request response from C
+//   -> kernel sets `Some(A) = Rsvp` for B's request to C
+pub type Rsvp = Option<Address>;
+
+//
+//  boot/startup specific types???
+//
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum ProcessManagerCommand {
-    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    Stop { process_name: String },
-    Restart { process_name: String },
-    ListRunningProcesses,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ProcessManagerResponse {
-    ListRunningProcesses { processes: Vec<String> },
+pub enum SequentializeRequest {
+    QueueMessage(QueueMessage),
+    RunQueue,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum KernelRequest {
-    StartProcess { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    StopProcess { process_name: String },
+pub struct QueueMessage {
+    pub target: ProcessId,
+    pub request: Request,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BootOutboundRequest {
+    pub target_process: ProcessId,
+    pub json: Option<String>,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum DebugCommand {
+    Toggle,
+    Step,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum KernelCommand {
+    StartProcess {
+        name: Option<String>,
+        wasm_bytes_uri: String,
+        on_panic: OnPanic,
+    },
+    KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelResponse {
-    StartProcess(ProcessMetadata),
-    StopProcess { process_name: String },
+    StartedProcess(ProcessMetadata),
+    KilledProcess(ProcessId),
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessMetadata {
-    pub our: ProcessNode,
-    pub wasm_bytes_uri: String,  // TODO: for use in restarting erroring process, ala midori
-    pub send_on_panic: SendOnPanic,
+
+//
+// runtime-module-specific types
+//
+
+//
+// filesystem.rs types
+//
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsAction {
+    Write,
+    Append(Option<[u8; 32]>),
+    Read([u8; 32]),
+    ReadChunk(ReadChunkRequest),
+    PmWrite, //  specific case for process manager persistance.
+    Delete([u8; 32]),
+    Length([u8; 32]),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReadChunkRequest {
+    pub file_hash: [u8; 32],
+    pub start: u64,
+    pub length: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsResponse {
+    //  bytes are in payload_bytes
+    Read([u8; 32]),
+    ReadChunk([u8; 32]),
+    Write([u8; 32]),
+    Append([u8; 32]),
+    Delete([u8; 32]),
+    Length(u64),
+    //  use FileSystemError
 }
 
 impl FileSystemError {
     pub fn kind(&self) -> &str {
         match *self {
             FileSystemError::BadUri { .. } => "BadUri",
-            FileSystemError::BadJson { .. } =>  "BadJson",
+            FileSystemError::BadJson { .. } => "BadJson",
             FileSystemError::BadBytes { .. } => "BadBytes",
             FileSystemError::IllegalAccess { .. } => "IllegalAccess",
             FileSystemError::AlreadyOpen { .. } => "AlreadyOpen",
@@ -306,42 +298,64 @@ impl FileSystemError {
         }
     }
 }
+
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum FileSystemError {
     //  bad input from user
     #[error("Malformed URI: {uri}. Problem with {bad_part_name}: {:?}.", bad_part)]
-    BadUri { uri: String, bad_part_name: String,  bad_part: Option<String>, },
-    #[error("JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.", json)]
-    BadJson { json: Option<serde_json::Value>, error: String, },
+    BadUri {
+        uri: String,
+        bad_part_name: String,
+        bad_part: Option<String>,
+    },
+    #[error(
+        "JSON payload could not be parsed to FileSystemRequest: {error}. Got {:?}.",
+        json
+    )]
+    BadJson { json: String, error: String },
     #[error("Bytes payload required for {action}.")]
     BadBytes { action: String },
     #[error("{process_name} not allowed to access {attempted_dir}. Process may only access within {sandbox_dir}.")]
-    IllegalAccess { process_name: String, attempted_dir: String, sandbox_dir: String, },
+    IllegalAccess {
+        process_name: String,
+        attempted_dir: String,
+        sandbox_dir: String,
+    },
     #[error("Already have {path} opened with mode {:?}.", mode)]
-    AlreadyOpen { path: String, mode: FileSystemMode, },
+    AlreadyOpen { path: String, mode: FileSystemMode },
     #[error("Don't have {path} opened with mode {:?}.", mode)]
-    NotCurrentlyOpen { path: String, mode: FileSystemMode, },
+    NotCurrentlyOpen { path: String, mode: FileSystemMode },
     //  path or underlying fs problems
     #[error("Failed to join path: base: '{base_path}'; addend: '{addend}'.")]
-    BadPathJoin { base_path: String, addend: String, },
+    BadPathJoin { base_path: String, addend: String },
     #[error("Failed to create dir at {path}: {error}.")]
-    CouldNotMakeDir { path: String, error: String, },
+    CouldNotMakeDir { path: String, error: String },
     #[error("Failed to read {path}: {error}.")]
-    ReadFailed { path: String, error: String, },
+    ReadFailed { path: String, error: String },
     #[error("Failed to write {path}: {error}.")]
-    WriteFailed { path: String, error: String, },
+    WriteFailed { path: String, error: String },
     #[error("Failed to open {path} for {:?}: {error}.", mode)]
-    OpenFailed { path: String, mode: FileSystemMode, error: String, },
+    OpenFailed {
+        path: String,
+        mode: FileSystemMode,
+        error: String,
+    },
     #[error("Filesystem error while {what} on {path}: {error}.")]
-    FsError { what: String, path: String, error: String, },
+    FsError {
+        what: String,
+        path: String,
+        error: String,
+    },
     #[error("LFS error: {error}.")]
     LFSError { error: String },
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemRequest {
     pub uri_string: String,
     pub action: FileSystemAction,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemAction {
     Read,
@@ -354,6 +368,7 @@ pub enum FileSystemAction {
     ReadChunkFromOpen(u64),
     SeekWithinOpen(FileSystemSeekFrom),
 }
+
 //  copy of std::io::SeekFrom with Serialize/Deserialize
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemSeekFrom {
@@ -361,23 +376,32 @@ pub enum FileSystemSeekFrom {
     End(i64),
     Current(i64),
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileSystemResponse {
     Read(FileSystemUriHash),
     Write(String),
     GetMetadata(FileSystemMetadata),
     ReadDir(Vec<FileSystemMetadata>),
-    Open { uri_string: String, mode: FileSystemMode },
-    Close { uri_string: String, mode: FileSystemMode },
+    Open {
+        uri_string: String,
+        mode: FileSystemMode,
+    },
+    Close {
+        uri_string: String,
+        mode: FileSystemMode,
+    },
     Append(String),
     ReadChunkFromOpen(FileSystemUriHash),
     SeekWithinOpen(String),
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemUriHash {
     pub uri_string: String,
     pub hash: u64,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemMetadata {
     pub uri_string: String,
@@ -385,6 +409,7 @@ pub struct FileSystemMetadata {
     pub entry_type: FileSystemEntryType,
     pub len: u64,
 }
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum FileSystemMode {
     Read,
@@ -399,13 +424,123 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
+//
+// http_client.rs types
+//
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpClientRequest {
+    pub uri: String,
+    pub method: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpClientResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum HttpClientError {
+    #[error("http_client: rsvp is None but message is expecting response")]
+    BadRsvp,
+    #[error("http_client: no json in request")]
+    NoJson,
+    #[error(
+        "http_client: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.",
+        json
+    )]
+    BadJson { json: String, error: String },
+    #[error("http_client: http method not supported: {:?}", method)]
+    BadMethod { method: String },
+    #[error("http_client: failed to execute request {:?}", error)]
+    RequestFailed { error: String },
+}
+
+impl HttpClientError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            HttpClientError::BadRsvp { .. } => "BadRsvp",
+            HttpClientError::NoJson { .. } => "NoJson",
+            HttpClientError::BadJson { .. } => "BadJson",
+            HttpClientError::BadMethod { .. } => "BadMethod",
+            HttpClientError::RequestFailed { .. } => "RequestFailed",
+        }
+    }
+}
+
+//
+// http_server.rs types
+//
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
+}
+
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum HttpServerError {
+    #[error("http_client: json is None")]
+    NoJson,
+    #[error("http_client: bytes are None")]
+    NoBytes,
+    #[error(
+        "http_client: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.",
+        json
+    )]
+    BadJson { json: String, error: String },
+}
+
+impl HttpServerError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            HttpServerError::NoJson { .. } => "NoJson",
+            HttpServerError::NoBytes { .. } => "NoBytes",
+            HttpServerError::BadJson { .. } => "BadJson",
+        }
+    }
+}
+
+//
 // keygen types
+//
+
 pub const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
 pub type DiskKey = [u8; CREDENTIAL_LEN];
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SequentializeRequest {
-    QueueMessage { target_node: Option<String>, target_process: String, json: Option<String> },
-    RunQueue,
+//
+// custom kernel displays
+//
+
+impl std::fmt::Display for KernelMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{{ id: {}, source: {}, target: {}, rsvp: {:?}, message: {:?}}}",
+            self.id, self.source, self.target, self.rsvp, self.message,
+        )
+    }
+}
+
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Address {
+                    node,
+                    process: ProcessId::Id(id),
+                } => format!("{}/{}", node, id),
+                Address {
+                    node,
+                    process: ProcessId::Name(name),
+                } => format!("{}/{}", node, name),
+            }
+        )
+    }
 }

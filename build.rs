@@ -17,24 +17,29 @@ fn main() {
     }
 
     // Tell Cargo that if the given file changes, to rerun this build script.
-    const APPS: [&str; 10] = [
-        "apps_home",
-        "file_transfer",
-        "file_transfer_one_off",
-        "hi_lus_lus",
-        "http_bindings",
-        "http_proxy",
-        "process_manager",
+    const APPS: [&str; 2] = [
+        // "apps_home",
+        // // "file_transfer",
+        // // "file_transfer_one_off",
+        // // "hi_lus_lus",
+        // "http_bindings",
+        // "http_proxy",
         "terminal",
-        "sequencer",
+        // // "sequencer",
+        // "explorer",
         "sequentialize",
+        // "persist",
+        // "file_transfer/ft_client",
+        // "file_transfer/ft_server",
+        // "file_transfer/ft_client_worker",
+        // "file_transfer/ft_server_worker",
     ];
     for name in APPS {
         // only execute if one of the modules has source code changes
         println!("cargo:rerun-if-changed=modules/{}/src", name);
     }
     let pwd = std::env::current_dir().unwrap();
-    let wit_file = fs::read_to_string("wit/process.wit").unwrap();
+    let wit_file = fs::read_to_string("wit/uqbar.wit").unwrap();
     for name in APPS {
         // copy in the wit file
         fs::write(
@@ -52,10 +57,4 @@ fn main() {
         ]))
         .unwrap();
     }
-    run_command(
-        Command::new("cargo")
-            .current_dir("boot_sequence") // Change to boot_sequence directory
-            .arg("run"),
-    )
-    .unwrap();
 }

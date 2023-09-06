@@ -35,8 +35,8 @@ Note that the `--release` flag is optional but should normally be included to en
 
 If you want to set up a blockchain node locally, simply set the second argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
 
-In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up, replacing your_name as necessary:
-`!message <<your_name>> process_manager {"type": "Start", "process_name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm"}`
+In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up:
+`!message our kernel {"type": "StartProcess", "name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm", "on_panic": null}`
 
 You will be prompted to navigate to `localhost:8000/register`. This should appear as a screen to input a username and password. After submitting these and signing the metamask prompt, your node should connect and insert itself to the chain. You can check by going to the URL endpoint served at either that IP or your local "chain" node.
 
@@ -81,15 +81,15 @@ cp README.md home/${SECOND_NODE}/file_transfer_one_off/
 cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
 cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
 
-# Terminal A: add hi++ apps to process_manager
-!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
-!message tuna process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
-!message tuna process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
+# Terminal A: add hi++ apps to kernel
+!message tuna kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
+!message tuna kernel {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
+!message tuna kernel {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
 
-# Terminal B: While A is still running add hi++ to process_manager
-!message dolph process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
-!message dolph process_manager {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
-!message dolph process_manager {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
+# Terminal B: While A is still running add hi++ to kernel
+!message dolph kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
+!message dolph kernel {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
+!message dolph kernel {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
 
 # Terminal B: Send a message using hi++ from Terminal B to A:
 !message dolph hi_lus_lus {"target": "tuna", "action": "send", "contents": "hello from dolph"}
@@ -104,16 +104,16 @@ cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home
 !message tuna file_transfer {"type": "ReadDir", "target_node": "dolph", "uri_string": "fs://."}
 
 # Terminal A: Stopping a process means messages will no longer work:
-!message tuna process_manager {"type": "Stop", "process_name": "hi_lus_lus"}
+!message tuna kernel {"type": "Stop", "process_name": "hi_lus_lus"}
 !message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 
 # Terminal A: However, restarting a process will reset its state and messages will work since the process is running again:
-!message tuna process_manager {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm", "send_on_panic": "None"}
-!message tuna process_manager {"type": "Restart", "process_name": "hi_lus_lus"}
+!message tuna kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm", "send_on_panic": "None"}
+!message tuna kernel {"type": "Restart", "process_name": "hi_lus_lus"}
 !message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
 
-!message tuna process_manager {"type": "Restart", "process_name": "file_transfer"}
-!message dolph process_manager {"type": "Restart", "process_name": "file_transfer"}
+!message tuna kernel {"type": "Restart", "process_name": "file_transfer"}
+!message dolph kernel {"type": "Restart", "process_name": "file_transfer"}
 ```
 
 ## Bumping deps

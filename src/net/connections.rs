@@ -16,11 +16,11 @@ pub async fn build_routed_connection(
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     router: String,
-    initial_message: (WrappedMessage, ErrorShuttle),
+    initial_message: (KernelMessage, ErrorShuttle),
     pki: OnchainPKI,
     peers: Peers,
     kernel_message_tx: MessageSender,
-) -> Result<(), NetworkError> {
+) -> Result<(), NetworkErrorKind> {
     // println!("build_routed_connection\r");
     let peers_write = peers.write().await;
     if let Some(router_peer) = peers_write.get(&router) {
@@ -49,21 +49,21 @@ pub async fn build_routed_connection(
         ));
         // println!("d\r");
         // 3. receive the target's handshake and validate it
-        let their_handshake = match result_rx.await.unwrap_or(Err(NetworkError::Timeout)) {
+        let their_handshake = match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
             Ok(Some(NetworkMessage::HandshakeAck { handshake, .. })) => handshake,
             Err(e) => return Err(e),
-            _ => return Err(NetworkError::Offline),
+            _ => return Err(NetworkErrorKind::Offline),
         };
         // println!("f\r");
         let their_id = match pki.read().await.get(&target) {
             Some(id) => id.clone(),
-            None => return Err(NetworkError::Offline),
+            None => return Err(NetworkErrorKind::Offline),
         };
         // println!("g\r");
         let (their_ephemeral_pk, nonce) =
             match validate_handshake(&their_handshake, &their_id, nonce) {
                 Ok(v) => v,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
         // println!("h\r");
         let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
@@ -95,7 +95,11 @@ pub async fn build_routed_connection(
         ));
         // println!("l\r");
         // connection is now ready to write to
-        tokio::spawn(active_routed_peer(their_id.name.clone(), peer_handler));
+        tokio::spawn(active_routed_peer(
+            their_id.name.clone(),
+            sender_tx.clone(),
+            peer_handler,
+        ));
         peers.write().await.insert(their_id.name.clone(), peer);
         let _ = sender_tx.send((NetworkMessage::Raw(initial_message.0), initial_message.1));
         return Ok(());
@@ -139,7 +143,7 @@ pub async fn build_routed_connection(
             }
         }
     }
-    Err(NetworkError::Offline)
+    Err(NetworkErrorKind::Offline)
 }
 
 /// returns JoinHandle to active_peer if created
@@ -152,7 +156,7 @@ pub async fn build_connection(
     peers: Peers,
     mut websocket: WebSocket,
     kernel_message_tx: MessageSender,
-) -> Result<JoinHandle<String>, NetworkError> {
+) -> Result<JoinHandle<String>, NetworkErrorKind> {
     // println!("build_connection\r");
     let (cipher, nonce, their_id) = match target {
         Some(target) => {
@@ -166,12 +170,12 @@ pub async fn build_connection(
                 .await;
             let their_handshake = match get_handshake(&mut websocket).await {
                 Ok(h) => h,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let (their_ephemeral_pk, nonce) =
                 match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
                     Ok(v) => v,
-                    Err(_) => return Err(NetworkError::Offline),
+                    Err(_) => return Err(NetworkErrorKind::Offline),
                 };
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
             let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
@@ -181,11 +185,11 @@ pub async fn build_connection(
             // no target yet, wait for handshake to come in, then reply
             let their_handshake = match get_handshake(&mut websocket).await {
                 Ok(h) => h,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let their_id = match pki.read().await.get(&their_handshake.from) {
                 Some(id) => id.clone(),
-                None => return Err(NetworkError::Offline),
+                None => return Err(NetworkErrorKind::Offline),
             };
             let (their_ephemeral_pk, nonce) = match validate_handshake(
                 &their_handshake,
@@ -193,7 +197,7 @@ pub async fn build_connection(
                 their_handshake.nonce.clone(),
             ) {
                 Ok(v) => v,
-                Err(_) => return Err(NetworkError::Offline),
+                Err(_) => return Err(NetworkErrorKind::Offline),
             };
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
@@ -246,6 +250,7 @@ pub async fn build_connection(
     // connection is now ready to write to
     let active_peer = tokio::spawn(active_peer(
         their_id.name.clone(),
+        sender_tx.clone(),
         peer_handler,
         connection_handler,
     ));
@@ -264,32 +269,69 @@ pub async fn build_connection(
 /// returns name of peer when it dies
 async fn active_peer(
     who: String,
+    sender: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     peer_handler: JoinHandle<()>,
     connection_handler: JoinHandle<()>,
 ) -> String {
     // println!("active_peer\r");
-    let _err = tokio::select! {
+    let keepalive = tokio::spawn(async move {
+        loop {
+            // println!("doing a keepalive\r");
+            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+            let _ = sender.send((NetworkMessage::Keepalive, Some(result_tx)));
+            match result_rx.await {
+                Ok(Ok(Some(NetworkMessage::Ack(_)))) => {
+                    // println!("alive was kept\r");
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+                _ => break,
+            }
+        }
+    });
+    tokio::select! {
         _ = peer_handler => {},
         _ = connection_handler => {},
-    };
+        _ = keepalive => {},
+    }
     return who;
 }
 
 /// returns name of peer when it dies
-async fn active_routed_peer(who: String, peer_handler: JoinHandle<()>) -> String {
+async fn active_routed_peer(
+    who: String,
+    sender: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
+    peer_handler: JoinHandle<()>,
+) -> String {
+    let keepalive = tokio::spawn(async move {
+        loop {
+            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+            let _ = sender.send((NetworkMessage::Keepalive, Some(result_tx)));
+            match result_rx.await {
+                Ok(Ok(Some(NetworkMessage::Ack(_)))) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+                _ => break,
+            }
+        }
+    });
     // println!("active_routed_peer\r");
-    let _err = peer_handler.await;
+    tokio::select! {
+        _ = peer_handler => {},
+        _ = keepalive => {},
+    }
     return who;
 }
 
 async fn ack_waiter(mut ack_rx: UnboundedReceiver<NetworkMessage>, shuttle: ErrorShuttle) {
     match timeout(TIMEOUT, ack_rx.recv()).await {
         Ok(Some(NetworkMessage::Nack(_))) => {
-            shuttle.unwrap().send(Err(NetworkError::Offline)).unwrap();
+            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Offline));
         }
-        Ok(Some(msg)) => shuttle.unwrap().send(Ok(Some(msg))).unwrap(),
+        Ok(Some(msg)) => {
+            let _ = shuttle.unwrap().send(Ok(Some(msg)));
+        }
         _ => {
-            let _ = shuttle.unwrap().send(Err(NetworkError::Timeout));
+            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Timeout));
         }
     }
 }
@@ -308,26 +350,29 @@ async fn maintain_connection(
     kernel_message_tx: MessageSender,
 ) {
     // println!("maintain_connection\r");
+    let message_max_size = websocket.get_config().max_frame_size.unwrap();
     let (mut write_stream, mut read_stream) = websocket.split();
-    let mut outstanding_acks = HashMap::<u64, UnboundedSender<NetworkMessage>>::new();
+    let mut outstanding_acks = VecDeque::<UnboundedSender<NetworkMessage>>::new();
 
     loop {
         tokio::select! {
             Some((message, result_tx)) = message_rx.recv() => {
-                if let Err(_) = write_stream
-                .send(tungstenite::Message::Binary(
-                    serde_json::to_vec(&message).unwrap(),
-                ))
-                .await
-                {
-                    match result_tx {
-                        None => break,
-                        Some(tx) => {
-                            tx.send(Err(NetworkError::Offline)).unwrap();
-                            break;
-                        }
-                    }
+                // can use a buffer here but doesn't seem to affect performance
+                let bytes = bincode::serialize(&message).unwrap();
+                // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
+                if bytes.len() > message_max_size {
+                    // println!("message too large\r");
+                    let _ = match result_tx {
+                        Some(tx) => tx.send(Err(NetworkErrorKind::Timeout)),
+                        None => Ok(()),
+                    };
+                    continue;
                 }
+                let _ = write_stream.send(tungstenite::Message::Binary(
+                    bytes
+                )).await;
+                // println!("..sent\r");
+
                 match message {
                     NetworkMessage::Raw(_)
                     | NetworkMessage::Ack(_)
@@ -335,16 +380,17 @@ async fn maintain_connection(
                     | NetworkMessage::HandshakeAck { .. } => continue,
                     NetworkMessage::Keepalive => {
                         let (ack_tx, ack_rx) = unbounded_channel::<NetworkMessage>();
-                        outstanding_acks.insert(0, ack_tx);
+                        // keepalives get *first priority* in acknowledgement!
+                        outstanding_acks.push_back(ack_tx);
                         tokio::spawn(ack_waiter(
                             ack_rx,
                             result_tx,
                         ));
                     }
-                    NetworkMessage::Handshake { id, .. }
-                    | NetworkMessage::Msg { id, .. } => {
+                    NetworkMessage::Handshake { .. }
+                    | NetworkMessage::Msg { .. } => {
                         let (ack_tx, ack_rx) = unbounded_channel::<NetworkMessage>();
-                        outstanding_acks.insert(id, ack_tx);
+                        outstanding_acks.push_front(ack_tx);
                         tokio::spawn(ack_waiter(
                             ack_rx,
                             result_tx,
@@ -352,14 +398,19 @@ async fn maintain_connection(
                     }
                 }
             },
-            Some(Ok(tungstenite::Message::Binary(bin))) = read_stream.next() => {
-                let Ok(msg) = serde_json::from_slice::<NetworkMessage>(&bin) else { break };
+            Some(incoming) = read_stream.next() => {
+                let Ok(tungstenite::Message::Binary(bin)) = incoming else {
+                    // println!("got a ??\r");
+                    // println!("{:?}\r", incoming);
+                    break
+                };
+                let Ok(msg) = bincode::deserialize::<NetworkMessage>(&bin) else { break };
                 match msg {
                     NetworkMessage::Raw(_) => continue,
-                    NetworkMessage::Ack(id)
-                    | NetworkMessage::HandshakeAck { id, .. }
-                    | NetworkMessage::Nack(id) => {
-                        if let Some(sender) = outstanding_acks.remove(&id) {
+                    NetworkMessage::Ack(_)
+                    | NetworkMessage::HandshakeAck { .. }
+                    | NetworkMessage::Nack(_) => {
+                        if let Some(sender) = outstanding_acks.pop_back() {
                             let _ = sender.send(msg);
                         }
                     }
@@ -424,6 +475,7 @@ async fn maintain_connection(
                                 // connection is now ready to write to
                                 tokio::spawn(active_routed_peer(
                                     their_id.name.clone(),
+                                    sender_tx.clone(),
                                     peer_handler,
                                 ));
                                 // if this replaces an existing peer, destroy old one
@@ -449,6 +501,8 @@ async fn maintain_connection(
                                             let _ = self_tx.send((resp, None));
                                             return;
                                         }
+                                    } else {
+                                        let _ = peer.destructor.send(());
                                     }
                                 }
                                 // we cannot produce a connection to that target
@@ -517,6 +571,7 @@ async fn maintain_connection(
                                 }
                                 // we cannot send a message to that target
                                 let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                                let _ = peer.destructor.send(());
                             }
                         });
                     }
@@ -556,23 +611,27 @@ async fn peer_handler(
             // otherwise, simply send
             match message {
                 NetworkMessage::Raw(message) => {
-                    if let Ok(bytes) = serde_json::to_vec(&message) {
+                    if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
-                            let _ = socket_tx.send((
-                                NetworkMessage::Msg {
-                                    from: our.name.clone(),
-                                    to: f_who.clone(),
-                                    id: message.id,
-                                    contents: encrypted,
-                                },
-                                result_tx,
-                            ));
+                            if socket_tx.is_closed() {
+                                let _ = result_tx.unwrap().send(Err(NetworkErrorKind::Offline));
+                            } else {
+                                let _ = socket_tx.send((
+                                    NetworkMessage::Msg {
+                                        from: our.name.clone(),
+                                        to: f_who.clone(),
+                                        id: message.id,
+                                        contents: encrypted,
+                                    },
+                                    result_tx,
+                                ));
+                            }
                         }
                     }
                 }
                 _ => {
                     if socket_tx.is_closed() {
-                        result_tx.unwrap().send(Err(NetworkError::Offline)).unwrap();
+                        result_tx.unwrap().send(Err(NetworkErrorKind::Offline)).unwrap();
                     } else {
                         let _ = socket_tx.send((message, result_tx));
                     }
@@ -591,7 +650,7 @@ async fn peer_handler(
         _ = async {
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
-                    if let Ok(message) = serde_json::from_slice::<WrappedMessage>(&decrypted) {
+                    if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
                         let _ = kernel_message_tx.send(message).await;
                         continue;
                     }

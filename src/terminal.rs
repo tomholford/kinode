@@ -1,13 +1,17 @@
 use crossterm::{
     cursor,
-    event::{EnableBracketedPaste, DisableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+        KeyModifiers,
+    },
     execute,
     style::Print,
     terminal::{self, disable_raw_mode, enable_raw_mode, ClearType},
 };
 use futures::{future::FutureExt, StreamExt};
 use std::collections::VecDeque;
-use std::io::{stdout, Write};
+use std::fs::{read_to_string, File, OpenOptions};
+use std::io::{stdout, BufWriter, Write};
 
 use crate::types::*;
 
@@ -17,15 +21,21 @@ struct CommandHistory {
     pub working_line: Option<String>,
     pub max_size: usize,
     pub index: usize,
+    pub history_writer: BufWriter<File>,
 }
 
 impl CommandHistory {
-    fn new(max_size: usize) -> Self {
+    fn new(max_size: usize, history: String, history_writer: BufWriter<File>) -> Self {
+        let mut lines = VecDeque::with_capacity(max_size);
+        for line in history.lines() {
+            lines.push_front(line.to_string());
+        }
         Self {
-            lines: VecDeque::with_capacity(max_size),
+            lines,
             working_line: None,
             max_size,
             index: 0,
+            history_writer,
         }
     }
 
@@ -34,6 +44,7 @@ impl CommandHistory {
         // only add line to history if it's not exactly the same
         // as the previous line
         if &line != self.lines.front().unwrap_or(&"".into()) {
+            let _ = writeln!(self.history_writer, "{}", &line);
             self.lines.push_front(line);
         }
         self.index = 0;
@@ -88,6 +99,7 @@ impl CommandHistory {
 pub async fn terminal(
     our: &Identity,
     version: &str,
+    home_directory_path: String,
     event_loop: MessageSender,
     debug_event_loop: DebugSender,
     print_tx: PrintSender,
@@ -142,12 +154,32 @@ pub async fn terminal(
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
     // DEMO: default to false
-    let mut verbose_mode: bool = false;
+    let mut verbose_mode: bool = true;
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 
+    let history_path = std::fs::canonicalize(&home_directory_path)
+        .unwrap()
+        .join(".terminal_history");
+    let history = read_to_string(&history_path).unwrap_or_default();
+    let history_handle = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&history_path)
+        .unwrap();
+    let history_writer = BufWriter::new(history_handle);
     // TODO make adjustable max history length
-    let mut command_history = CommandHistory::new(1000);
+    let mut command_history = CommandHistory::new(1000, history, history_writer);
+
+    let log_path = std::fs::canonicalize(&home_directory_path)
+        .unwrap()
+        .join(".terminal_log");
+    let log_handle = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+        .unwrap();
+    let mut log_writer = BufWriter::new(log_handle);
 
     loop {
         let event = reader.next().fuse();
@@ -155,7 +187,7 @@ pub async fn terminal(
         tokio::select! {
             prints = print_rx.recv() => match prints {
                 Some(printout) => {
-                    let mut stdout = stdout.lock();
+                    let _ = writeln!(log_writer, "{}", printout.content);
                     if match printout.verbosity {
                         0 => false,
                         1 => !verbose_mode,
@@ -163,6 +195,7 @@ pub async fn terminal(
                     } {
                         continue;
                     }
+                    let mut stdout = stdout.lock();
                     execute!(
                         stdout,
                         cursor::MoveTo(0, win_rows - 1),
@@ -543,29 +576,24 @@ pub async fn terminal(
                                     cursor_col = prompt_len.try_into().unwrap();
                                     line_col = prompt_len;
                                     let _err = event_loop.send(
-                                        WrappedMessage {
+                                        KernelMessage {
                                             id: rand::random(),
-                                            target: ProcessNode {
+                                            source: Address {
                                                 node: our.name.clone(),
-                                                process: "terminal".into(),
+                                                process: ProcessId::Name("terminal".into()),
+                                            },
+                                            target: Address {
+                                                node: our.name.clone(),
+                                                process: ProcessId::Name("terminal".into()),
                                             },
                                             rsvp: None,
-                                            message: Ok(Message {
-                                                source: ProcessNode {
-                                                    node: our.name.clone(),
-                                                    process: "terminal".into(),
-                                                },
-                                                content: MessageContent {
-                                                    message_type: MessageType::Request(false),
-                                                    payload: Payload {
-                                                        json: None,
-                                                        bytes: PayloadBytes {
-                                                            circumvent: Circumvent::False,
-                                                            content: bincode::serialize(&command).ok()
-                                                        },
-                                                    },
-                                                },
-                                            })
+                                            message: Message::Request(Request {
+                                                inherit: false,
+                                                expects_response: false,
+                                                ipc: Some(command),
+                                                metadata: None,
+                                            }),
+                                            payload: None,
                                         }
                                     ).await;
                                 },

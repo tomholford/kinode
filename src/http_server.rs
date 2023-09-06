@@ -1,6 +1,5 @@
 use crate::types::*;
-use serde::{Deserialize, Serialize};
-use serde_urlencoded;
+ use serde_urlencoded;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -9,13 +8,6 @@ use tokio::sync::oneshot;
 use warp::http::{header::HeaderName, header::HeaderValue, HeaderMap, StatusCode};
 use warp::{Filter, Reply};
 
-// types and constants
-#[derive(Debug, Serialize, Deserialize)]
-struct HttpResponse {
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
-}
 type HttpSender = tokio::sync::oneshot::Sender<HttpResponse>;
 type HttpResponseSenders = Arc<Mutex<HashMap<u64, HttpSender>>>;
 
@@ -23,68 +15,107 @@ type HttpResponseSenders = Arc<Mutex<HashMap<u64, HttpSender>>>;
 pub async fn http_server(
     our: String,
     our_port: u16,
-    message_rx: MessageReceiver,
-    message_tx: MessageSender,
+    mut recv_in_server: MessageReceiver,
+    send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) {
     let http_response_senders = Arc::new(Mutex::new(HashMap::new()));
-
+    let our_name = our.clone();
 
     tokio::join!(
         http_serve(
             our.clone(),
             our_port,
             http_response_senders.clone(),
-            message_tx.clone(),
+            send_to_loop.clone(),
             print_tx.clone()
         ),
-        http_handle_messages(http_response_senders, message_rx, print_tx)
+        async move {
+            while let Some(km) = recv_in_server.recv().await {
+                let KernelMessage {
+                    id,
+                    source,
+                    target: _,
+                    rsvp: _,
+                    message: Message::Response((Ok(
+                        Response {
+                            ipc,
+                            metadata: _,
+                        }),
+                        _context)),
+                    payload,
+                } = km.clone() else {
+                    // TODO don't panic
+                    panic!("http_server: bad message");
+                };
+
+                if let Err(e) = http_handle_messages(
+                    http_response_senders.clone(),
+                    id,
+                    ipc,
+                    payload,
+                    print_tx.clone()
+                ).await {
+                    send_to_loop.send(
+                        make_error_message(
+                            our_name.clone(),
+                            id.clone(),
+                            source.clone(),
+                            e
+                        )
+                    ).await.unwrap();
+                }
+            }
+        }
     );
 }
 
 async fn http_handle_messages(
     http_response_senders: HttpResponseSenders,
-    mut message_rx: MessageReceiver,
-    print_tx: PrintSender,
-) {
-    while let Some(wm) = message_rx.recv().await {
-        let WrappedMessage { ref id, target: _, rsvp: _, message: Ok(Message { source: _, ref content }), }
-                = wm else {
-            panic!("filesystem: unexpected Error")  //  TODO: implement error handling
-        };
+    id: u64,
+    json: Option<String>,
+    payload: Option<Payload>,
+    _print_tx: PrintSender,
+) -> Result<(), HttpServerError> {
+    let Some(ref json) = json else {
+        return Err(HttpServerError::NoJson);
+    };
+    let request  = match serde_json::from_str::<HttpResponse>(json) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(HttpServerError::BadJson {
+                json: json.clone(),
+                error: format!("{}", e),
+            });
+        }
+    };
 
-        let Some(value) = content.payload.json.clone() else {
-            panic!("http_server: action must have JSON payload, got: {:?}", wm);
-        };
-        let request: HttpResponse = serde_json::from_value(value).unwrap();
+    let Some(payload) = payload else {
+        return Err(HttpServerError::NoBytes)
+    };
 
-        let mut senders = http_response_senders.lock().await;
-        match senders.remove(id) {
-            Some(channel) => {
-                let _ = channel.send(HttpResponse {
-                    status: request.status,
-                    headers: request.headers,
-                    body: content.payload.bytes.content.clone(),  //  TODO: ? ; could remove ref in 51 and avoid clone
-                });
-            }
-            None => {
-                // TODO: this should be a panic because something has gotten incredibly out of sync
-                let _ = print_tx
-                    .send(Printout {
-                        verbosity: 1,
-                        content: format!("http_server: NO KEY FOUND FOR ID {}", id),
-                    })
-                    .await;
-            }
+    let mut senders = http_response_senders.lock().await;
+    match senders.remove(&id) {
+        Some(channel) => {
+            let _ = channel.send(HttpResponse {
+                status: request.status,
+                headers: request.headers,
+                body: Some(payload.bytes),
+            });
+        }
+        None => {
+            panic!("http_server: inconsistent state, no key found for id {}", id);
         }
     }
+
+    Ok(())
 }
 
 async fn http_serve(
     our: String,
     our_port: u16,
     http_response_senders: HttpResponseSenders,
-    message_tx: MessageSender,
+    send_to_loop: MessageSender,
     print_tx: PrintSender,
 ) {
     let print_tx_move = print_tx.clone();
@@ -109,7 +140,7 @@ async fn http_serve(
         .and(warp::filters::body::bytes())
         .and(warp::any().map(move || our.clone()))
         .and(warp::any().map(move || http_response_senders.clone()))
-        .and(warp::any().map(move || message_tx.clone()))
+        .and(warp::any().map(move || send_to_loop.clone()))
         .and(warp::any().map(move || print_tx_move.clone()))
         .and_then(handler);
 
@@ -130,41 +161,37 @@ async fn handler(
     body: warp::hyper::body::Bytes,
     our: String,
     http_response_senders: HttpResponseSenders,
-    message_tx: MessageSender,
+    send_to_loop: MessageSender,
     _print_tx: PrintSender,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let path_str = path.as_str().to_string();
     let id: u64 = rand::random();
-    let message = WrappedMessage {
+    let message = KernelMessage {
         id: id.clone(),
-        target: ProcessNode {
+        source: Address {
             node: our.clone(),
-            process: "http_bindings".into(),
+            process: ProcessId::Name("http_server".into()),
+        },
+        target: Address {
+            node: our.clone(),
+            process: ProcessId::Name("http_bindings".into()),
         },
         rsvp: None, // TODO I believe this is correct
-        message: Ok(Message {
-            source: ProcessNode {
-                node: our.clone(),
-                process: "http_server".into(),
-            },
-            content: MessageContent {
-                message_type: MessageType::Request(true),
-                payload: Payload {
-                    json: Some(serde_json::json!(
-                      {
-                        "action": "request".to_string(),
-                        "method": method.to_string(),
-                        "path": path_str,
-                        "headers": serialize_headers(&headers),
-                        "query_params": query_params,
-                      }
-                    )),
-                    bytes: PayloadBytes {
-                        circumvent: Circumvent::False,
-                        content: Some(body.to_vec()), // TODO None sometimes
-                    },
-                },
-            },
+        message: Message::Request(Request {
+            inherit: false,
+            expects_response: true,
+            ipc: Some(serde_json::json!({
+                "action": "request".to_string(),
+                "method": method.to_string(),
+                "path": path_str,
+                "headers": serialize_headers(&headers),
+                "query_params": query_params,
+            }).to_string()),
+            metadata: None,
+        }),
+        payload: Some(Payload {
+            mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
+            bytes: body.to_vec(),
         }),
     };
 
@@ -174,7 +201,7 @@ async fn handler(
         .await
         .insert(id, response_sender);
 
-    message_tx.send(message).await.unwrap();
+    send_to_loop.send(message).await.unwrap();
     let from_channel = response_receiver.await.unwrap();
     let reply = warp::reply::with_status(
         match from_channel.body {
@@ -196,10 +223,23 @@ async fn handler(
 //
 //  helpers
 //
+fn to_pascal_case(s: &str) -> String {
+    s.split('-')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("-")
+}
+
 fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut hashmap = HashMap::new();
     for (key, value) in headers.iter() {
-        let key_str = key.to_string();
+        let key_str = to_pascal_case(&key.to_string());
         let value_str = value.to_str().unwrap_or("").to_string();
         hashmap.insert(key_str, value_str);
     }
@@ -231,5 +271,35 @@ async fn is_port_available(bind_addr: &str) -> bool {
     match TcpListener::bind(bind_addr).await {
         Ok(_) => true,
         Err(_) => false,
+    }
+}
+
+fn make_error_message(
+    our_name: String,
+    id: u64,
+    target: Address,
+    error: HttpServerError,
+) -> KernelMessage {
+    KernelMessage {
+        id,
+        source: Address {
+            node: our_name.clone(),
+            process: ProcessId::Name("http_server".into()),
+        },
+        target,
+        rsvp: None,
+        message: Message::Response((Err(UqbarError {
+            kind: error.kind().into(),
+            message: Some(serde_json::to_string(&error).unwrap()),
+        }), None)),
+        payload: None,
+    }
+}
+
+//  TODO: factor our with microkernel
+fn get_current_unix_time() -> anyhow::Result<u64> {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(t) => Ok(t.as_secs()),
+        Err(e) => Err(e.into()),
     }
 }

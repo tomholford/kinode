@@ -105,7 +105,7 @@ pub async fn eth_rpc(
             EthRpcAction::SubscribeEvents(sub) => {
                 // print_tx.send(Printout {
                 //     verbosity: 0,
-                //     content: format!("eth_rpc: subscribing to events: {:?}", sub),
+                //     content: format!("eth_rpc: target: {:?}", target.clone()),
                 // }).await;
 
                 let id: u64 = rand::random();

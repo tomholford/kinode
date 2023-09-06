@@ -23,7 +23,6 @@ struct EthEvent {
     topics: Vec<String>,
     transactionHash: String,
     transactionIndex: String,
-    transactionLogIndex: String,
 }
 
 impl UqProcess for Component {
@@ -70,7 +69,7 @@ impl UqProcess for Component {
                 continue;
             };
             let Message::Request(request) = message else {
-                print_to_terminal(0, "pqi_indexer: got unexpected message");
+                print_to_terminal(0, "pqi_indexer: got response");
                 continue;
             };
             let Ok(msg) = serde_json::from_str::<AllActions>(&request.ipc.unwrap_or_default()) else {
@@ -80,10 +79,10 @@ impl UqProcess for Component {
 
             match msg {
                 AllActions::EventSubscription(subscription) => {
-                    bindings::print_to_terminal(0, format!("event subscription: {:?}", subscription).as_str());
+                    bindings::print_to_terminal(0, format!("pqi_indexer: event subscription: {:?}", subscription).as_str());
                 }
                 _ => {
-                    bindings::print_to_terminal(0, format!("eth_demo: unknown message {:?}", msg).as_str());
+                    bindings::print_to_terminal(0, format!("pqi_indexer: unknown message {:?}", msg).as_str());
                 }
             }
         }

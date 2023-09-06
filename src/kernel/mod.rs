@@ -702,7 +702,8 @@ async fn handle_response(
                     })
                     .await
                     .unwrap();
-                return Err(anyhow::anyhow!("fatal: dropped Response"));
+                return Ok(0);
+                // return Err(anyhow::anyhow!("fatal: dropped Response"));
             }
         };
 

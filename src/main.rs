@@ -489,7 +489,6 @@ async fn main() {
         },
         _ = kernel_handle      => {"fatal: kernel exit".into()},
         _ = net_handle         => {"fatal: net exit".into()},
-        _ = indexing_handle    => {"fatal: indexer exit".into()},
         _ = fs_handle          => {"fatal: fs exit".into()},
         _ = http_server_handle => {"fatal: http_server exit".into()},
         _ = http_client_handle => {"fatal: http_client exit".into()},

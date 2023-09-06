@@ -2,14 +2,11 @@ use crate::types::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
-use ethers::prelude::*;
 use serde::{Deserialize, Serialize};
-use ethers::types::transaction::eip2718::TypedTransaction;
-use ethers::core::utils::Anvil;
 use ethers::core::types::Filter;
-use ethers::middleware::SignerMiddleware;
-use ethers::abi::Token;
-use ethers_providers::Ws;
+use ethers::types::{ValueOrArray, U256};
+use ethers::prelude::Provider;
+use ethers_providers::{Middleware, Ws, StreamExt};
 use serde_json::json;
 use thiserror::Error;
 
@@ -69,37 +66,45 @@ pub async fn eth_rpc(
             verbosity: 0,
             content: "eth_rpc: got message".to_string(),
         }).await;
-        let WrappedMessage { ref id, target: _, ref rsvp, message: Ok(Message { ref source, ref content }), }
-            = message else {
-                panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
-            };
-    
-        let target = match content.message_type {
-            MessageType::Response => {
-                panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: got response, expected request: {:?}", wm) });
-            },
-            MessageType::Request(is_expecting_response) => {
-                if is_expecting_response {
-                    ProcessNode {
-                        node: our.clone(),
-                        process: source.process.clone(),
-                    }
-                } else {
-                    let Some(rsvp) = rsvp else {
-                        panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: got request with no RSVP: {:?}", wm)});
-                    };
-                    rsvp.clone()
-                }
-            }
+
+        let KernelMessage {
+            id,
+            source,
+            target: _,
+            rsvp,
+            message: Message::Request(Request {
+                inherit: _,
+                expects_response: is_expecting_response,
+                ipc: json,
+                metadata: _,
+            }),
+            payload: _,
+        } = message else {
+            panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
         };
+    
+        let target = if is_expecting_response {
+            Address {
+                node: our.clone(),
+                process: source.process.clone(),
+            }
+        } else {
+            let Some(rsvp) = rsvp else {
+                panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: got request with no RSVP: {:?}", wm)});
+            };
+            rsvp.clone()
+        };
+
     
         // let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
     
-        let Some(json) = content.payload.json.clone() else {
+        let Some(json) = json.clone() else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
         };
     
-        let Ok(action) = serde_json::from_value::<EthRpcAction>(json.clone()) else {
+        let Ok(action) = serde_json::from_value::<EthRpcAction>(
+            serde_json::Value::String(json.clone())
+        ) else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse json: {:?}", json) });
         };
 
@@ -112,26 +117,22 @@ pub async fn eth_rpc(
 
                 let id: u64 = rand::random();
                 send_to_loop.send(
-                    WrappedMessage {
+                    KernelMessage {
                         id: id.clone(),
-                        target: target.clone(),
+                        source: Address {
+                            node: our.clone(),
+                            process: ProcessId::Name("eth_rpc".into()),
+                        }, // TODO?
+                        target: target.clone(), // TODO?
                         rsvp: None,
-                        message: Ok(Message {
-                            source: ProcessNode {
-                                node: our.clone(),
-                                process: "eth_rpc".to_string(),
-                            },
-                            content: MessageContent {
-                                message_type: MessageType::Response,
-                                payload: Payload {
-                                    json: Some(json!(id)),
-                                    bytes: PayloadBytes{
-                                        circumvent: Circumvent::False,
-                                        content: None,
-                                    },
-                                },
-                            },
-                        }),
+                        message: Message::Response((
+                            Ok(Response {
+                                ipc: Some(json!(id).to_string()),
+                                metadata: None,
+                            }),
+                            None,
+                        )),
+                        payload: None
                     }
                 ).await.unwrap();
 
@@ -178,28 +179,23 @@ pub async fn eth_rpc(
                             content: format!("eth_rpc: got event: {:?}", event),
                         }).await;
                         send_to_loop.send(
-                            WrappedMessage {
+                            KernelMessage {
                                 id: rand::random(),
+                                source: Address {
+                                    node: our.clone(),
+                                    process: ProcessId::Name("eth_rpc".into()),
+                                },
                                 target: target.clone(),
                                 rsvp: None,
-                                message: Ok(Message {
-                                    source: ProcessNode {
-                                        node: our.clone(),
-                                        process: "eth_rpc".to_string(),
-                                    },
-                                    content: MessageContent {
-                                        message_type: MessageType::Request(false),
-                                        payload: Payload {
-                                            json: Some(json!({
-                                                "EventSubscription": serde_json::to_value(event).unwrap()
-                                            })),
-                                            bytes: PayloadBytes{
-                                                circumvent: Circumvent::False,
-                                                content: None
-                                            },
-                                        },
-                                    },
+                                message: Message::Request(Request {
+                                    inherit: false, // TODO what
+                                    expects_response: false,
+                                    ipc: Some(json!({
+                                        "EventSubscription": serde_json::to_value(event).unwrap()
+                                    }).to_string()),
+                                    metadata: None,
                                 }),
+                                payload: None,
                             }
                         ).await.unwrap();
                     }
@@ -229,38 +225,38 @@ pub async fn eth_rpc(
 //
 //  helpers
 //
-fn make_error_message(
-    our: String,
-    id: u64,
-    source_process: String,
-    error: EthRpcError,
-) -> WrappedMessage {
-    WrappedMessage {
-        id,
-        target: ProcessNode {
-            node: our.clone(),
-            process: source_process,
-        },
-        rsvp: None,
-        message: Err(UqbarError {
-            source: ProcessNode {
-                node: our,
-                process: "filesystem".into(),
-            },
-            timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-            content: UqbarErrorContent {
-                kind: error.kind().into(),
-                // message: format!("{}", error),
-                message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
-                context: serde_json::to_value("").unwrap(),
-            },
-        }),
-    }
-}
+// fn make_error_message(
+//     our: String,
+//     id: u64,
+//     source_process: String,
+//     error: EthRpcError,
+// ) -> WrappedMessage {
+//     WrappedMessage {
+//         id,
+//         target: Address {
+//             node: our.clone(),
+//             process: source_process,
+//         },
+//         rsvp: None,
+//         message: Err(UqbarError {
+//             source: Address {
+//                 node: our,
+//                 process: "filesystem".into(),
+//             },
+//             timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
+//             content: UqbarErrorContent {
+//                 kind: error.kind().into(),
+//                 // message: format!("{}", error),
+//                 message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
+//                 context: serde_json::to_value("").unwrap(),
+//             },
+//         }),
+//     }
+// }
 
-fn get_current_unix_time() -> anyhow::Result<u64> {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(t) => Ok(t.as_secs()),
-        Err(e) => Err(e.into()),
-    }
-}
+// fn get_current_unix_time() -> anyhow::Result<u64> {
+//     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+//         Ok(t) => Ok(t.as_secs()),
+//         Err(e) => Err(e.into()),
+//     }
+// }

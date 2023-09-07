@@ -110,7 +110,6 @@ world uq-process {
 
     import print-to-terminal: func(verbosity: u8, message: string)
     import get-unix-time: func() -> u64
-    import get-insecure-uniform-u64: func() -> u64
     import get-eth-block: func() -> u64
 
     // process management:
@@ -139,4 +138,9 @@ world uq-process {
     import send-and-await-response:
         func(target: address, request: request, context: option<context>, payload: option<payload>) ->
             tuple<address, response, option<context>>
+
+    //  wasi
+    import wasi:random/insecure
+    import wasi:random/insecure-seed
+    import wasi:random/random
 }

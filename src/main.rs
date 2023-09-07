@@ -449,6 +449,7 @@ async fn main() {
 
     let kernel_handle = tokio::spawn(kernel::kernel(
         our.clone(),
+        home_directory_path.into(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,

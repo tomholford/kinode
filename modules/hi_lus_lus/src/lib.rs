@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{print_to_terminal, receive, send_request, UqProcess};
+use bindings::{Guest, print_to_terminal, receive, send_request};
 use serde::{Deserialize, Serialize};
 
 struct Component;
@@ -18,7 +18,7 @@ struct HiMessage {
     contents: String,
 }
 
-impl UqProcess for Component {
+impl Guest for Component {
     fn init(our: Address) {
         print_to_terminal(1, "hi++: start");
 

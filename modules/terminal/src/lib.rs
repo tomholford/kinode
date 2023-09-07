@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 mod process_lib;
 struct Component;
-use bindings::{component::uq_process::types::*, print_to_terminal, receive, send_request, UqProcess};
+use bindings::{component::uq_process::types::*, Guest, print_to_terminal, receive, send_request};
 
 fn parse_command(our_name: &str, line: String) {
     let (head, tail) = line.split_once(" ").unwrap_or((&line, ""));
@@ -76,7 +76,7 @@ fn parse_command(our_name: &str, line: String) {
     }
 }
 
-impl UqProcess for Component {
+impl Guest for Component {
     fn init(our: Address) {
         assert_eq!(our.process, ProcessId::Name("terminal".into()));
         print_to_terminal(0, &format!("terminal: running"));

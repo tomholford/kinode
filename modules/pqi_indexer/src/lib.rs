@@ -101,13 +101,15 @@ impl UqProcess for Component {
                     let routers      = decoded.4;
                     
                     let json_payload = json!({
-                        "pqi_id": pqi_id,
-                        "nft_contract": nft_contract.to_string(),
-                        "nft_id": nft_id,
-                        "public_key": public_key,
-                        "ip": ip,
-                        "port": port,
-                        "routers": routers,
+                        "PqiUpdate": {
+                            "pqi_id": pqi_id,
+                            "nft_contract": nft_contract.to_string(),
+                            "nft_id": nft_id,
+                            "public_key": public_key,
+                            "ip": ip,
+                            "port": port,
+                            "routers": routers,
+                        }
                     }).to_string();
 
                     bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());

@@ -71,6 +71,23 @@ pub struct Handshake {
     nonce: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NetActions {
+    Peers,
+    PqiUpdate(PqiUpdate),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PqiUpdate {
+    pub pqi_id: u64,
+    pub nft_contract: String,
+    pub nft_id: String,
+    pub public_key: String,
+    pub ip: u32,
+    pub port: u16,
+    pub routers: Vec<u64>, // TODO should be eth types
+}
+
 pub async fn networking(
     our: Identity,
     our_ip: String,
@@ -450,8 +467,18 @@ async fn handle_incoming_message(
             .await;
     } else {
         // available commands: "peers"
-        match data.as_str() {
-            "peers" => {
+        let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 0,
+                    content: "net: got unknown command".into(),
+                })
+                .await;
+            return;
+        };
+
+        match act {
+            NetActions::Peers => {
                 let peer_read = peers.read().await;
                 let _ = print_tx
                     .send(Printout {
@@ -460,13 +487,23 @@ async fn handle_incoming_message(
                     })
                     .await;
             }
-            _ => {
+            NetActions::PqiUpdate(log) => {
+                if km.source.process != ProcessId::Name("pqi_indexer".to_string()) {
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 0,
+                            content: "net: only pqi_indexer can update pqi".into(),
+                        })
+                        .await;
+                    return;
+                }
                 let _ = print_tx
                     .send(Printout {
                         verbosity: 1,
-                        content: "ws: got unknown command".into(),
+                        content: "net: got pqi update".into(),
                     })
                     .await;
+                // TODO actually update the PKI
             }
         }
     }

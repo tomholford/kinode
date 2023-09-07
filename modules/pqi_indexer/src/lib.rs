@@ -79,10 +79,8 @@ impl UqProcess for Component {
 
             match msg {
                 AllActions::EventSubscription(subscription) => {
-                    bindings::print_to_terminal(0, format!("pqi_indexer: event subscription: {:?}", subscription).as_str());
-                }
-                _ => {
-                    bindings::print_to_terminal(0, format!("pqi_indexer: unknown message {:?}", msg).as_str());
+
+                    bindings::print_to_terminal(0, format!("pqi_indexer: INDEX {:?}", subscription.blockNumber).as_str());
                 }
             }
         }

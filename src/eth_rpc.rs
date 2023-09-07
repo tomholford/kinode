@@ -21,7 +21,7 @@ struct EthEventSubscription {
     addresses: Option<Vec<String>>,
     from_block: Option<u64>,
     to_block: Option<u64>,
-    event: Option<Vec<String>>, // aka topic0
+    events: Option<Vec<String>>, // aka topic0s
     topic1: Option<U256>,
     topic2: Option<U256>,
     topic3: Option<U256>,
@@ -146,7 +146,7 @@ pub async fn eth_rpc(
                 if let Some(to_block) = sub.to_block {
                     filter = filter.to_block(to_block);
                 }
-                if let Some(events) = sub.event {
+                if let Some(events) = sub.events {
                     filter = filter.events(&events);
                 }
                 if let Some(topic1) = sub.topic1 {

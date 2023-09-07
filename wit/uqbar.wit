@@ -135,9 +135,10 @@ world uq-process {
     import send-error: func(error: uqbar-error)
 
     // send a single request, then block (internally) until its response
+    // the type is Message but will always contain Response
     import send-and-await-response:
         func(target: address, request: request, context: option<context>, payload: option<payload>) ->
-            tuple<address, response, option<context>>
+            result<tuple<address, message>, tuple<network-error, option<context>>>
 
     //  wasi
     import wasi:random/insecure

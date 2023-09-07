@@ -16,43 +16,6 @@ struct Component;
 
 const TABLE: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("process");
 
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct Address {
-//     pub node: String,
-//     pub process: ProcessId,
-// }
-// #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-// pub enum ProcessId {
-//     Id(u64),
-//     Name(String),
-// }
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct Payload {
-//     json: Option<serde_json::Value>,
-//     bytes: Option<Vec<u8>>,
-// }
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct RequestOnPanic {
-//     pub target: ProcessReference,
-//     pub payload: Payload,
-// }
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub enum SendOnPanic {
-//     None,
-//     Restart,
-//     Requests(Vec<RequestOnPanic>),
-// }
-// #[derive(Debug, Serialize, Deserialize)]
-// #[serde(tag = "type")]
-// pub enum ProcessManagerCommand {
-//     Initialize { jwt_secret_bytes: Option<Vec<u8>> },
-//     Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-//     Stop { process_name: String },
-//     Restart { process_name: String },
-//     ListRunningProcesses,
-//     PersistState,
-// }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum KeyValueRequest {
     // Initialize,
@@ -224,43 +187,6 @@ fn handle_message (
                             );
                         },
                     };
-
-                    // send_response(
-                    //     &Response {
-                    //         ipc: Some(serde_json::to_string(&KeyValueResponse::Read {
-                    //             key: key.clone(),
-                    //         })?),
-                    //         metadata: None,
-                    //     },
-                    //     match table.get(&key[..])? {
-                    //         None => None,
-                    //         Some(v) => Some(&Payload {
-                    //             mime: None,
-                    //             bytes: v.value().to_vec(),
-                    //         }),
-                    //     },
-                    //     // Some(KeyValueResponse::Write { key }),
-                    //     // types::OutboundPayloadBytes::None,
-                    //     // None::<String>,  //  TODO
-                    // );
-
-                    // match table.get(&key[..])? {
-                    //     None => {
-                    //         let _ = process_lib::send_response(
-                    //             Some(KeyValueResponse::Read { key }),
-                    //             types::OutboundPayloadBytes::None,
-                    //             None::<String>,  //  TODO
-                    //         )?;
-                    //     },
-                    //     Some(v) => {//Some(v.value().clone()),
-                    //         println!("kv: read {:?}", v.value());
-                    //         let _ = process_lib::send_response(
-                    //             Some(KeyValueResponse::Read { key }),
-                    //             types::OutboundPayloadBytes::Some(v.value().to_vec()),
-                    //             None::<String>,  //  TODO
-                    //         )?;
-                    //     },
-                    // };
                 },
             }
 

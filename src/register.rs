@@ -15,6 +15,7 @@ use jwt::{SignWithKey, VerifyWithKey, Error};
 use hmac::Hmac;
 use sha2::Sha256;
 use serde::{Serialize, Deserialize};
+use std::collections::HashMap; // TODO delete
 
 use crate::types::*;
 
@@ -53,7 +54,6 @@ pub async fn register(
     kill_rx: oneshot::Receiver<bool>,
     port: u16,
     redir_port: u16,
-    pki: OnchainPKI,
 ) {
     const REGISTER_PAGE: &str = include_str!("register.html");
 
@@ -66,7 +66,8 @@ pub async fn register(
     let jwt_secret_post = jwt_secret.clone();
 
     let check_address_route = warp::path!("check-address" / String).and_then({
-        let pki = pki.clone();
+        // TODO need to get rid of this
+        let pki: OnchainPKI = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         move |address: String| {
             let pki = pki.clone();
             async move {
@@ -96,7 +97,8 @@ pub async fn register(
     });
 
     let check_username_route = warp::path!("check-username" / String).and_then({
-        let pki = pki.clone();
+        // TODO need to get rid of this
+        let pki: OnchainPKI = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         move |username: String| {
             let pki = pki.clone();
             async move {

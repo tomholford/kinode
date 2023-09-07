@@ -83,7 +83,7 @@ pub struct PqiUpdate {
     pub nft_contract: String,
     pub nft_id: String,
     pub public_key: String,
-    pub ip: u32,
+    pub ip: String,
     pub port: u16,
     pub routers: Vec<u64>, // TODO should be eth types
 }
@@ -92,12 +92,13 @@ pub async fn networking(
     our: Identity,
     our_ip: String,
     keypair: Ed25519KeyPair,
-    pki: OnchainPKI,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
     mut message_rx: MessageReceiver,
 ) {
+    let pki: OnchainPKI = Arc::new(RwLock::new(HashMap::new()));
+    let names: PKINames = Arc::new(RwLock::new(HashMap::new()));
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = Arc::new(keypair);
 
@@ -144,6 +145,7 @@ pub async fn networking(
                     our_ip.clone(),
                     keypair.clone(),
                     pki.clone(),
+                    names.clone(),
                     peers.clone(),
                     kernel_message_tx.clone(),
                     network_error_tx.clone(),
@@ -160,6 +162,7 @@ async fn sender(
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
+    names: PKINames,
     peers: Peers,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
@@ -167,7 +170,7 @@ async fn sender(
     km: KernelMessage,
 ) {
     if km.target.node == our.name {
-        handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
+        handle_incoming_message(&our, km, peers.clone(), pki.clone(), names.clone(), print_tx.clone()).await;
         return;
     }
     let start = std::time::Instant::now();
@@ -448,6 +451,8 @@ async fn handle_incoming_message(
     our: &Identity,
     km: KernelMessage,
     peers: Peers,
+    pki: OnchainPKI,
+    names: PKINames,
     print_tx: PrintSender,
 ) {
     let data = match km.message {
@@ -503,7 +508,38 @@ async fn handle_incoming_message(
                         content: "net: got pqi update".into(),
                     })
                     .await;
-                // TODO actually update the PKI
+
+                // TODO this should come from log.data
+                // TODO probably randomly generate these if possible
+                let temp_rand_name: String = "TODO".to_string();
+
+                let _ = names.write().await.insert(log.pqi_id, temp_rand_name.clone());
+
+                let routers: Vec<String> = vec![];
+                // TODO why isn't this working
+                // {
+                //     let names_ref = names.clone();
+                //     async {
+                //         log.routers.iter()
+                //             .filter_map(|&num| async {
+                //                 // Lock for read access and fetch the string
+                //                 let lock = names_ref.read().await;
+                //                 lock.get(&num).cloned()
+                //             }.await)
+                //             .collect()
+                //     }.await
+                // };
+
+                let _ = pki.write().await.insert(
+                    temp_rand_name.clone(),
+                    Identity {
+                        name: temp_rand_name,
+                        address: "".to_string(), // TODO
+                        networking_key: log.public_key,
+                        ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 { None } else { Some((log.ip, log.port)) } ,
+                        allowed_routers: routers,
+                    }
+                );
             }
         }
     }

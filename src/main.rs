@@ -7,11 +7,9 @@ use reqwest;
 use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
-use std::collections::HashMap;
 use std::env;
 use std::num::NonZeroU32;
-use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 use tokio::{fs, time::timeout};
 
 use crate::http_server::find_open_port;
@@ -90,18 +88,6 @@ async fn main() {
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
 
-    // TODO this should be injected into net from a process
-    let (pki, local): (OnchainPKI, bool) = 'get_chain: {
-        let blockchain = std::fs::File::open("blockchain.json").unwrap();
-        let json: serde_json::Value = serde_json::from_reader(blockchain).unwrap();
-        (
-            Arc::new(RwLock::new(
-                serde_json::from_value::<HashMap<String, Identity>>(json).unwrap(),
-            )),
-            true,
-        )
-    };
-
     println!("finding public IP address...");
     let our_ip = {
         if let Ok(Some(ip)) = timeout(std::time::Duration::from_secs(5), public_ip::addr_v4()).await
@@ -175,14 +161,14 @@ async fn main() {
         };
 
         // check if Identity for this username has correct networking keys,
-        // if not, prompt user to reset them. TODO
-        let pki_read = pki.read().await;
-        let our_identity = match pki_read.get(&username) {
-            Some(identity) => identity,
-            None => panic!(
-                "TODO prompt registration: no identity found for username {}",
-                username
-            ),
+        // if not, prompt user to reset them.
+        // TODO this should be decrypted from disk
+        let our_identity = Identity {
+            name: username.clone(),
+            address: "0x0".into(),
+            networking_key: hex::encode(networking_keypair.public_key().as_ref()),
+            ws_routing: None,
+            allowed_routers: vec![],
         };
 
         (our_identity.clone(), networking_keypair, jwt_secret_bytes)
@@ -203,7 +189,7 @@ async fn main() {
 
         let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>, String)>(1);
         let (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = tokio::select! {
-            _ = register::register(tx, kill_rx, http_server_port, http_server_port, pki.clone())
+            _ = register::register(tx, kill_rx, http_server_port, http_server_port)
                 => panic!("registration failed"),
             (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = async {
                 while let Some(fin) = rx.recv().await {
@@ -266,25 +252,16 @@ async fn main() {
         };
 
         // make POST
-        // TODO this needs to be a transaction sent to an actual RPC endpoint
-        if !local {
-            let response = reqwest::Client::new()
-                .post(rpc_url)
-                .body(bincode::serialize(&id_transaction).unwrap())
-                .send()
-                .await
-                .unwrap();
+        // TODO send transaction to actual RPC endpoint
+        // let response = reqwest::Client::new()
+        //     .post(rpc_url)
+        //     .body(bincode::serialize(&id_transaction).unwrap())
+        //     .send()
+        //     .await
+        //     .unwrap();
 
-            assert!(response.status().is_success());
-        } else {
-            pki.write().await.insert(our.name.clone(), our.clone());
-            fs::write(
-                "blockchain.json",
-                serde_json::to_string(&*pki.read().await).unwrap(),
-            )
-            .await
-            .unwrap();
-        }
+        // assert!(response.status().is_success());
+
         println!("\"posting\" \"transaction\" to \"blockchain\"...");
         std::thread::sleep(std::time::Duration::from_secs(5));
         fs::write(
@@ -433,7 +410,6 @@ async fn main() {
         our.clone(),
         our_ip,
         networking_keypair,
-        pki.clone(),
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),

@@ -105,8 +105,14 @@ impl UqProcess for Component {
                             "pqi_id": pqi_id,
                             "nft_contract": nft_contract.to_string(),
                             "nft_id": nft_id,
-                            "public_key": public_key,
-                            "ip": ip,
+                            "public_key": format!("0x{}", public_key),
+                            "ip": format!(
+                                "{}.{}.{}.{}",
+                                (ip >> 24) & 0xFF,
+                                (ip >> 16) & 0xFF,
+                                (ip >> 8) & 0xFF,
+                                ip & 0xFF
+                            ),
                             "port": port,
                             "routers": routers,
                         }

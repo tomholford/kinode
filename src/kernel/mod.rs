@@ -140,6 +140,52 @@ impl WasiView for ProcessWasi {
 }
 
 ///
+/// intercept wasi random
+///
+
+#[async_trait::async_trait]
+impl wasi::random::insecure::Host for ProcessWasi {
+    async fn get_insecure_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            bytes.push(rand::random());
+        }
+        Ok(bytes)
+    }
+
+    async fn get_insecure_random_u64(&mut self) -> Result<u64> {
+        Ok(rand::random())
+    }
+}
+
+#[async_trait::async_trait]
+impl wasi::random::insecure_seed::Host for ProcessWasi {
+    async fn insecure_seed(&mut self) -> Result<(u64, u64)> {
+        Ok((rand::random(), rand::random()))
+    }
+}
+
+#[async_trait::async_trait]
+impl wasi::random::random::Host for ProcessWasi {
+    async fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len as usize);
+        getrandom::getrandom(&mut bytes[..])?;
+        Ok(bytes)
+    }
+
+    async fn get_random_u64(&mut self) -> Result<u64> {
+        let mut bytes = Vec::with_capacity(8);
+        getrandom::getrandom(&mut bytes[..])?;
+
+        let mut number = 0u64;
+        for (i, &byte) in bytes.iter().enumerate() {
+            number |= (byte as u64) << (i * 8);
+        }
+        Ok(number)
+    }
+}
+
+///
 /// create the process API. this is where the functions that a process can use live.
 ///
 #[async_trait::async_trait]
@@ -161,10 +207,6 @@ impl UqProcessImports for ProcessWasi {
             Ok(t) => Ok(t.as_secs()),
             Err(e) => Err(e.into()),
         }
-    }
-
-    async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
-        Ok(rand::random())
     }
 
     async fn get_eth_block(&mut self) -> Result<u64> {
@@ -762,7 +804,20 @@ async fn make_process_loop(
         .build(&mut table)
         .unwrap();
 
-    wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
+    // wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::monotonic_clock::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::timezone::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::filesystem::filesystem::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::poll::poll::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::io::streams::add_to_linker(&mut linker, |t| t).unwrap();
+    // wasmtime_wasi::preview2::bindings::random::random::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::exit::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::environment::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::preopens::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stdin::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stdout::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stderr::add_to_linker(&mut linker, |t| t).unwrap();
     let mut store = Store::new(
         engine,
         ProcessWasi {

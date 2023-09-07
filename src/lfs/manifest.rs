@@ -7,43 +7,36 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
-use super::wal::{ToDelete};
-use crate::types::FileSystemError;
+use super::wal::ToDelete;
+use crate::types::{FileSystemError, ProcessId};
 
 //   ON-DISK, MANIFEST
 #[derive(Serialize, Deserialize, Clone)]
 pub enum ManifestRecord {
-    BackupI(BackupImmutable),
-    BackupA(BackupAppendable),
+    Backup(BackupEntry),
     Delete(u128),
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupImmutable {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BackupEntry {
     pub file_uuid: u128,
     pub file_hash: [u8; 32],
-    pub process: Option<u64>,
+    pub file_type: FileType,
+    pub process: Option<ProcessId>,
     pub file_length: u64,
+    pub local: bool,
     pub backup: Vec<[u8; 32]>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupAppendable {
-    pub file_uuid: u128,
-    pub file_hash: [u8; 32],
-    pub process: Option<u64>,
-    // file_hashes vec + ranges vs in-mem?
-    pub file_length: u64,
-    pub backup: Vec<[u8; 32]>,
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
+pub enum FileType {
+    Appendable,
+    Immutable,
+    Writeable,
 }
 
 // IN-MEMORY, MANIFEST
 
-#[derive(Debug, Clone)]
-pub enum FileType {
-    Appendable,
-    Immutable,
-}
 #[derive(Debug, Clone)]
 pub struct InMemoryFile {
     pub hash: [u8; 32], // content addressed hash (naive)
@@ -54,9 +47,10 @@ pub struct InMemoryFile {
 
 pub struct Manifest {
     pub manifest: Arc<RwLock<HashMap<u128, InMemoryFile>>>,
-    pub process_state: Arc<RwLock<HashMap<u64, InMemoryFile>>>,
+    pub process_state: Arc<RwLock<HashMap<ProcessId, InMemoryFile>>>,
     pub hash_index: Arc<RwLock<HashMap<[u8; 32], u128>>>,
     pub manifest_file: Arc<RwLock<fs::File>>,
+    pub fs_directory_path: PathBuf,
 }
 
 impl Manifest {
@@ -75,6 +69,7 @@ impl Manifest {
             process_state: Arc::new(RwLock::new(process_state)),
             hash_index: Arc::new(RwLock::new(hash_index)),
             manifest_file: Arc::new(RwLock::new(manifest_file)),
+            fs_directory_path: lfs_directory_path.clone(),
         })
     }
 
@@ -94,17 +89,24 @@ impl Manifest {
         None
     }
 
-    pub async fn get_by_process(&self, process: &u64) -> Option<InMemoryFile> {
+    pub async fn get_by_process(&self, process: &ProcessId) -> Option<InMemoryFile> {
         let read_lock = self.process_state.read().await;
         read_lock.get(process).cloned()
     }
 
-    pub async fn add_immutable(
+    pub async fn get_process_state_hashes(&self) -> Vec<[u8; 32]> {
+        let read_lock = self.process_state.read().await;
+        read_lock.values().map(|file| file.hash).collect()
+    }
+
+    pub async fn add_local(
         &self,
-        entry: &ManifestRecord,
+        entry: &BackupEntry,
     ) -> Result<(), FileSystemError> {
         let mut manifest_file = self.manifest_file.write().await;
-        let serialized_entry = bincode::serialize(&entry).unwrap();
+
+        let record = ManifestRecord::Backup(entry.clone());
+        let serialized_entry = bincode::serialize(&record).unwrap();
         let entry_length = serialized_entry.len() as u64;
 
         let mut buffer = Vec::new();
@@ -117,59 +119,94 @@ impl Manifest {
             });
         }
 
-        if let ManifestRecord::BackupI(immutable) = entry {
-            let mut wmanifest = self.manifest.write().await;
-            let mut whash_index = self.hash_index.write().await;
+        let mut wmanifest = self.manifest.write().await;
+        let mut whash_index = self.hash_index.write().await;
 
-            if let Some(process) = immutable.process {
-                let mut wprocess_state = self.process_state.write().await;
-                wprocess_state.insert(process,
-                    InMemoryFile {
-                        hash: immutable.file_hash,
-                        file_type: FileType::Immutable,
-                        hasher: Hasher::new(),
-                        file_length: immutable.file_length,
-                    },
-                );
-            }
-
-            wmanifest.insert(
-                immutable.file_uuid,
+        if let Some(process) = &entry.process {
+            let mut wprocess_state = self.process_state.write().await;
+            wprocess_state.insert(process.clone(),
                 InMemoryFile {
-                    hash: immutable.file_hash,
-                    file_type: FileType::Immutable,
+                    hash: entry.file_hash,
+                    file_type: entry.file_type,
                     hasher: Hasher::new(),
-                    file_length: immutable.file_length,
+                    file_length: entry.file_length,
                 },
             );
-
-            whash_index.insert(immutable.file_hash, immutable.file_uuid);
+        } else {
+            wmanifest.insert(
+                entry.file_uuid,
+                InMemoryFile {
+                    hash: entry.file_hash,
+                    file_type: entry.file_type,
+                    hasher: Hasher::new(),
+                    file_length: entry.file_length,
+                },
+            );
+            whash_index.insert(entry.file_hash, entry.file_uuid);
         }
-
         Ok(())
     }
 
-    pub async fn add_append(
-        &self,
-        entry: &ManifestRecord,
-    ) -> Result<(), FileSystemError> {
-        let mut manifest_file = self.manifest_file.write().await;
-        let serialized_entry = bincode::serialize(&entry).unwrap();
-        let entry_length = serialized_entry.len() as u64;
+    pub async fn read(&self, file_uuid: u128, start: Option<u64>, length: Option<u64>) -> Result<Vec<u8>, FileSystemError> {
+        let file = self.get_by_uuid(&file_uuid).await.ok_or_else(|| FileSystemError::LFSError {
+            error: format!("no file found for id: {:?}", file_uuid),
+        })?;
 
-        let mut buffer = Vec::new();
-        buffer.extend_from_slice(&entry_length.to_le_bytes()); // add the metadata length prefix
-        buffer.extend_from_slice(&serialized_entry);           // add the serialized metadata
+        let data = match file.file_type {
+            FileType::Appendable => {
+                super::read_mutable(file_uuid, &self.fs_directory_path, start, length).await?
+            }
+            FileType::Immutable => {
+                super::read_immutable(&file.hash, &self.fs_directory_path, start, length).await?
+            }
+            FileType::Writeable => {
+                super::read_mutable(file_uuid, &self.fs_directory_path, start, length).await?
+            }
+        };
+        Ok(data)
+    }
 
-        if let Err(e) = manifest_file.write_all(&buffer).await {
-            return Err(FileSystemError::LFSError {
-                error: format!("write failed: {}", e),
-            });
+    pub async fn cleanup(&self) -> io::Result<()> {
+        // temp disable for safety.
+        //  return Ok(());
+        // todo lock everything during this.
+
+        let mut entries = fs::read_dir(&self.fs_directory_path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_name = path.file_name().unwrap().to_str().unwrap();
+
+            if file_name == "manifest.bin" || file_name == "wal.bin" {
+                continue;
+            }
+
+            let process_hashes = self.get_process_state_hashes().await;
+            // let process_hashes_hex: Vec<String> = process_hashes.iter().map(|hash| hex::encode(hash)).collect();
+            let hash_index = self.hash_index.read().await;
+            // let hash_index_hex: Vec<String> = hash_index.keys().map(|hash| hex::encode(hash)).collect();
+
+            if let Ok(uuid) = file_name.parse::<u128>() {
+                // additional checks
+                if self.get_by_uuid(&uuid).await.is_none() {
+                    let _ = fs::remove_file(path).await;
+                }
+            } else if let Ok(file_hash) = hex::decode(file_name) {
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(&file_hash);
+
+
+                if self.get_by_hash(&hash).await.is_none() {
+                    if !process_hashes.contains(&hash) {
+                        let _ = fs::remove_file(path).await;
+                    }
+                }
+            }
+
         }
-
-        // note todo: in-memory structures not updated here, outside of function.
         Ok(())
     }
+
 
     pub async fn add_delete(&self, file: &ToDelete) -> Result<(), FileSystemError> {
         let file_uuid = match file {
@@ -240,6 +277,7 @@ impl Clone for Manifest {
             process_state: Arc::clone(&self.process_state),
             hash_index: Arc::clone(&self.hash_index),
             manifest_file: Arc::clone(&self.manifest_file),
+            fs_directory_path: self.fs_directory_path.clone(),
         }
     }
 }
@@ -247,7 +285,7 @@ impl Clone for Manifest {
 async fn load_manifest(
     manifest_file: &mut fs::File,
     manifest: &mut HashMap<u128, InMemoryFile>,
-    process_state: &mut HashMap<u64, InMemoryFile>,
+    process_state: &mut HashMap<ProcessId, InMemoryFile>,
 ) -> Result<(), io::Error> {
     let mut current_position = 0;
 
@@ -273,60 +311,34 @@ async fn load_manifest(
         let record_metadata: Result<ManifestRecord, _> = bincode::deserialize(&metadata_buffer);
 
         match record_metadata {
-            Ok(ManifestRecord::BackupI(immutable)) => {
-                if let Some(process) = immutable.process {
+            Ok(ManifestRecord::Backup(entry)) => {
+                if let Some(process) = entry.process {
                     process_state.insert(
                         process,
                         InMemoryFile {
-                            hash: immutable.file_hash,
-                            file_type: FileType::Immutable,
+                            hash: entry.file_hash,
+                            file_type: entry.file_type,
                             hasher: Hasher::new(),
-                            file_length: immutable.file_length,
+                            file_length: entry.file_length,
                         },
                     );
-                }
-
+                } else {
                 manifest.insert(
-                    immutable.file_uuid,
+                    entry.file_uuid,
                     InMemoryFile {
-                        hash: immutable.file_hash,
-                        file_type: FileType::Immutable,
+                        hash: entry.file_hash,
+                        file_type: entry.file_type,
                         hasher: Hasher::new(),
-                        file_length: immutable.file_length,
+                        file_length: entry.file_length,
                     },
                 );
-                // move to the next position after the metadata,
-                current_position += 8 + metadata_length as u64;
-            }
-            Ok(ManifestRecord::BackupA(appendable)) => {
-                // inspect
-                if let Some(process) = appendable.process {
-                    process_state.insert(
-                        process,
-                        InMemoryFile {
-                            hash: appendable.file_hash,
-                            file_type: FileType::Appendable,
-                            hasher: Hasher::new(),
-                            file_length: appendable.file_length,
-                        },
-                    );
                 }
-
-                manifest.insert(
-                    appendable.file_uuid,
-                    InMemoryFile {
-                        hash: appendable.file_hash,
-                        file_type: FileType::Appendable,
-                        hasher: Hasher::new(), // populate hasher afterwards
-                        file_length: appendable.file_length,
-                    },
-                );
-
+                // move to the next position after the metadata,
                 current_position += 8 + metadata_length as u64;
             }
             Ok(ManifestRecord::Delete(delete)) => {
                 if delete != 0 {
-                    // pmwrite case special
+                    // pmwrite case special, doublecheck process/hash index case
                     manifest.remove(&delete);
                 }
 
@@ -334,7 +346,7 @@ async fn load_manifest(
             }
 
             Err(_) => {
-                // faulty entry, remove, or maybe skip.
+                // faulty entry, remove.
                 break;
             }
         }
@@ -379,6 +391,10 @@ async fn verify_manifest(
                 }
             }
             FileType::Immutable => {
+                hash_index.insert(in_memory_file.hash, *uuid);
+            },
+            FileType::Writeable => {
+                //  todo chunking, replay
                 hash_index.insert(in_memory_file.hash, *uuid);
             }
         }

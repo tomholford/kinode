@@ -1371,6 +1371,28 @@ async fn make_event_loop(
         )
         .await;
 
+        start_process(
+            our_name.clone(),
+            home_directory_path.clone(),
+            0,       // id doesn't matter
+            &get_process_bytes("persist").await, // bytes of wasm app
+            send_to_loop.clone(),
+            send_to_terminal.clone(),
+            &mut senders,
+            &mut process_handles,
+            &engine,
+            StartProcessMetadata {
+                source: t::Address {
+                    node: our_name.clone(),
+                    process: t::ProcessId::Name("kernel".into()),
+                },
+                name: Some("persist".into()),
+                wasm_bytes_uri: "persist.wasm".into(),
+                on_panic: t::OnPanic::None,
+            },
+        )
+        .await;
+
         // main message loop
         loop {
             tokio::select! {

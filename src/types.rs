@@ -252,17 +252,20 @@ pub enum KernelResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Append(Option<[u8; 32]>),
-    Read([u8; 32]),
+    Replace(u128),
+    Append(Option<u128>),
+    Read(u128),
     ReadChunk(ReadChunkRequest),
-    PmWrite, //  specific case for process manager persistance.
-    Delete([u8; 32]),
-    Length([u8; 32]),
+    Delete(u128),
+    Length(u128),
+    //  process state management
+    GetState,
+    SetState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file_hash: [u8; 32],
+    pub file_uuid: u128,
     pub start: u64,
     pub length: u64,
 }
@@ -270,12 +273,14 @@ pub struct ReadChunkRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
     //  bytes are in payload_bytes
-    Read([u8; 32]),
-    ReadChunk([u8; 32]),
-    Write([u8; 32]),
-    Append([u8; 32]),
-    Delete([u8; 32]),
+    Read(u128),
+    ReadChunk(u128),
+    Write(u128),
+    Append(u128),
+    Delete(u128),
     Length(u64),
+    GetState,
+    SetState
     //  use FileSystemError
 }
 

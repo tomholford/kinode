@@ -18,6 +18,21 @@ fn main() {
 
     let pwd = std::env::current_dir().unwrap();
 
+    // create target.wasm (compiled .wit) & world
+    run_command(Command::new("wasm-tools").args(&[
+        "component",
+        "wit",
+        &format!("{}/wit/", pwd.display()),
+        "-o",
+        "target.wasm",
+        "--wasm",
+    ]))
+        .unwrap();
+    run_command(Command::new("touch").args(&[
+        &format!("{}/world", pwd.display()),
+    ]))
+        .unwrap();
+
     // Build wasm32-wasi apps.
     const WASI_APPS: [&str; 4] = [
         "terminal",
@@ -43,7 +58,6 @@ fn main() {
         ]))
             .unwrap();
 
-        //  TODO: remove this hack & properly generate target & world
         fs::create_dir_all(&format!("{}/modules/{}/target/bindings/{}", pwd.display(), name, name))
             .unwrap();
         run_command(Command::new("cp").args(&[

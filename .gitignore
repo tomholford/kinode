@@ -5,3 +5,5 @@ target/
 /home
 blockchain.json
 modules/**/wit
+target.wasm
+world

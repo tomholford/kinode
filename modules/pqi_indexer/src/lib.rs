@@ -4,6 +4,8 @@ use bindings::component::uq_process::types::*;
 use bindings::{print_to_terminal, receive, send_request, UqProcess};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use alloy_sol_types::{sol, SolEnum, SolType, SolCall, SolEvent};
+use hex;
 
 struct Component;
 
@@ -23,6 +25,15 @@ struct EthEvent {
     topics: Vec<String>,
     transactionHash: String,
     transactionIndex: String,
+}
+
+sol! {
+    // interface IPQI {
+        event CreateEntry(uint64 indexed pqiId, address nftContract, uint256 tokenId,
+            bytes32 publicKey, uint48 ipAndPort, uint64[] routers);
+        event ModifyEntry(uint64 indexed pqiId, address nftContract, uint256 tokenId,
+            bytes32 publicKey, uint48 ipAndPort, uint64[] routers);
+    // }
 }
 
 impl UqProcess for Component {
@@ -78,11 +89,25 @@ impl UqProcess for Component {
             };
 
             match msg {
-                AllActions::EventSubscription(subscription) => {
-
-                    bindings::print_to_terminal(0, format!("pqi_indexer: INDEX {:?}", subscription.blockNumber).as_str());
+                // anticipating more message types later
+                AllActions::EventSubscription(e) => {
+                    let decoded = CreateEntry::decode_data(&decode_hex(&e.data).unwrap(), true).unwrap();
+                    
+                    
+                    bindings::print_to_terminal(0, format!("pqi_indexer: DATA {:?}", f).as_str());
                 }
             }
         }
     }
+}
+
+// helpers
+fn decode_hex(s: &str) -> Result<Vec<u8>, hex::FromHexError> {
+    // If the string starts with "0x", skip the prefix
+    let hex_part = if s.starts_with("0x") {
+        &s[2..]
+    } else {
+        s
+    };
+    hex::decode(hex_part)
 }

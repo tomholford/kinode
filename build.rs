@@ -30,10 +30,29 @@ fn main() {
     }
     for name in WASI_APPS {
         // copy in the wit files
+        run_command(Command::new("rm").args(&[
+            "-rf",
+            &format!("{}/modules/{}/wit", pwd.display(), name),
+        ]))
+            .unwrap();
         run_command(Command::new("cp").args(&[
             "-r",
             "wit",
             &format!("{}/modules/{}", pwd.display(), name),
+        ]))
+            .unwrap();
+
+        //  TODO: remove this hack & properly generate target & world
+        fs::create_dir_all(&format!("{}/modules/{}/target/bindings/{}", pwd.display(), name, name))
+            .unwrap();
+        run_command(Command::new("cp").args(&[
+            "target.wasm",
+            &format!("{}/modules/{}/target/bindings/{}/", pwd.display(), name, name),
+        ]))
+            .unwrap();
+        run_command(Command::new("cp").args(&[
+            "world",
+            &format!("{}/modules/{}/target/bindings/{}/", pwd.display(), name, name),
         ]))
             .unwrap();
 

@@ -148,7 +148,7 @@ pub async fn terminal(
     let mut current_line = format!("{} > ", our.name);
     let prompt_len: usize = our.name.len() + 3;
     let (mut win_cols, mut win_rows) = terminal::size().unwrap();
-    let mut cursor_col = prompt_len.try_into().unwrap();
+    let mut cursor_col: u16 = prompt_len.try_into().unwrap();
     let mut line_col: usize = cursor_col as usize;
     let mut in_step_through: bool = false;
     // TODO add more verbosity levels as needed?

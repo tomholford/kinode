@@ -143,12 +143,15 @@ impl UqProcessImports for ProcessWasi {
     // system utils:
     //f
     async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
-        self.process
+        match self
+            .process
             .send_to_terminal
             .send(t::Printout { verbosity, content })
             .await
-            .expect("print_to_terminal: error sending");
-        Ok(())
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("fatal: couldn't send to terminal: {:?}", e)),
+        }
     }
 
     async fn get_unix_time(&mut self) -> Result<u64> {
@@ -595,7 +598,6 @@ async fn make_process_loop(
 
     let mut table = Table::new();
     let wasi = WasiCtxBuilder::new()
-        .inherit_stdio()
         .push_preopened_dir(dir, DirPerms::all(), FilePerms::all(), &"")
         .build(&mut table)
         .unwrap();
@@ -768,12 +770,6 @@ async fn handle_kernel_request(
     process_handles: &mut ProcessHandles,
 ) {
     // TODO capabilities-based security
-    let lol = t::KernelCommand::StartProcess {
-        name: Some("lol".into()),
-        wasm_bytes_uri: "lol".into(),
-        on_panic: t::OnPanic::None,
-    };
-    println!("{}", serde_json::to_string(&lol).unwrap());
 
     let t::Message::Request(request) = km.message else { return };
     let command: t::KernelCommand = match serde_json::from_str(&request.ipc.unwrap_or_default()) {

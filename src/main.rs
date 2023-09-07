@@ -504,7 +504,7 @@ async fn main() {
         print_sender.clone(),
     ));
     // TODO: abort all these so graceful shutdown doesn't look like a crash
-    let quit = tokio::select! {
+    let quit: String = tokio::select! {
         term = terminal::terminal(
             &our,
             VERSION,

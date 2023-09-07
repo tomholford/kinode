@@ -6,7 +6,7 @@ use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 
 use bindings::component::uq_process::types::*;
-use bindings::{Guest, print_to_terminal, receive, send_response};
+use bindings::{get_payload, Guest, print_to_terminal, receive, send_response};
 
 mod kernel_types;
 use kernel_types as kt;
@@ -19,8 +19,7 @@ const TABLE: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("p
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum KeyValueRequest {
     // Initialize,
-    Write { key: Vec<u8>, val: Vec<u8> },
-    // Write { key: Vec<u8> },
+    Write { key: Vec<u8> },
     Read { key: Vec<u8> },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,7 +88,7 @@ fn handle_message (
 
     match message {
         Message::Response(_) => { panic!() },
-        Message::Request(Request { inherit, expects_response, ipc, metadata }) => {
+        Message::Request(Request { inherit: _ , expects_response: _, ipc, metadata: _ }) => {
             match process_lib::parse_message_ipc(ipc)? {
                 // KeyValueRequest::Initialize => {
                 //     match bytes {
@@ -117,11 +116,11 @@ fn handle_message (
                 //         None::<String>,  //  TODO
                 //     )?;
                 // },
-                // KeyValueRequest::Write { key } => {
-                KeyValueRequest::Write { key, val } => {
+                KeyValueRequest::Write { key } => {
                     // let types::InboundPayloadBytes::Some(bytes) = bytes else {
                     //     panic!("key_value: no bytes to write");
                     // };
+                    let Payload { mime: _, bytes } = get_payload().ok_or(anyhow::anyhow!(""))?;
 
                     let db = get_or_make_db(
                         &our.node,
@@ -132,8 +131,7 @@ fn handle_message (
                     let write_txn = db.begin_write()?;
                     {
                         let mut table = write_txn.open_table(TABLE)?;
-                        // table.insert(&key[..], &bytes[..])?;
-                        table.insert(&key[..], &val[..])?;
+                        table.insert(&key[..], &bytes[..])?;
                     }
                     write_txn.commit()?;
 
@@ -143,9 +141,6 @@ fn handle_message (
                             metadata: None,
                         },
                         None,
-                        // Some(KeyValueResponse::Write { key }),
-                        // types::OutboundPayloadBytes::None,
-                        // None::<String>,  //  TODO
                     );
                 },
                 KeyValueRequest::Read { key } => {
@@ -154,7 +149,6 @@ fn handle_message (
                         kt::de_wit_process_id(source.process),
                         dbs,
                     )?;
-
 
                     let read_txn = db.begin_read()?;
 
@@ -205,6 +199,7 @@ impl Guest for Component {
             match handle_message(&our, &mut dbs) {
                 Ok(()) => {},
                 Err(e) => {
+                    //  TODO: should we send an error on failure?
                     print_to_terminal(0, format!(
                         "key_value: error: {:?}",
                         e,

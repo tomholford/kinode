@@ -19,10 +19,11 @@ fn main() {
     let pwd = std::env::current_dir().unwrap();
 
     // Build wasm32-wasi apps.
-    const WASI_APPS: [&str; 3] = [
+    const WASI_APPS: [&str; 4] = [
         "terminal",
         "sequentialize",
         "key_value",
+        "persist",
     ];
     for name in WASI_APPS {
         // only execute if one of the modules has source code changes

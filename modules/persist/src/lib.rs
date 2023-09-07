@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{print_to_terminal, receive, get_payload, UqProcess, Address, Response, Context, Payload};
+use bindings::{print_to_terminal, receive, get_payload, Guest, Address, Response, Context, Payload};
 use serde::{Deserialize, Serialize};
 
 mod process_lib;
@@ -54,7 +54,7 @@ pub enum FsResponse {
     //  use FileSystemError
 }
 
-impl UqProcess for Component {
+impl Guest for Component {
     fn init(our: Address) {
         print_to_terminal(1, "persist: start");
 

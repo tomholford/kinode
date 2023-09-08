@@ -114,7 +114,7 @@ world uq-process {
 
     // process management:
 
-    import set-on-panic: func(on-panic: on-panic)
+    // import set-on-panic: func(on-panic: on-panic)
 
     // maybe have this?
     // import spawn: func(id: process-id, request: option<request>) -> result<process-id, uqbar-error>

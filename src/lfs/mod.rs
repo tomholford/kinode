@@ -18,7 +18,7 @@ mod wal;
 
 pub async fn bootstrap(
     home_directory_path: String,
-) -> Result<(HashMap<ProcessId, u128>, Manifest, WAL, PathBuf), FileSystemError> {
+) -> Result<(HashMap<ProcessId, (u128, OnPanic)>, Manifest, WAL, PathBuf), FileSystemError> {
     // fs bootstrapping, create home_directory, fs directory inside it, manifest + log if none.
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
@@ -58,11 +58,11 @@ pub async fn bootstrap(
 
     let wal = WAL::load(wal_file, &lfs_directory_path).await.expect("wal load failed!");
 
-    // Mimic the GetState case and get current state of ProcessId::name("kernel")
-    // Serialize it to a ProcessHandles from process id to JoinHandle
+    // mimic the FsAction::GetState case and get current state of ProcessId::name("kernel")
+    // serialize it to a ProcessHandles from process id to JoinHandle
 
     let kernel_process_id: ProcessId = ProcessId::Name("kernel".into());
-    let mut state_map: HashMap<ProcessId, u128> = HashMap::new();
+    let mut state_map: HashMap<ProcessId, (u128, OnPanic)> = HashMap::new();
 
     // get current processes' wasm_bytes handles. GetState(kernel)
     if let Some(file) = manifest.get_by_process(&kernel_process_id).await {
@@ -77,16 +77,24 @@ pub async fn bootstrap(
         }
     }
 
+    // NOTE OnPanic
+    // wasm bytes initial source of truth is the compiled .wasm file on-disk, but onPanic needs to come from somewhere to.
+    // for apps in /modules, special cases can be defined here.
+
+    let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
+    special_on_panics.insert("terminal".into(), OnPanic::Restart);
+
+
     // for a module in /modules, put it's bytes into filesystem, add to state_map
     for (process_name, wasm_bytes) in get_processes_from_directories().await {
         let hash: [u8; 32] = blake3::hash(&wasm_bytes).into();
-        if let Some((_file, handle)) = manifest.get_by_hash(&hash).await {
-            state_map.insert(ProcessId::Name(process_name), handle);
-        } else {
 
-            //  note, this is essentially a copy of the FsAction::Write action.
-            //  we could refactor the action match statements to use a function, but return types still differ
-            //  from the usecase here.
+        let on_panic = special_on_panics.get(&process_name).unwrap_or(&OnPanic::None);
+
+        if let Some((_file, handle)) = manifest.get_by_hash(&hash).await {
+            state_map.insert(ProcessId::Name(process_name), (handle, on_panic.clone()));
+        } else {
+            //  FsAction::Write
             let file_uuid = uuid::Uuid::new_v4().as_u128();
             let file_length = wasm_bytes.len() as u64;
 
@@ -100,18 +108,16 @@ pub async fn bootstrap(
                 backup: Vec::new(),
                 local: true,
             };
-            let _ = manifest.add_local(&backup).await?;
+            let _ = manifest.add_local(&backup).await;
+            state_map.insert(ProcessId::Name(process_name), (file_uuid, on_panic.clone()));
         }
     }
 
-    // save kernel process state. SetState(kernel)
+    // save kernel process state. FsAction::SetState(kernel)
     let serialized_state_map = bincode::serialize(&state_map).expect("state map serialization error!");
     let state_map_hash: [u8; 32] = blake3::hash(&serialized_state_map).into();
 
-    if let Some((_file, handle)) = manifest.get_by_hash(&state_map_hash).await {
-        state_map.insert(ProcessId::Name("kernel".into()), handle);
-    } else {
-
+    if manifest.get_by_hash(&state_map_hash).await.is_none() {
         let file_uuid = uuid::Uuid::new_v4().as_u128();
         let file_length = serialized_state_map.len() as u64;
 
@@ -125,7 +131,7 @@ pub async fn bootstrap(
             backup: Vec::new(),
             local: true,
         };
-        let _ = manifest.add_local(&backup).await?;
+        let _ = manifest.add_local(&backup).await;
     }
 
     Ok((state_map, manifest, wal, lfs_directory_path))

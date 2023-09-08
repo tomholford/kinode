@@ -233,6 +233,11 @@ pub enum KernelCommand {
         on_panic: OnPanic,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
+    RebootProcess {         // kernel only
+        process_id: ProcessId,
+        wasm_bytes_handle: u128,
+        on_panic: OnPanic,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

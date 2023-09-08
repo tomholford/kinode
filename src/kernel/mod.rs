@@ -58,7 +58,7 @@ struct ProcessWasi {
 struct StartProcessMetadata {
     source: t::Address,
     name: Option<String>,
-    wasm_bytes_uri: String,
+    wasm_bytes_handle: u128,
     on_panic: t::OnPanic,
 }
 
@@ -583,7 +583,7 @@ async fn make_process_loop(
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our = metadata.our.clone();
-    let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
+    let wasm_bytes_handle = metadata.wasm_bytes_handle.clone();
     let on_panic = metadata.on_panic.clone();
 
     // let dir = std::env::current_dir().unwrap();
@@ -704,7 +704,7 @@ async fn make_process_loop(
                                             t::ProcessId::Name(name) => Some(name.into()),
                                             t::ProcessId::Id(_) => None,
                                         },
-                                        wasm_bytes_uri,
+                                        wasm_bytes_handle,
                                         on_panic,
                                     })
                                     .unwrap(),
@@ -793,7 +793,7 @@ async fn handle_kernel_request(
         //
         t::KernelCommand::StartProcess {
             name,
-            wasm_bytes_uri,
+            wasm_bytes_handle,
             on_panic,
         } => send_to_loop
             .send(t::KernelMessage {
@@ -802,7 +802,6 @@ async fn handle_kernel_request(
                     node: our_name.clone(),
                     process: t::ProcessId::Name("kernel".into()),
                 },
-                // TODO call lfs instead
                 target: t::Address {
                     node: our_name.clone(),
                     process: t::ProcessId::Name("filesystem".into()),
@@ -812,10 +811,7 @@ async fn handle_kernel_request(
                     inherit: true,
                     expects_response: true,
                     ipc: Some(
-                        serde_json::to_string(&t::FileSystemRequest {
-                            uri_string: wasm_bytes_uri.clone(),
-                            action: t::FileSystemAction::Read,
-                        })
+                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle))
                         .unwrap(),
                     ),
                     // TODO find a better way if possible: keeping process metadata
@@ -826,7 +822,7 @@ async fn handle_kernel_request(
                         serde_json::to_string(&StartProcessMetadata {
                             source: km.source,
                             name,
-                            wasm_bytes_uri,
+                            wasm_bytes_handle,
                             on_panic,
                         })
                         .unwrap(),
@@ -1014,7 +1010,7 @@ async fn start_process(
             node: our_name.clone(),
             process: process_id.clone(),
         },
-        wasm_bytes_uri: process_metadata.wasm_bytes_uri.clone(),
+        wasm_bytes_handle: process_metadata.wasm_bytes_handle.clone(),
         on_panic: process_metadata.on_panic,
     };
     process_handles.insert(
@@ -1103,93 +1099,42 @@ async fn make_event_loop(
         let mut process_handles: ProcessHandles = HashMap::new();
         let mut is_debug: bool = false;
 
-        // HERE is where the boot sequence goes?
-        start_process(
-            our_name.clone(),
-            home_directory_path.clone(),
-            0,                                         // id doesn't matter
-            &get_process_bytes("sequentialize").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("sequentialize".into()),
-                wasm_bytes_uri: "sequentialize.wasm".into(),
-                on_panic: t::OnPanic::None,
-            },
-        )
-        .await;
-        start_process(
-            our_name.clone(),
-            home_directory_path.clone(),
-            0,                                    // id doesn't matter
-            &get_process_bytes("terminal").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("terminal".into()),
-                wasm_bytes_uri: "terminal.wasm".into(),
-                on_panic: t::OnPanic::Restart,
-            },
-        )
-        .await;
-        start_process(
-            our_name.clone(),
-            home_directory_path.clone(),
-            0,                                     // id doesn't matter
-            &get_process_bytes("key_value").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("key_value".into()),
-                wasm_bytes_uri: "key_value.wasm".into(),
-                on_panic: t::OnPanic::None,
-            },
-        )
-        .await;
+        // technical bootsequence.
+        // will boot every wasm module inside /modules
+        // currently have an exclude list to avoid broken moduels
+        // modules started manually by users will get bootup automatically
+        let exclude_list: Vec<t::ProcessId> = vec![
+            t::ProcessId::Name("apps-home".into()),
+            t::ProcessId::Name("explorer".into()),
+            t::ProcessId::Name("http_bindings".into()),
+            t::ProcessId::Name("process_manager".into()),
+        ];
 
-        start_process(
-            our_name.clone(),
-            home_directory_path.clone(),
-            0,                                   // id doesn't matter
-            &get_process_bytes("persist").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("persist".into()),
-                wasm_bytes_uri: "persist.wasm".into(),
-                on_panic: t::OnPanic::None,
-            },
-        )
-        .await;
-
+        for (process_id, _) in &process_map {
+            if !exclude_list.contains(process_id) {
+                start_process(
+                    our_name.clone(),
+                    home_directory_path.clone(),
+                    0,                                         // id doesn't matter
+                    &process_bytes,                            // bytes of wasm app
+                    send_to_loop.clone(),
+                    send_to_terminal.clone(),
+                    &mut senders,
+                    &mut process_handles,
+                    &engine,
+                    StartProcessMetadata {
+                        source: t::Address {
+                            node: our_name.clone(),
+                            process: t::ProcessId::Name("kernel".into()),
+                        },
+                        name: Some(process_id.to_string()),
+                        wasm_bytes_uri: format!("{}.wasm", process_id.to_string()),
+                        on_panic: t::OnPanic::None,
+                    },
+                )
+                .await;
+            }
+        }
         // main message loop
         loop {
             tokio::select! {

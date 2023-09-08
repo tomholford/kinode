@@ -429,6 +429,32 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
+type FileHash = [u8; 32];
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsRequest {
+    Add { full_path: String, entry_type: AddEntryType },  // adding a link; do we need a way to add bytes here & to lfs?
+    Rename { full_path: String, new_full_path: String },
+    Delete { full_path: String },
+    GetPath { hash: FileHash },
+    GetEntry { full_path: String },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AddEntryType {
+    Dir,
+    File { hash: FileHash },
+    //  ...  //  symlinks?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsResponse {
+    Add,
+    Delete,
+    GetPath { full_path: Option<String> },
+    GetEntry { entry: Option<FileEntry> },
+}
+
 //
 // http_client.rs types
 //

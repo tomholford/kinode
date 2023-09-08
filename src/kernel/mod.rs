@@ -1063,6 +1063,7 @@ async fn start_process(
 async fn make_event_loop(
     our_name: String,
     home_directory_path: String,
+    process_map: HashMap<t::ProcessId, u128>,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1100,7 +1101,7 @@ async fn make_event_loop(
 
         // each running process is stored in this map
         let mut process_handles: ProcessHandles = HashMap::new();
-        let mut is_debug = false;
+        let mut is_debug: bool = false;
 
         // HERE is where the boot sequence goes?
         start_process(
@@ -1317,6 +1318,7 @@ async fn make_event_loop(
 pub async fn kernel(
     our: t::Identity,
     home_directory_path: String,
+    process_map: HashMap<t::ProcessId, u128>,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     recv_in_loop: t::MessageReceiver,
@@ -1339,6 +1341,7 @@ pub async fn kernel(
         make_event_loop(
             our.name.clone(),
             home_directory_path,
+            process_map,
             recv_in_loop,
             network_error_recv,
             recv_debug_in_loop,

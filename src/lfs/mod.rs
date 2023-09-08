@@ -3,6 +3,7 @@
 use blake3::Hasher;
 use hex;
 use std::path::PathBuf;
+use std::collections::HashMap;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::time::{Duration, interval};
@@ -15,13 +16,9 @@ mod manifest;
 mod wal;
 
 
-pub async fn fs_sender(
-    our_name: String,
+pub async fn bootstrap(
     home_directory_path: String,
-    send_to_loop: MessageSender,
-    send_to_terminal: PrintSender,
-    mut recv_in_fs: MessageReceiver,
-) {
+) -> Result<(HashMap<ProcessId, u128>, Manifest, WAL, PathBuf), FileSystemError> {
     // fs bootstrapping, create home_directory, fs directory inside it, manifest + log if none.
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
@@ -59,11 +56,123 @@ pub async fn fs_sender(
     //  in memory details about files.
     let manifest = Manifest::load(manifest_file, &lfs_directory_path).await.expect("manifest load failed!");
 
-    //  println!("whole manifest {:?}", manifest);
-    //  let wal_file = Arc::new(RwLock::new(wal_file));
-
     let wal = WAL::load(wal_file, &lfs_directory_path).await.expect("wal load failed!");
 
+    // Mimic the GetState case and get current state of ProcessId::name("kernel")
+    // Serialize it to a ProcessHandles from process id to JoinHandle
+
+    let kernel_process_id: ProcessId = ProcessId::Name("kernel".into());
+    let mut state_map: HashMap<ProcessId, u128> = HashMap::new();
+
+    // get current processes' wasm_bytes handles. GetState(kernel)
+    if let Some(file) = manifest.get_by_process(&kernel_process_id).await {
+        match read_immutable(&file.hash, &lfs_directory_path, None, None).await {
+            Ok(bytes) => {
+
+                state_map = bincode::deserialize(&bytes).expect("kernel state deserialization error!");
+            },
+            Err(_) => {
+                // first time!
+            }
+        }
+    }
+
+    // for a module in /modules, put it's bytes into filesystem, add to state_map
+    for (process_name, wasm_bytes) in get_processes_from_directories().await {
+        let hash: [u8; 32] = blake3::hash(&wasm_bytes).into();
+        if let Some((_file, handle)) = manifest.get_by_hash(&hash).await {
+            state_map.insert(ProcessId::Name(process_name), handle);
+        } else {
+
+            //  note, this is essentially a copy of the FsAction::Write action.
+            //  we could refactor the action match statements to use a function, but return types still differ
+            //  from the usecase here.
+            let file_uuid = uuid::Uuid::new_v4().as_u128();
+            let file_length = wasm_bytes.len() as u64;
+
+            let _ = write_immutable(hash, &wasm_bytes, &lfs_directory_path).await;
+            let backup = BackupEntry {
+                file_uuid,
+                file_hash: hash,
+                file_type: FileType::Immutable,
+                process: None,
+                file_length,
+                backup: Vec::new(),
+                local: true,
+            };
+            let _ = manifest.add_local(&backup).await?;
+        }
+    }
+
+    // save kernel process state. SetState(kernel)
+    let serialized_state_map = bincode::serialize(&state_map).expect("state map serialization error!");
+    let state_map_hash: [u8; 32] = blake3::hash(&serialized_state_map).into();
+
+    if let Some((_file, handle)) = manifest.get_by_hash(&state_map_hash).await {
+        state_map.insert(ProcessId::Name("kernel".into()), handle);
+    } else {
+
+        let file_uuid = uuid::Uuid::new_v4().as_u128();
+        let file_length = serialized_state_map.len() as u64;
+
+        let _ = write_immutable(state_map_hash, &serialized_state_map, &lfs_directory_path).await;
+        let backup = BackupEntry {
+            file_uuid,
+            file_hash: state_map_hash,
+            file_type: FileType::Immutable,
+            process: Some(ProcessId::Name("kernel".into())),
+            file_length,
+            backup: Vec::new(),
+            local: true,
+        };
+        let _ = manifest.add_local(&backup).await?;
+    }
+
+    Ok((state_map, manifest, wal, lfs_directory_path))
+}
+
+
+
+
+async fn get_processes_from_directories() -> Vec<(String, Vec<u8>)> {
+    let mut processes = Vec::new();
+
+    // Get the path to the /modules directory
+    let modules_path = std::path::Path::new("modules");
+
+    // Read the /modules directory
+    if let Ok(mut entries) = fs::read_dir(modules_path).await {
+        // Loop through the entries in the directory
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            // If the entry is a directory, add its name to the list of processes
+            if let Ok(metadata) = entry.metadata().await {
+                if metadata.is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        // Get the path to the wasm file for the process
+                        let wasm_path = format!("modules/{}/target/wasm32-unknown-unknown/release/{}.wasm", name, name);
+                        // Read the wasm file
+                        if let Ok(wasm_bytes) = fs::read(wasm_path).await {
+                            // Add the process name and wasm bytes to the list of processes
+                            processes.push((name.to_string(), wasm_bytes));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    processes
+}
+
+pub async fn fs_sender(
+    our_name: String,
+    lfs_directory_path: PathBuf,
+    manifest: Manifest,
+    wal: WAL,
+    send_to_loop: MessageSender,
+    send_to_terminal: PrintSender,
+    mut recv_in_fs: MessageReceiver,
+) {
     //  interval for deleting/(flushing)
     let mut interval = interval(Duration::from_secs(60));
 
@@ -397,7 +506,6 @@ async fn handle_request(
             //       }
             //   } else {
             //  let prev_hash = manifest.get_by_uuid(&).await.map(|file| file.hash);
-            //  remove previous hash!
 
             //  write underlying
             let write_result = write_immutable(file_hash, &payload.bytes, &lfs_directory_path).await;
@@ -600,8 +708,3 @@ fn make_error_message(
         payload: None,
     }
 }
-
-//  pub async fn pm_bootstrap(
-//      home_directory_path: String,
-//  ) -> Result<Option<(Vec<u8>, [u8; 32])>, FileSystemError> {
-//  don't need for now, but will probably in future with app distribution etc.

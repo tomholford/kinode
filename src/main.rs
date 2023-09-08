@@ -331,25 +331,6 @@ async fn main() {
         .await
         .unwrap();
 
-        //  load in initial boot sequence
-        // let mut boot_sequence_path = "boot_sequence.bin";
-        // for i in 3..args.len() - 1 {
-        //     if args[i] == "--bs" {
-        //         boot_sequence_path = &args[i + 1];
-        //         break;
-        //     }
-        // }
-        // let boot_sequence = match fs::read(boot_sequence_path).await {
-        //     Ok(boot_sequence) => match bincode::deserialize::<Vec<BootOutboundRequest>>(&boot_sequence) {
-        //         Ok(bs) => bs,
-        //         Err(e) => panic!("failed to deserialize boot sequence: {:?}", e),
-        //     },
-        //     Err(e) => panic!("failed to read boot sequence, try running `cargo run` in the boot_sequence directory: {:?}", e),
-        // };
-
-        // just put the boot sequence here?
-        // save_bytes(&home_directory_path, "terminal").await;
-        // save_bytes(&home_directory_path, "sequentialize").await;
 
         let kernel_address = Address {
             node: our.name.clone(),
@@ -421,6 +402,17 @@ async fn main() {
         (our, networking_keypair, jwt_secret_bytes)
     };
 
+    //  bootstrap FS.
+    let _ = print_sender
+    .send(Printout {
+        verbosity: 0,
+        content: "bootstrapping fs...".to_string(),
+    })
+    .await;
+
+    let (kernel_process_map, manifest, wal, fs_directory)
+        = lfs::bootstrap(home_directory_path.clone()).await.expect("fs bootstrap failed!");
+
     let _ = kill_tx.send(true);
     let _ = print_sender
         .send(Printout {
@@ -485,7 +477,9 @@ async fn main() {
     ));
     let lfs_handle = tokio::spawn(lfs::fs_sender(
         our.name.clone(),
-        home_directory_path.into(),
+        fs_directory,
+        manifest,
+        wal,
         kernel_message_sender.clone(),
         print_sender.clone(),
         lfs_message_receiver,

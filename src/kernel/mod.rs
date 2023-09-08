@@ -54,7 +54,7 @@ struct ProcessWasi {
     wasi: WasiCtx,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct StartProcessMetadata {
     source: t::Address,
     name: Option<String>,
@@ -804,7 +804,7 @@ async fn handle_kernel_request(
                 },
                 target: t::Address {
                     node: our_name.clone(),
-                    process: t::ProcessId::Name("filesystem".into()),
+                    process: t::ProcessId::Name("lfs".into()),
                 },
                 rsvp: None,
                 message: t::Message::Request(t::Request {
@@ -907,11 +907,15 @@ async fn handle_kernel_response(
     };
 
     // ignore responses that aren't filesystem responses
-    if km.source.process != t::ProcessId::Name("filesystem".into()) {
+    if km.source.process != t::ProcessId::Name("lfs".into()) {
         return;
     }
 
     let Some(ref metadata) = response.metadata else {
+        //  let _ = send_to_terminal.send(t::Printout {
+        //      verbosity: 1,
+        //      content: "kernel: response missing metadata".into(),
+        //  }).await;
         return;
     };
 
@@ -954,13 +958,6 @@ async fn handle_kernel_response(
     .await;
 }
 
-async fn get_process_bytes(process: &str) -> Vec<u8> {
-    let process_wasm_path =
-        format!("modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
-    tokio::fs::read(&process_wasm_path)
-        .await
-        .expect(&process_wasm_path)
-}
 
 async fn start_process(
     our_name: String,
@@ -1104,37 +1101,50 @@ async fn make_event_loop(
         // currently have an exclude list to avoid broken moduels
         // modules started manually by users will get bootup automatically
         let exclude_list: Vec<t::ProcessId> = vec![
-            t::ProcessId::Name("apps-home".into()),
+            t::ProcessId::Name("apps_home".into()),
             t::ProcessId::Name("explorer".into()),
             t::ProcessId::Name("http_bindings".into()),
+            t::ProcessId::Name("http_proxy".into()),
             t::ProcessId::Name("process_manager".into()),
         ];
 
-        for (process_id, _) in &process_map {
-            if !exclude_list.contains(process_id) {
-                start_process(
-                    our_name.clone(),
-                    home_directory_path.clone(),
-                    0,                                         // id doesn't matter
-                    &process_bytes,                            // bytes of wasm app
-                    send_to_loop.clone(),
-                    send_to_terminal.clone(),
-                    &mut senders,
-                    &mut process_handles,
-                    &engine,
-                    StartProcessMetadata {
+        for (process_id, wasm_bytes_handle) in process_map {
+            if !exclude_list.contains(&process_id) {
+                send_to_loop
+                    .send(t::KernelMessage {
+                        id: rand::random(),
                         source: t::Address {
                             node: our_name.clone(),
                             process: t::ProcessId::Name("kernel".into()),
                         },
-                        name: Some(process_id.to_string()),
-                        wasm_bytes_uri: format!("{}.wasm", process_id.to_string()),
-                        on_panic: t::OnPanic::None,
-                    },
-                )
-                .await;
+                        target: t::Address {
+                            node: our_name.clone(),
+                            process: t::ProcessId::Name("kernel".into()),
+                        },
+                        rsvp: None,
+                        message: t::Message::Request(t::Request {
+                            inherit: false,
+                            expects_response: false,
+                            ipc: Some(
+                                serde_json::to_string(&t::KernelCommand::StartProcess {
+                                    name: match process_id {
+                                        t::ProcessId::Name(name) => Some(name.into()),
+                                        t::ProcessId::Id(_) => None,
+                                    },
+                                    wasm_bytes_handle,
+                                    on_panic: t::OnPanic::None, // ADD to process map!
+                                })
+                                .unwrap(),
+                            ),
+                            metadata: None,
+                        }),
+                        payload: None,
+                    })
+                    .await
+                    .unwrap();
             }
         }
+
         // main message loop
         loop {
             tokio::select! {

@@ -254,6 +254,7 @@ async fn handle_request(
     let Message::Request(Request {
         expects_response,
         ipc: Some(json_string),
+        metadata,   // for kernel
         ..
     }) = message else {
         return Err(FileSystemError::BadJson {
@@ -571,7 +572,7 @@ async fn handle_request(
             rsvp,
             message: Message::Response((Ok(Response {
                 ipc,
-                metadata: None,
+                metadata,   // for kernel
             }), None)),
             payload: Some(
                 Payload {

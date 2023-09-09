@@ -385,7 +385,103 @@ async fn handle_request(
                         key,
                     );
                 },
-                AddEntryType::File { hash } => {
+                AddEntryType::NewFile => {
+                    if let Some(last_char) = full_path.chars().last() {
+                        if last_char == '/' {
+                            send_to_terminal
+                                .send(Printout {
+                                    verbosity: 0,
+                                    content: format!(
+                                        "vfs: file path cannot end with `/`: {}",
+                                        full_path,
+                                    ),
+                                })
+                                .await
+                                .unwrap();
+                            panic!("");
+                        }
+                    } else {
+                        panic!("empty path");
+                    };
+                    let mut vfs = vfs.lock().await;
+                    if vfs.path_to_key.contains_key(&full_path) {
+                        send_to_terminal
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!("vfs: overwriting file {}", full_path),
+                            })
+                            .await
+                            .unwrap();
+                        let Some(old_key) = vfs.path_to_key.remove(&full_path) else {
+                            panic!("");
+                        };
+                        vfs.key_to_entry.remove(&old_key);
+                    };
+
+                    let _ = send_to_loop
+                        .send(KernelMessage {
+                            id: *id,
+                            source: Address {
+                                node: our_name.clone(),
+                                process: ProcessId::Name("vfs".into()),
+                            },
+                            target: Address {
+                                node: our_name.clone(),
+                                process: ProcessId::Name("lfs".into()),
+                            },
+                            rsvp: None,
+                            message: Message::Request(Request {
+                                inherit: true,
+                                expects_response: true,
+                                ipc: Some(serde_json::to_string(&FsAction::Write).unwrap()),
+                                metadata: None,
+                            }),
+                            payload,
+                        })
+                        .await;
+                    let write_response = recv_response.recv().await.unwrap();
+                    let KernelMessage {
+                        id: _,
+                        source: _,
+                        target: _,
+                        rsvp: _,
+                        message,
+                        payload: _,
+                    } = write_response;
+                    let Message::Response((
+                        Ok(Response { ipc, metadata: _ }),
+                        None,
+                    )) = message else {
+                        panic!("")
+                    };
+                    let Some(ipc) = ipc else {
+                        panic!("");
+                    };
+                    let FsResponse::Write(hash) = serde_json::from_str(
+                        &ipc,
+                    ).unwrap() else {
+                        panic!("");
+                    };
+
+                    let (name, parent_path) = make_file_name(&full_path);
+                    let Some(parent_key) = vfs.path_to_key.remove(&parent_path) else {
+                        panic!("");
+                    };
+                    let key = Key::File { id: hash };
+                    vfs.key_to_entry.insert(
+                        key.clone(),
+                        Entry {
+                            name,
+                            full_path: full_path.clone(),
+                            entry_type: EntryType::File {
+                                parent: parent_key.clone(),
+                            },
+                        },
+                    );
+                    vfs.path_to_key.insert(parent_path, parent_key);
+                    vfs.path_to_key.insert(full_path.clone(), key);
+                },
+                AddEntryType::ExistingFile { hash } => {
                     if let Some(last_char) = full_path.chars().last() {
                         if last_char == '/' {
                             send_to_terminal
@@ -421,7 +517,7 @@ async fn handle_request(
                     let Some(parent_key) = vfs.path_to_key.remove(&parent_path) else {
                         panic!("");
                     };
-                    let key = Key::File { id: hash.clone() };
+                    let key = Key::File { id: hash };
                     vfs.key_to_entry.insert(
                         key.clone(),
                         Entry {

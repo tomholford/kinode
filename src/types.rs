@@ -448,7 +448,8 @@ pub enum VfsRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AddEntryType {
     Dir,
-    File { hash: FileHash },
+    NewFile,                          //  add a new file to lfs and add name in vfs
+    ExistingFile { hash: FileHash },  //  link an existing file in lfs to a new name in vfs
     //  ...  //  symlinks?
 }
 

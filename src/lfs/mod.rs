@@ -84,7 +84,6 @@ pub async fn bootstrap(
     let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
     special_on_panics.insert("terminal".into(), OnPanic::Restart);
 
-
     // for a module in /modules, put it's bytes into filesystem, add to state_map
     for (process_name, wasm_bytes) in get_processes_from_directories().await {
         let hash: [u8; 32] = blake3::hash(&wasm_bytes).into();
@@ -136,9 +135,6 @@ pub async fn bootstrap(
 
     Ok((state_map, manifest, wal, lfs_directory_path))
 }
-
-
-
 
 async fn get_processes_from_directories() -> Vec<(String, Vec<u8>)> {
     let mut processes = Vec::new();

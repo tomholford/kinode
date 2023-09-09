@@ -173,7 +173,8 @@ impl UqProcessImports for ProcessWasi {
     //
 
     ///  todo -> move to kernel logic to enable persitence etc.
-    // async fn set_on_panic(&mut self, on_panic: wit::OnPanic) -> Result<()> {
+    async fn set_on_panic(&mut self, on_panic: wit::OnPanic) -> Result<()> {
+        unimplemented!();
     //     let on_panic = match on_panic {
     //         wit::OnPanic::None => t::OnPanic::None,
     //         wit::OnPanic::Restart => t::OnPanic::Restart,
@@ -192,7 +193,7 @@ impl UqProcessImports for ProcessWasi {
 
     //     self.process.metadata.on_panic = on_panic;
     //     Ok(())
-    // }
+    }
 
     //
     // message I/O:
@@ -1044,7 +1045,6 @@ async fn handle_kernel_response(
     .await;
 }
 
-
 async fn start_process(
     our_name: String,
     home_directory_path: String,
@@ -1225,6 +1225,8 @@ async fn make_event_loop(
             t::ProcessId::Name("http_bindings".into()),
             t::ProcessId::Name("http_proxy".into()),
             t::ProcessId::Name("process_manager".into()),
+            t::ProcessId::Name("hi_lus_lus".into()),
+            t::ProcessId::Name("sequencer".into()),
         ];
 
         for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {

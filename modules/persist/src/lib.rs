@@ -98,7 +98,6 @@ impl Guest for Component {
                         match fs_msg {
                             FsResponse::GetState => {
                                 if let Some(payload) = get_payload() {
-                                    // print_to_terminal(0, &format!("got payload??: {:?}", payload));
                                     if !payload.bytes.is_empty() {
                                         match bincode::deserialize(&payload.bytes) {
                                             Ok(deserialized_state) => state = deserialized_state,

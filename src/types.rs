@@ -160,7 +160,7 @@ pub enum OnPanic {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
     pub our: Address,
-    pub wasm_bytes_uri: String,
+    pub wasm_bytes_handle: u128,
     pub on_panic: OnPanic,
 }
 
@@ -229,10 +229,15 @@ pub enum DebugCommand {
 pub enum KernelCommand {
     StartProcess {
         name: Option<String>,
-        wasm_bytes_uri: String,
+        wasm_bytes_handle: u128,
         on_panic: OnPanic,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
+    RebootProcess {         // kernel only
+        process_id: ProcessId,
+        wasm_bytes_handle: u128,
+        on_panic: OnPanic,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

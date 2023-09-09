@@ -27,6 +27,7 @@ mod net;
 mod register;
 mod terminal;
 mod types;
+mod vfs;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -35,6 +36,7 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
+const VFS_CHANNEL_CAPACITY: usize = 1_000;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -109,6 +111,11 @@ async fn main() {
         MessageSender,
         MessageReceiver,
     ) = mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    // vfs maintains metadata about files in lfs for processes
+    let (vfs_message_sender, vfs_message_receiver): (
+        MessageSender,
+        MessageReceiver,
+    ) = mpsc::channel(VFS_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -453,6 +460,7 @@ async fn main() {
         lfs_message_sender,
         http_server_sender,
         http_client_message_sender,
+        vfs_message_sender,
     ));
     let net_handle = tokio::spawn(net::networking(
         our.clone(),
@@ -498,6 +506,12 @@ async fn main() {
         http_client_message_receiver,
         print_sender.clone(),
     ));
+    let vfs_handle = tokio::spawn(vfs::vfs(
+        our.name.clone(),
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        vfs_message_receiver,
+    ));
     // TODO: abort all these so graceful shutdown doesn't look like a crash
     let quit: String = tokio::select! {
         term = terminal::terminal(
@@ -519,6 +533,7 @@ async fn main() {
         _ = http_server_handle => {"fatal: http_server exit".into()},
         _ = http_client_handle => {"fatal: http_client exit".into()},
         _ = lfs_handle         => {"fatal: lfs exit".into()},
+        _ = vfs_handle         => {"fatal: vfs exit".into()},
     };
     let _ = crossterm::terminal::disable_raw_mode();
     println!("");

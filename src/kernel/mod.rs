@@ -1179,6 +1179,7 @@ async fn make_event_loop(
     send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_vfs: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -1203,6 +1204,10 @@ async fn make_event_loop(
         senders.insert(
             t::ProcessId::Name("net".into()),
             ProcessSender::Runtime(send_to_net.clone()),
+        );
+        senders.insert(
+            t::ProcessId::Name("vfs".into()),
+            ProcessSender::Runtime(send_to_vfs.clone()),
         );
 
         // each running process is stored in this map
@@ -1404,6 +1409,7 @@ pub async fn kernel(
     send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_vfs: t::MessageSender,
 ) {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1426,6 +1432,7 @@ pub async fn kernel(
             send_to_lfs,
             send_to_http_server,
             send_to_http_client,
+            send_to_vfs,
             send_to_terminal.clone(),
             engine,
         )

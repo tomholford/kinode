@@ -257,12 +257,12 @@ pub enum KernelResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Replace(u128),
-    Append(Option<u128>),
-    Read(u128),
+    Replace(FileHash),
+    Append(Option<FileHash>),
+    Read(FileHash),
     ReadChunk(ReadChunkRequest),
-    Delete(u128),
-    Length(u128),
+    Delete(FileHash),
+    Length(FileHash),
     //  process state management
     GetState,
     SetState,
@@ -270,7 +270,7 @@ pub enum FsAction {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file_uuid: u128,
+    pub file_uuid: FileHash,
     pub start: u64,
     pub length: u64,
 }
@@ -278,11 +278,11 @@ pub struct ReadChunkRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
     //  bytes are in payload_bytes
-    Read(u128),
-    ReadChunk(u128),
-    Write(u128),
-    Append(u128),
-    Delete(u128),
+    Read(FileHash),
+    ReadChunk(FileHash),
+    Write(FileHash),
+    Append(FileHash),
+    Delete(FileHash),
     Length(u64),
     GetState,
     SetState
@@ -434,7 +434,7 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
-type FileHash = [u8; 32];
+pub type FileHash = u128;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsRequest {
@@ -454,10 +454,11 @@ pub enum AddEntryType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsResponse {
-    Add,
-    Delete,
-    GetPath { full_path: Option<String> },
-    GetEntry { entry: Option<FileEntry> },
+    Add { full_path: String },
+    Rename { new_full_path: String },
+    Delete { full_path: String },
+    GetPath { hash: FileHash, full_path: Option<String> },
+    GetEntry { full_path: String, children: Vec<String> },
 }
 
 //

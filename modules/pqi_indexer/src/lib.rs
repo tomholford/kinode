@@ -7,6 +7,7 @@ use serde_json::json;
 use alloy_primitives::FixedBytes;
 use alloy_sol_types::{sol, SolEnum, SolType, SolCall, SolEvent};
 use hex;
+use std::collections::HashMap;
 
 struct Component;
 
@@ -41,13 +42,16 @@ impl UqProcess for Component {
     fn init(our: Address) {
         bindings::print_to_terminal(0, "pqi_indexer: start");
 
-        let event_sub_res = send_requests(&[ // TODO _and_await_response???
-            (
-                Address{
+        // TODO node might have to be a Vec<u8> or a FixedBytes<32> to String...
+        // capitalization screws this up
+        let mut names: HashMap<String, (String, String)> = HashMap::new();
+
+        let event_sub_res = send_request(
+                &Address{
                     node: our.node.clone(),
                     process: ProcessId::Name("eth_rpc".to_string()),
                 },
-                Request{
+                &Request{
                     inherit: false, // TODO what
                     expects_response: true,
                     metadata: None,
@@ -59,33 +63,7 @@ impl UqProcess for Component {
                             "from_block": 0,
                             "to_block": null,
                             "events": [
-                                "NameRegistered(uint256,bytes,address)"
-                            ],
-                            "topic1": null,
-                            "topic2": null,
-                            "topic3": null,
-                    }}).to_string()),
-                },
-                None,
-                None,
-            ),
-            (
-                Address{
-                    node: our.node.clone(),
-                    process: ProcessId::Name("eth_rpc".to_string()),
-                },
-                Request{
-                    inherit: false, // TODO what
-                    expects_response: true,
-                    metadata: None,
-                    ipc: Some(json!({
-                        // TODO new deployments
-                        // PublicResolver
-                        "SubscribeEvents": {
-                            "addresses": null, // TODO fill this in with test deployments later ["0x3Cfbc06A4FAdE3329aA103FC1dcF709D646F4c36"],
-                            "from_block": 0,
-                            "to_block": null,
-                            "events": [
+                                "NameRegistered(uint256,bytes,address)",
                                 "WsChanged(uint256,bytes32,uint48,bytes32[])",
                             ],
                             "topic1": null,
@@ -95,8 +73,7 @@ impl UqProcess for Component {
                 },
                 None,
                 None,
-            )
-        ]);
+        );
 
         bindings::print_to_terminal(0, "pqi_indexer: subscribed to events");
 
@@ -115,22 +92,35 @@ impl UqProcess for Component {
             };
 
             match msg {
-                // anticipating more message types later
+                // Probably more message types later...maybe not...
                 AllActions::EventSubscription(e) => {
                     match decode_hex(&e.topics[0].clone()) {
                         NameRegistered::SIGNATURE_HASH => {
-                            bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e.topics).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e).as_str());
+
+                            let node       = &e.topics[1];
+                            let decoded    = NameRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
+                            let name = dnswire_decode(decoded.0); // TODO parse this into human readable name...
+                            let owner = decoded.1;
+
+                            bindings::print_to_terminal(0, format!("pqi_indexer: OWNER: {:?}", owner.to_string()).as_str());
+                            bindings::print_to_terminal(0, format!("pqi_indexer: NODE1: {:?}", node).as_str());
+                            bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name.to_string()).as_str());
+
+                            names.insert(node.to_string(), (name, owner.to_string()));
                         }
                         WsChanged::SIGNATURE_HASH => {
                             // bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
+                            bindings::print_to_terminal(0, format!("pqi_indexer: NODE2: {:?}", node.to_string()).as_str());
                             let decoded    = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let public_key = hex::encode(decoded.0);
                             let (ip, port) = split_ip_and_port(decoded.1);
-                            let routers    = decoded.2;
+                            let routers    = decoded.2; // TODO these need to be parsed
 
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE: {:?}", node).as_str());
+                            let (name, owner) = names.get(node).unwrap();
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name).as_str());
                             // bindings::print_to_terminal(0, format!("pqi_indexer: DECODED: {:?}", decoded).as_str());
                             // bindings::print_to_terminal(0, format!("pqi_indexer: PUB KEY: {:?}", public_key).as_str());
                             // bindings::print_to_terminal(0, format!("pqi_indexer: IP PORT: {:?} {:?}", ip, port).as_str());
@@ -138,7 +128,8 @@ impl UqProcess for Component {
                             
                             let json_payload = json!({
                                 "PqiUpdate": {
-                                    // TODO name
+                                    "name": name,
+                                    "owner": owner,
                                     "node": node,
                                     "public_key": format!("0x{}", public_key),
                                     "ip": format!(
@@ -153,7 +144,7 @@ impl UqProcess for Component {
                                 }
                             }).to_string();
 
-                            bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
                             
                             send_request(
                                 &Address{
@@ -171,7 +162,7 @@ impl UqProcess for Component {
                             );
                         }
                         _ => {
-                            bindings::print_to_terminal(0, format!("pqi_indexer: got unknown event: {:?}", e.topics).as_str());
+                            bindings::print_to_terminal(0, format!("pqi_indexer: got unknown event: {:?}", e).as_str());
                         }
                     }
                 }
@@ -219,4 +210,23 @@ fn split_ip_and_port(combined: u64) -> (u32, u16) {
     let port = (combined & 0xFFFF) as u16;              // Extract the last 16 bits
     let ip = (combined >> 16) as u32;                   // Right shift to get the first 32 bits
     (ip, port)
+}
+
+fn dnswire_decode(wire_format_bytes: Vec<u8>) -> String {
+    let mut i = 0;
+    let mut result = Vec::new();
+
+    while i < wire_format_bytes.len() {
+        let len = wire_format_bytes[i] as usize;
+        if len == 0 { break; }
+        let end = i + len + 1;
+        let mut span = wire_format_bytes[i+1..end].to_vec();
+        span.push('.' as u8);
+        result.push(span);
+        i = end;
+    };
+
+    let flat: Vec<_> = result.into_iter().flatten().collect();
+
+    String::from_utf8(flat).unwrap()
 }

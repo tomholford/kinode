@@ -79,6 +79,8 @@ pub enum NetActions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PqiUpdate {
+    pub name: String,
+    pub owner: String,
     pub node: String,
     pub public_key: String,
     pub ip: String,
@@ -509,9 +511,6 @@ async fn handle_incoming_message(
 
                 // TODO this should come from log.data
                 // TODO probably randomly generate these if possible
-                let temp_rand_name: String = "TODO".to_string();
-
-                let _ = names.write().await.insert(log.node, temp_rand_name.clone());
 
                 let routers: Vec<String> = vec![];
                 // TODO why isn't this working
@@ -529,10 +528,10 @@ async fn handle_incoming_message(
                 // };
 
                 let _ = pki.write().await.insert(
-                    temp_rand_name.clone(),
+                    log.name.clone(),
                     Identity {
-                        name: temp_rand_name,
-                        address: "".to_string(), // TODO
+                        name: log.name,
+                        address: log.owner,
                         networking_key: log.public_key,
                         ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 { None } else { Some((log.ip, log.port)) } ,
                         allowed_routers: routers,

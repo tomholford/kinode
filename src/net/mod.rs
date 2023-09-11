@@ -5,6 +5,7 @@ use crate::net::connections::build_connection;
 use crate::types::*;
 
 use aes_gcm_siv::Nonce;
+use anyhow::Result;
 use async_recursion::async_recursion;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
@@ -74,15 +75,15 @@ pub struct Handshake {
 pub async fn networking(
     our: Identity,
     our_ip: String,
-    keypair: Ed25519KeyPair,
+    keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
     mut message_rx: MessageReceiver,
-) {
+) -> Result<()> {
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
-    let keypair = Arc::new(keypair);
+    let keypair = keypair.clone();
 
     tokio::select! {
         _listener = async {
@@ -119,7 +120,7 @@ pub async fn networking(
                 }).await;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
-        } => (),
+        } => Err(anyhow::anyhow!("listener died")),
         _sender = async {
             while let Some(km) = message_rx.recv().await {
                 tokio::spawn(sender(
@@ -134,7 +135,7 @@ pub async fn networking(
                     km,
                 ));
             }
-        } => (),
+        } => Err(anyhow::anyhow!("sender died")),
     }
 }
 

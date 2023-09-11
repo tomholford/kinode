@@ -1,3 +1,4 @@
+use anyhow::Result;
 use crossterm::{
     cursor,
     event::{
@@ -97,16 +98,17 @@ impl CommandHistory {
  *  terminal driver
  */
 pub async fn terminal(
-    our: &Identity,
+    our: Identity,
     version: &str,
     home_directory_path: String,
     event_loop: MessageSender,
     debug_event_loop: DebugSender,
     print_tx: PrintSender,
     mut print_rx: PrintReceiver,
-) -> std::io::Result<()> {
+) -> Result<()> {
+    let mut stdout = stdout();
     execute!(
-        stdout(),
+        stdout,
         EnableBracketedPaste,
         terminal::SetTitle(format!("{}@{}", our.name, "uqbar"))
     )?;
@@ -143,7 +145,6 @@ pub async fn terminal(
     );
 
     enable_raw_mode()?;
-    let stdout = stdout();
     let mut reader = EventStream::new();
     let mut current_line = format!("{} > ", our.name);
     let prompt_len: usize = our.name.len() + 3;
@@ -609,7 +610,8 @@ pub async fn terminal(
         }
     }
     execute!(stdout.lock(), DisableBracketedPaste, terminal::SetTitle(""))?;
-    disable_raw_mode()
+    disable_raw_mode()?;
+    Ok(())
 }
 
 fn truncate_rightward(s: &str, prompt_len: usize, width: u16) -> String {

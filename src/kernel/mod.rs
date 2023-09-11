@@ -831,6 +831,11 @@ async fn handle_kernel_request(
         Ok(c) => c,
     };
     match command {
+        t::KernelCommand::Shutdown => {
+            for handle in process_handles.values() {
+                handle.abort();
+            }
+        }
         //
         // initialize a new process. this is the only way to create a new process.
         // this sends a read request to filesystem, when response is received,
@@ -1169,7 +1174,7 @@ async fn start_process(
 async fn make_event_loop(
     our_name: String,
     home_directory_path: String,
-    process_map: ProcessMap,
+    mut process_map: ProcessMap,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1180,6 +1185,7 @@ async fn make_event_loop(
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_vfs: t::MessageSender,
+    send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -1198,6 +1204,10 @@ async fn make_event_loop(
             ProcessSender::Runtime(send_to_http_client),
         );
         senders.insert(
+            t::ProcessId::Name("encryptor".into()),
+            ProcessSender::Runtime(send_to_encryptor),
+        );
+        senders.insert(
             t::ProcessId::Name("lfs".into()),
             ProcessSender::Runtime(send_to_lfs),
         );
@@ -1213,25 +1223,24 @@ async fn make_event_loop(
         // each running process is stored in this map
         let mut process_handles: ProcessHandles = HashMap::new();
 
-        // process persistance and metadata in this map
-        let mut process_map = process_map;
-
         let mut is_debug: bool = false;
 
-
         // will boot every wasm module inside /modules
-        // currently have an exclude list to avoid broken moduels
+        // currently have an exclude list to avoid broken modules
         // modules started manually by users will bootup automatically
         // TODO remove once the modules compile!
 
         let exclude_list: Vec<t::ProcessId> = vec![
-            t::ProcessId::Name("apps_home".into()),
+            // t::ProcessId::Name("apps_home".into()),
             t::ProcessId::Name("explorer".into()),
-            t::ProcessId::Name("http_bindings".into()),
-            t::ProcessId::Name("http_proxy".into()),
+            // t::ProcessId::Name("http_bindings".into()),
+            // t::ProcessId::Name("http_proxy".into()),
             t::ProcessId::Name("process_manager".into()),
             t::ProcessId::Name("hi_lus_lus".into()),
             t::ProcessId::Name("sequencer".into()),
+            t::ProcessId::Name("file_transfer".into()),
+            t::ProcessId::Name("file_transfer_one_off".into()),
+            t::ProcessId::Name("net_tester".into()),
         ];
 
         for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {
@@ -1278,7 +1287,7 @@ async fn make_event_loop(
                     }
                 },
                 ne = network_error_recv.recv() => {
-                    let wrapped_network_error = ne.expect("fatal: event loop died");
+                    let Some(wrapped_network_error) = ne else { return Ok(()) };
                     let _ = send_to_terminal.send(
                         t::Printout {
                             verbosity: 1,
@@ -1410,7 +1419,8 @@ pub async fn kernel(
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_vfs: t::MessageSender,
-) {
+    send_to_encryptor: t::MessageSender,
+) -> Result<()> {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
     config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
@@ -1433,10 +1443,11 @@ pub async fn kernel(
             send_to_http_server,
             send_to_http_client,
             send_to_vfs,
+            send_to_encryptor,
             send_to_terminal.clone(),
             engine,
         )
         .await,
     );
-    let _ = event_loop_handle.await;
+    event_loop_handle.await.unwrap()
 }

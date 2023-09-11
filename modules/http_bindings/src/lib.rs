@@ -3,31 +3,32 @@ cargo_component_bindings::generate!();
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use hmac::{Hmac, Mac};
-use jwt::{SignWithKey, VerifyWithKey, Error};
 use sha2::Sha256;
+use jwt::{SignWithKey, VerifyWithKey, Error};
 use url::form_urlencoded;
 
-use bindings::{MicrokernelProcess, print_to_terminal, receive};
-use bindings::component::microkernel_process::types;
+use bindings::{print_to_terminal, receive, send_request, send_response, get_payload, Guest};
+use bindings::component::uq_process::types::*;
 
 mod process_lib;
 
 struct Component;
 
+#[derive(Debug, Serialize, Deserialize)]
 struct BoundPath {
     app: String,
     authenticated: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
   username: String,
   expiration: u64,
 }
 
-fn generate_token(our_name: String, secret: Hmac<Sha256>) -> Option<String> {
+fn generate_token(our_node: String, secret: Hmac<Sha256>) -> Option<String> {
     let claims = JwtClaims {
-        username: our_name,
+        username: our_node,
         expiration: 0,
     };
     let token: Option<String> = match claims.sign_with_key(&secret) {
@@ -37,12 +38,12 @@ fn generate_token(our_name: String, secret: Hmac<Sha256>) -> Option<String> {
     token
 }
 
-fn auth_cookie_valid(our_name: String, cookie: &str, secret: Hmac<Sha256>) -> bool {
+fn auth_cookie_valid(our_node: String, cookie: &str, secret: Hmac<Sha256>) -> bool {
     let cookie_parts: Vec<&str> = cookie.split("; ").collect();
     let mut auth_token = None;
     for cookie_part in cookie_parts {
         let cookie_part_parts: Vec<&str> = cookie_part.split("=").collect();
-        if cookie_part_parts.len() == 2 && cookie_part_parts[0] == format!("uqbar-auth_{}", our_name) {
+        if cookie_part_parts.len() == 2 && cookie_part_parts[0] == format!("uqbar-auth_{}", our_node) {
             auth_token = Some(cookie_part_parts[1].to_string());
             break;
         }
@@ -59,8 +60,8 @@ fn auth_cookie_valid(our_name: String, cookie: &str, secret: Hmac<Sha256>) -> bo
 
     match claims {
         Ok(data) => {
-            print_to_terminal(1, format!("http_bindings: our name: {}, token_name {}", our_name, data.username).as_str());
-            data.username == our_name
+            print_to_terminal(1, format!("http_bindings: our name: {}, token_name {}", our_node, data.username).as_str());
+            data.username == our_node
         },
         Err(_) => {
             print_to_terminal(1, "http_bindings: failed to verify token");
@@ -75,90 +76,109 @@ fn send_http_response(
     headers: HashMap<String, String>,
     payload_bytes: Vec<u8>,
 ) {
-    let _ = process_lib::send_response(
-        Some(serde_json::json!({
-            "id": id,
-            "status": status,
-            "headers": headers,
-        })),
-        types::OutboundPayloadBytes::Some(payload_bytes),
-        None::<String>,
-    );
+    send_response(
+        &Response {
+            ipc: Some(serde_json::json!({
+                "id": id,
+                "status": status,
+                "headers": headers,
+            }).to_string()),
+            metadata: None,
+        },
+        Some(&Payload {
+            mime: Some("application/octet-stream".to_string()),
+            bytes: payload_bytes,
+        })
+    )
 }
 
-// TODO: handle auth correctly, generate a secret and store in filesystem if non-existent
-impl MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
+impl Guest for Component {
+    fn init(our: Address) {
         print_to_terminal(1, "http_bindings: start");
         let mut path_bindings: HashMap<String, BoundPath> = HashMap::new();
         let mut jwt_secret: Option<Hmac<Sha256>> = None;
 
+        // get jwt secret from http_server, handle as a request with set-jwt-secret
+        send_request(
+            &Address {
+                node: our.node.clone(),
+                process: ProcessId::Name("http_server".to_string()),
+            },
+            &Request {
+                inherit: false,
+                expects_response: false,
+                ipc: Some(serde_json::json!({
+                    "ServerAction": {
+                        "action": "get-jwt-secret",
+                    }
+                }).to_string()),
+                metadata: None,
+            },
+            None,
+            None,
+        );
+
         loop {
-            let (message, _) = receive().unwrap();  //  TODO: handle error properly
-            let types::InboundMessage::Request(types::InboundRequest {
-                is_expecting_response: _,
-                payload: types::InboundPayload {
-                    source: _,
-                    ref json,
-                    bytes,
-                },
-            }) = message else {
-                print_to_terminal(1, "http_bindings: got unexpected response");
+            let Ok((_source, message)) = receive() else {
+                print_to_terminal(0, "http_bindings: got network error");
+                continue;
+            };
+            let Message::Request(request) = message else {
+                // Ignore responses for now
+                print_to_terminal(0, "http_bindings: got unexpected message");
                 continue;
             };
 
-            let Some(json) = json else {
-                panic!("bar");
+            let Some(json) = request.ipc else {
+                print_to_terminal(0, "http_bindings: no ipc JSON, skipping");
+                continue;
             };
-            let message_json: serde_json::Value = match serde_json::from_str(json) {
+
+            let message_json: serde_json::Value = match serde_json::from_str(&json) {
                 Ok(v) => v,
                 Err(_) => {
-                    print_to_terminal(1, "http_bindings: failed to parse message_json_text");
+                    print_to_terminal(1, "http_bindings: failed to parse ipc JSON, skipping");
                     continue;
                 },
             };
 
-            print_to_terminal(1, "http_bindings: GOT MESSAGE");
-
-            let action = &message_json["action"];
+            let action = message_json["action"].as_str().unwrap_or("");
             // Safely unwrap the path as a string
-            let path = match message_json["path"].as_str() {
-                Some(s) => s,
-                None => "", // or any other default value
-            };
-            let app = match message_json["app"].as_str() {
-                Some(s) => s,
-                None => "", // or any other default value
-            };
+            let path = message_json["path"].as_str().unwrap_or("");
+            let app = message_json["app"].as_str().unwrap_or("");
+
+            print_to_terminal(1, "http_bindings: got message");
 
             if action == "set-jwt-secret" {
-                let types::InboundPayloadBytes::Some(jwt_secret_bytes) = bytes else {
-                    panic!("set-jwt-secrect with no bytes");
+                let Some(payload) = get_payload() else {
+                    panic!("set-jwt-secret with no payload");
                 };
 
-                if jwt_secret_bytes.is_empty() {
-                    print_to_terminal(1, "http_bindings: got empty jwt_secret_bytes");
-                } else {
-                    print_to_terminal(1, "http_bindings: generating token secret...");
-                    jwt_secret = match Hmac::new_from_slice(&jwt_secret_bytes) {
-                        Ok(secret) => Some(secret),
-                        Err(_) => {
-                            print_to_terminal(1, "http_bindings: failed to generate token secret");
-                            None
-                        },
-                    };
-                }
-                let _ = process_lib::send_response(
-                    None::<String>,
-                    types::OutboundPayloadBytes::None,
-                    None::<String>,
+                let jwt_secret_bytes = payload.bytes;
+
+                print_to_terminal(1, "http_bindings: generating token secret...");
+                jwt_secret = match Hmac::new_from_slice(&jwt_secret_bytes) {
+                    Ok(secret) => Some(secret),
+                    Err(_) => {
+                        print_to_terminal(1, "http_bindings: failed to generate token secret");
+                        None
+                    },
+                };
+                send_response(
+                    &Response {
+                        ipc: None,
+                        metadata: None,
+                    },
+                    None,
                 );
             } else if action == "bind-app" && path != "" && app != "" {
+                print_to_terminal(1, "http_bindings: binding app 1");
                 let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                 if app != "apps_home" && (path_segments.is_empty() || path_segments[0] != app.clone().replace("_", "-")) {
                     print_to_terminal(1, "http_bindings: first path segment does not match process");
                     continue;
                 } else {
+                    print_to_terminal(1, format!("http_bindings: binding app 2 {}", path.to_string()).as_str());
                     path_bindings.insert(path.to_string(), {
                         BoundPath {
                             app: app.to_string(),
@@ -186,10 +206,10 @@ impl MicrokernelProcess for Component {
                     } else if message_json["method"] == "POST" {
                         print_to_terminal(1, "http_bindings: got login POST request");
 
-                        let types::InboundPayloadBytes::Some(body_bytes) = bytes else {
-                            panic!("set-jwt-secrect with no bytes");
+                        let Some(payload) = get_payload() else {
+                            panic!("/login POST with no bytes");
                         };
-                        let body_json_string = match String::from_utf8(body_bytes) {
+                        let body_json_string = match String::from_utf8(payload.bytes) {
                             Ok(s) => s,
                             Err(_) => String::new()
                         };
@@ -198,39 +218,39 @@ impl MicrokernelProcess for Component {
 
                         if password == "" {
                             send_http_response(message_json["id"].to_string(), 400, HashMap::new(), "Bad Request".as_bytes().to_vec());
-                        } else {
-                            print_to_terminal(1, "http_bindings: generating token...");
-                            // TODO: check the password
+                        }
 
-                            match jwt_secret.clone() {
-                                Some(secret) => {
-                                    match generate_token(our.node.clone(), secret) {
-                                        Some(token) => {
-                                            // Token was generated successfully; you can use it here.
-                                            send_http_response(message_json["id"].to_string(), 200, {
-                                                let mut headers = HashMap::new();
-                                                headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                                headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
-                                                headers
-                                            }, "".as_bytes().to_vec());
-                                        }
-                                        None => {
-                                            send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
-                                        }
+                        match jwt_secret.clone() {
+                            Some(secret) => {
+                                match generate_token(our.node.clone(), secret) {
+                                    Some(token) => {
+                                        // Token was generated successfully; you can use it here.
+                                        send_http_response(message_json["id"].to_string(), 200, {
+                                            let mut headers = HashMap::new();
+                                            headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                            headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
+                                            headers
+                                        }, "".as_bytes().to_vec());
+                                    }
+                                    None => {
+                                        print_to_terminal(1, "so secret 1");
+                                        // Failed to generate token; you should probably return an error.
+                                        send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
                                     }
                                 }
-                                None => {
-                                    send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
-                                },
+                            }
+                            None => {
+                                print_to_terminal(1, "so secret 2");
+                                send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
                             }
                         }
                     } else if message_json["method"] == "PUT" {
                         print_to_terminal(1, "http_bindings: got login PUT request");
 
-                        let types::InboundPayloadBytes::Some(body_bytes) = bytes else {
-                            panic!("set-jwt-secrect with no bytes");
+                        let Some(payload) = get_payload() else {
+                            panic!("/login PUT with no bytes");
                         };
-                        let body_json_string = match String::from_utf8(body_bytes) {
+                        let body_json_string = match String::from_utf8(payload.bytes) {
                             Ok(s) => s,
                             Err(_) => String::new()
                         };
@@ -276,6 +296,59 @@ impl MicrokernelProcess for Component {
                 }
                 // End Login logic
 
+                // Start Encryption Secret Logic
+                if path == "/encryptor" {
+                    bindings::print_to_terminal(1, "http_bindings: got encryptor request");
+                    let auth_success = match jwt_secret.clone() {
+                        Some(secret) => {
+                            bindings::print_to_terminal(1, "HAVE SECRET");
+                            auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
+                        },
+                        None => {
+                            bindings::print_to_terminal(1, "NO SECRET");
+                            false
+                        }
+                    };
+
+                    if auth_success {
+                        let body_bytes = match get_payload() {
+                            Some(payload) => payload.bytes,
+                            None => vec![]
+                        };
+                        let body_json_string = match String::from_utf8(body_bytes) {
+                            Ok(s) => s,
+                            Err(_) => String::new()
+                        };
+                        let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                        let channel_id = body["channel_id"].as_str().unwrap_or("");
+                        let public_key_hex = body["public_key_hex"].as_str().unwrap_or("");
+
+                        send_request(
+                            &Address {
+                                node: our.node.clone(),
+                                process: ProcessId::Name("encryptor".to_string()),
+                            },
+                            &Request {
+                                inherit: true,
+                                expects_response: false,
+                                ipc: Some(serde_json::json!({
+                                    "GetKeyAction": {
+                                        "channel_id": channel_id,
+                                        "public_key_hex": public_key_hex,
+                                    }
+                                }).to_string()),
+                                metadata: None,
+                            },
+                            None,
+                            None,
+                        );
+                    } else {
+                        send_http_response(message_json["id"].to_string(), 401, HashMap::new(), "Unauthorized".as_bytes().to_vec());
+                    }
+                    continue;
+                }
+                // End Encryption Secret Logic
+
                 let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                 let mut registered_path = path;
                 let mut url_params: HashMap<String, String> = HashMap::new();
@@ -316,7 +389,7 @@ impl MicrokernelProcess for Component {
                             let auth_success = match jwt_secret.clone() {
                                 Some(secret) => {
                                     print_to_terminal(1, "HAVE SECRET");
-                                    auth_cookie_valid(our.node.clone(), message_json["headers"]["Cookie"].as_str().unwrap_or(""), secret)
+                                    auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
                                 },
                                 None => {
                                     print_to_terminal(1, "NO SECRET");
@@ -325,7 +398,7 @@ impl MicrokernelProcess for Component {
                             };
 
                             if !auth_success {
-                                print_to_terminal(1, "http_bindings: path");
+                                print_to_terminal(1, "http_bindings: failure to authenticate");
                                 let proxy_path = message_json["proxy_path"].as_str();
 
                                 let redirect_path: String = match proxy_path {
@@ -348,25 +421,30 @@ impl MicrokernelProcess for Component {
                             }
                         }
 
-                        let types::InboundPayloadBytes::Some(bytes) = bytes else {
-                            panic!("set-jwt-secrect with no bytes");
-                        };
-                        let _ = process_lib::send_one_request(
-                            false,
-                            &our.node,
-                            types::ProcessIdentifier::Name(app.into()),
-                            Some(serde_json::json!({
-                                "path": registered_path,
-                                "raw_path": path,
-                                "method": message_json["method"],
-                                "headers": message_json["headers"],
-                                "query_params": message_json["query_params"],
-                                "url_params": url_params,
-                                "id": message_json["id"],
-                            })),
-                            types::OutboundPayloadBytes::Some(bytes),
-                            None::<String>,
+                        // import send-request: func(target: address, request: request, context: option<context>, payload: option<payload>)
+                        send_request(
+                            &Address {
+                                node: our.node.clone(),
+                                process: ProcessId::Name(app.to_string()),
+                            },
+                            &Request {
+                                inherit: true,
+                                expects_response: false,
+                                ipc: Some(serde_json::json!({
+                                    "path": registered_path,
+                                    "raw_path": path,
+                                    "method": message_json["method"],
+                                    "headers": message_json["headers"],
+                                    "query_params": message_json["query_params"],
+                                    "url_params": url_params,
+                                    "id": message_json["id"],
+                                }).to_string()),
+                                metadata: None,
+                            },
+                            None,
+                            get_payload().as_ref(),
                         );
+                        continue;
                     },
                     None => {
                         print_to_terminal(1, "http_bindings: no app found at this path");
@@ -384,3 +462,5 @@ impl MicrokernelProcess for Component {
         }
     }
 }
+
+// TODO: handle auth correctly, generate a secret and store in filesystem if non-existent

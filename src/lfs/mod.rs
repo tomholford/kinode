@@ -1,5 +1,6 @@
 /// log structured filesystem
 /// immutable/append []
+use anyhow::Result;
 use blake3::Hasher;
 use hex;
 use std::path::PathBuf;
@@ -174,7 +175,7 @@ pub async fn fs_sender(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver,
-) {
+) -> Result<()> {
     //  interval for deleting/(flushing)
     let mut interval = interval(Duration::from_secs(60));
 

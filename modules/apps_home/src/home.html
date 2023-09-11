@@ -199,7 +199,18 @@
       <a id="http-proxy" href="/http-proxy">HTTP Proxy</a>
       <a id="explorer" href="/explorer">Explorer</a>
     </div>
+    <script>window.ourName = window.our = '${our}'</script>
     <script>
+      function getCookie(name) {
+          const cookies = document.cookie.split(';')
+          for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim()
+            if (cookie.startsWith(name)) {
+              return cookie.substring(name.length + 1)
+            }
+          }
+      }
+
       document.addEventListener('DOMContentLoaded', function() {
         const fileTransferLink = document.getElementById('file-transfer')
         fileTransferLink.attributes.href.value = (window.location.pathname + fileTransferLink.attributes.href.value).replace('//', '/')
@@ -207,6 +218,40 @@
         httpProxyLink.attributes.href.value = (window.location.pathname + httpProxyLink.attributes.href.value).replace('//', '/')
         const explorerLink = document.getElementById('explorer')
         explorerLink.attributes.href.value = (window.location.pathname + explorerLink.attributes.href.value).replace('//', '/')
+
+        console.log('OUR NODE NAME:', window.our)
+        console.log(getCookie(`uqbar-ws-auth_${window.our}`))
+
+        // const webSocket = new WebSocket('ws://' + window.location.host) // Handle proxying later
+        // webSocket.onopen = () => {
+        //   console.log('WS OPENED')
+        //   webSocket.send(JSON.stringify({
+        //       Register: {
+        //           auth_token: getCookie(`uqbar-ws-auth_${window.our}`),
+        //           channel_id: "apps_home"           // Can be unique to this connection, app, or omitted entirely
+        //       }
+        //   }))
+
+        //   setTimeout(() => {
+        //     webSocket.send(JSON.stringify({
+        //       Action: {
+        //         auth_token: getCookie(`uqbar-ws-auth_${window.our}`),
+        //         target: {
+        //           node: window.our,
+        //           process: 'apps_home'
+        //         },
+        //         channel_id: 'apps_home',
+        //         json: {
+        //           action: 'ping'
+        //           // You could add a unique ID here so that the server can respond to only this ID
+        //         }
+        //       }
+        //     }))
+        //   }, 1000)
+        // }
+        // webSocket.onmessage = (message) => {
+        //   console.log('GOT WS MESSAGE: ', message)
+        // }
       })
     </script>
   </body>

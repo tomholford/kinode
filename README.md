@@ -11,12 +11,15 @@ git clone git@github.com:uqbar-dao/operationOJ.git
 
 # Get some stuff so we can build wasm.
 
-rustup target add wasm32-unknown-unknown
+cargo install wasm-tools
+rustup install nightly
+rustup target add wasm32-wasi
+rustup target add wasm32-wasi --toolchain nightly
 cargo install cargo-wasi
-cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
+cargo install --git https://github.com/bytecodealliance/cargo-component --locked cargo-component
 
-# Build the runtime, along with a number of booted-at-startup WASM modules including process-manager, terminal, and http-bindings
-cargo build --release
+# Build the runtime, along with a number of booted-at-startup WASM modules including terminal and key_value
+cargo +nightly build --release
 
 # Create the home directory for your node
 # If you boot multiple nodes, make sure each has their own home directory.
@@ -27,7 +30,7 @@ mkdir home
 
 Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the second argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
 ```bash
-cargo run --release home http://147.135.114.167:8083/blockchain.json
+cargo +nightly run --release home http://147.135.114.167:8083/blockchain.json
 ```
 There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
 
@@ -56,105 +59,9 @@ Now that the node has started, look to the example usage section below to see wh
 
 - `!message <name> <app> <json>`: send a card with a JSON value to another node or yourself. <name> can be `our`, which will be interpreted as our node's username.
 - `!hi <name> <string>`: send a text message to another node's command line.
+- `<name>` is either the name of a node or `our`, which will fill in the present node name
 - more to come
 
 ## Example usage
 
-### Using the file-transfer app
-
-```bash
-# Create the boot sequence:
-cd boot_sequence
-cargo r
-cd ..
-
-# Create two node home directories, and populate them:
-mkdir home
-mkdir home/${FIRST_NODE}
-mkdir home/${SECOND_NODE}
-mkdir home/${SECOND_NODE}/file_transfer
-mkdir home/${SECOND_NODE}/file_transfer_one_off
-cp README.md home/${SECOND_NODE}/file_transfer/
-cp README.md home/${SECOND_NODE}/file_transfer_one_off/
-
-# Optionally add additional processes:
-cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${FIRST_NODE}/
-cp modules/hi_lus_lus/target/wasm32-unknown-unknown/release/hi_lus_lus.wasm home/${SECOND_NODE}/
-
-# Terminal A: add hi++ apps to kernel
-!message tuna kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
-!message tuna kernel {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
-!message tuna kernel {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
-
-# Terminal B: While A is still running add hi++ to kernel
-!message dolph kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://hi_lus_lus.wasm", "send_on_panic": "None"}
-!message dolph kernel {"type": "Start", "process_name": "file_transfer", "wasm_bytes_uri": "fs://file_transfer.wasm", "send_on_panic": "None"}
-!message dolph kernel {"type": "Start", "process_name": "file_transfer_one_off", "wasm_bytes_uri": "fs://file_transfer_one_off.wasm", "send_on_panic": "None"}
-
-# Terminal B: Send a message using hi++ from Terminal B to A:
-!message dolph hi_lus_lus {"target": "tuna", "action": "send", "contents": "hello from dolph"}
-
-# Terminal A: Send a message back from A to B using hi++:
-!message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
-
-# Terminal A: get a file from B using file_transfer:
-!message tuna file_transfer {"type": "GetFile", "target_ship": "dolph", "uri_string": "fs://README.md", "chunk_size": 1024}
-!message tuna file_transfer_one_off {"type": "GetFile", "target_ship": "dolph", "uri_string": "fs://README.md", "chunk_size": 1024}
-!message tuna file_transfer {"type": "DisplayOngoing"}
-!message tuna file_transfer {"type": "ReadDir", "target_node": "dolph", "uri_string": "fs://."}
-
-# Terminal A: Stopping a process means messages will no longer work:
-!message tuna kernel {"type": "Stop", "process_name": "hi_lus_lus"}
-!message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
-
-# Terminal A: However, restarting a process will reset its state and messages will work since the process is running again:
-!message tuna kernel {"type": "Start", "process_name": "hi_lus_lus", "wasm_bytes_uri": "fs://home/tuna/hi_lus_lus.wasm", "send_on_panic": "None"}
-!message tuna kernel {"type": "Restart", "process_name": "hi_lus_lus"}
-!message tuna hi_lus_lus {"target": "dolph", "action": "send", "contents": "hello from tuna"}
-
-!message tuna kernel {"type": "Restart", "process_name": "file_transfer"}
-!message dolph kernel {"type": "Restart", "process_name": "file_transfer"}
-```
-
-## Bumping deps
-
-From time to time we will need to bump deps: `cargo component`[1], wit-bindgen[2], and so on.
-Some part of this will be highly manual since these libs are moving very fast and we should expect many breaking changes.
-Others are standard.
-Here, we document the semi-standard parts.
-
-### cargo component
-
-First take a look at [1].
-Significant breaking changes occur frequently as of this writing, and so even the "standard" commands below are subject to change.
-E.g., `cargo component new` has a new `--reactor` option as of this writing.
-In addition, components now generate bindings with a different macro command.
-These things need to be discovered by reading the README and comparing that to how we currently do things.
-
-1. Go to https://github.com/bytecodealliance/cargo-component/commits/main
-2. Find latest commit hash
-3. Run
-   ```
-   cargo install --git https://github.com/bytecodealliance/cargo-component --rev d14cef6 cargo-component
-   ```
-   replacing d14cef6 with the most recent commit hash.
-   You may also need to change arguments past the `--rev`; e.g. the `cargo-component` part is new as of this writing.
-4. Update the README to reflect the new commit hash.
-
-### Components
-
-1. Run `cargo update` in the component directory.
-2. Find any changes to Cargo.toml by going to some temporary directory and running
-   ```
-   cargo component new --reactor mytest
-   ```
-   and comparing the Cargo.toml produced to the one in existing component directories.
-
-## References
-
-[1] https://github.com/bytecodealliance/cargo-component
-
-[2] https://github.com/bytecodealliance/wit-bindgen
-
-[1]: https://github.com/bytecodealliance/cargo-component
-[2]: https://github.com/bytecodealliance/wit-bindgen
+TODO

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use bytes::Bytes;
 use http::Uri;
 use sha2::Digest;
@@ -221,23 +222,19 @@ pub async fn fs_sender(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver,
-) {
-    //println!("a");
+) -> Result<()> {
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
     }
-    //println!("b");
     let home_directory_path = fs::canonicalize(home_directory_path).await.unwrap();
-    //println!("c");
     let home_directory_path = home_directory_path.to_str().unwrap();
-    //println!("d");
     let mut process_to_open_files: HashMap<String, Arc<Mutex<HashMap<FileRef, fs::File>>>> =
         HashMap::new();
 
     //  TODO: store or back up in DB/kv?
     while let Some(km) = recv_in_fs.recv().await {
         let ProcessId::Name(source_process) = &km.source.process else {
-            panic!("filesystem: require source identifier contain process name")
+            return Err(anyhow::anyhow!("filesystem: require source identifier contain process name"))
             // return Err(FileSystemError::FsError {
             //     what: "to_absolute_path".into(),
             //     path: "home_directory_path".into(),
@@ -324,6 +321,7 @@ pub async fn fs_sender(
             }
         }
     }
+    Err(anyhow::anyhow!("filesystem: sender loop exited"))
 }
 
 //  TODO: error handling: send error messages to caller

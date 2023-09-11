@@ -160,7 +160,7 @@ pub enum OnPanic {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProcessMetadata {
     pub our: Address,
-    pub wasm_bytes_uri: String,
+    pub wasm_bytes_handle: u128,
     pub on_panic: OnPanic,
 }
 
@@ -229,10 +229,17 @@ pub enum DebugCommand {
 pub enum KernelCommand {
     StartProcess {
         name: Option<String>,
-        wasm_bytes_uri: String,
+        wasm_bytes_handle: u128,
         on_panic: OnPanic,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
+    RebootProcess {
+        // kernel only
+        process_id: ProcessId,
+        wasm_bytes_handle: u128,
+        on_panic: OnPanic,
+    },
+    Shutdown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -252,17 +259,20 @@ pub enum KernelResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Append(Option<[u8; 32]>),
-    Read([u8; 32]),
+    Replace(u128),
+    Append(Option<u128>),
+    Read(u128),
     ReadChunk(ReadChunkRequest),
-    PmWrite, //  specific case for process manager persistance.
-    Delete([u8; 32]),
-    Length([u8; 32]),
+    Delete(u128),
+    Length(u128),
+    //  process state management
+    GetState,
+    SetState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file_hash: [u8; 32],
+    pub file_uuid: u128,
     pub start: u64,
     pub length: u64,
 }
@@ -270,13 +280,14 @@ pub struct ReadChunkRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
     //  bytes are in payload_bytes
-    Read([u8; 32]),
-    ReadChunk([u8; 32]),
-    Write([u8; 32]),
-    Append([u8; 32]),
-    Delete([u8; 32]),
+    Read(u128),
+    ReadChunk(u128),
+    Write(u128),
+    Append(u128),
+    Delete(u128),
     Length(u64),
-    //  use FileSystemError
+    GetState,
+    SetState, //  use FileSystemError
 }
 
 impl FileSystemError {
@@ -472,40 +483,6 @@ impl HttpClientError {
 }
 
 //
-// http_server.rs types
-//
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
-}
-
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum HttpServerError {
-    #[error("http_client: json is None")]
-    NoJson,
-    #[error("http_client: bytes are None")]
-    NoBytes,
-    #[error(
-        "http_client: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.",
-        json
-    )]
-    BadJson { json: String, error: String },
-}
-
-impl HttpServerError {
-    pub fn kind(&self) -> &str {
-        match *self {
-            HttpServerError::NoJson { .. } => "NoJson",
-            HttpServerError::NoBytes { .. } => "NoBytes",
-            HttpServerError::BadJson { .. } => "BadJson",
-        }
-    }
-}
-
-//
 // keygen types
 //
 
@@ -520,10 +497,65 @@ impl std::fmt::Display for KernelMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "{{ id: {}, source: {}, target: {}, rsvp: {:?}, message: {:?}}}",
+            "{{ id: {}, source: {:?}, target: {:?}, rsvp: {:?}, message: {:?} }}",
             self.id, self.source, self.target, self.rsvp, self.message,
         )
     }
+}
+
+//
+// http_server.rs types
+//
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>, // TODO does this use a lot of memory?
+}
+
+#[derive(Error, Debug, Serialize, Deserialize)]
+pub enum HttpServerError {
+    #[error("http_server: json is None")]
+    NoJson,
+    #[error("http_server: response not ok")]
+    ResponseError,
+    #[error("http_server: bytes are None")]
+    NoBytes,
+    #[error(
+        "http_server: JSON payload could not be parsed to HttpClientRequest: {error}. Got {:?}.",
+        json
+    )]
+    BadJson { json: String, error: String },
+}
+
+impl HttpServerError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            HttpServerError::NoJson { .. } => "NoJson",
+            HttpServerError::NoBytes { .. } => "NoBytes",
+            HttpServerError::BadJson { .. } => "BadJson",
+            HttpServerError::ResponseError { .. } => "ResponseError",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JwtClaims {
+  pub username: String,
+  pub expiration: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WebSocketServerTarget {
+    pub node: String,
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WebSocketPush {
+    pub target: WebSocketServerTarget,
+    pub is_text: Option<bool>,
 }
 
 impl std::fmt::Display for Address {
@@ -544,3 +576,99 @@ impl std::fmt::Display for Address {
         )
     }
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerAction {
+    pub action: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum HttpServerMessage {
+    WebSocketPush(WebSocketPush),
+    ServerAction(ServerAction),
+    WsRegister(WsRegister), // Coming from a proxy
+    WsProxyDisconnect(WsProxyDisconnect), // Coming from a proxy
+    WsMessage(WsMessage), // Coming from a proxy
+    EncryptedWsMessage(EncryptedWsMessage), // Coming from a proxy
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WsRegister {
+    pub ws_auth_token: String,
+    pub auth_token: String,
+    pub channel_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WsProxyDisconnect {
+    // Doesn't require auth because it's coming from the proxy
+    pub channel_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WsMessage {
+    pub ws_auth_token: String,
+    pub auth_token: String,
+    pub channel_id: String,
+    pub target: Address,
+    pub json: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EncryptedWsMessage {
+    pub ws_auth_token: String,
+    pub auth_token: String,
+    pub channel_id: String,
+    pub target: Address,
+    pub encrypted: String, // Encrypted JSON as hex with the 32-byte authentication tag appended
+    pub nonce: String, // Hex of the 12-byte nonce
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WebSocketClientMessage {
+    WsRegister(WsRegister),
+    WsMessage(WsMessage),
+    EncryptedWsMessage(EncryptedWsMessage),
+}
+// http_server End
+
+// encryptor Start
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GetKeyAction {
+    pub channel_id: String,
+    pub public_key_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecryptAndForwardAction {
+    pub channel_id: String,
+    pub forward_to: Address, // node, process
+    pub json: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EncryptAndForwardAction {
+    pub channel_id: String,
+    pub forward_to: Address, // node, process
+    pub json: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecryptAction {
+    pub channel_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EncryptAction {
+    pub channel_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum EncryptorMessage {
+    GetKeyAction(GetKeyAction),
+    DecryptAndForwardAction(DecryptAndForwardAction),
+    EncryptAndForwardAction(EncryptAndForwardAction),
+    DecryptAction(DecryptAction),
+    EncryptAction(EncryptAction),
+}
+// encryptor End

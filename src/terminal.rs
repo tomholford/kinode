@@ -1,3 +1,4 @@
+use anyhow::Result;
 use crossterm::{
     cursor,
     event::{
@@ -97,16 +98,17 @@ impl CommandHistory {
  *  terminal driver
  */
 pub async fn terminal(
-    our: &Identity,
+    our: Identity,
     version: &str,
     home_directory_path: String,
     event_loop: MessageSender,
     debug_event_loop: DebugSender,
     print_tx: PrintSender,
     mut print_rx: PrintReceiver,
-) -> std::io::Result<()> {
+) -> Result<()> {
+    let mut stdout = stdout();
     execute!(
-        stdout(),
+        stdout,
         EnableBracketedPaste,
         terminal::SetTitle(format!("{}@{}", our.name, "uqbar"))
     )?;
@@ -143,18 +145,17 @@ pub async fn terminal(
     );
 
     enable_raw_mode()?;
-    let stdout = stdout();
     let mut reader = EventStream::new();
     let mut current_line = format!("{} > ", our.name);
     let prompt_len: usize = our.name.len() + 3;
     let (mut win_cols, mut win_rows) = terminal::size().unwrap();
-    let mut cursor_col = prompt_len.try_into().unwrap();
+    let mut cursor_col: u16 = prompt_len.try_into().unwrap();
     let mut line_col: usize = cursor_col as usize;
     let mut in_step_through: bool = false;
     // TODO add more verbosity levels as needed?
     // defaulting to TRUE for now, as we are BUIDLING
     // DEMO: default to false
-    let mut verbose_mode: bool = true;
+    let mut verbose_mode: bool = false;
     let mut search_mode: bool = false;
     let mut search_depth: usize = 0;
 
@@ -609,7 +610,8 @@ pub async fn terminal(
         }
     }
     execute!(stdout.lock(), DisableBracketedPaste, terminal::SetTitle(""))?;
-    disable_raw_mode()
+    disable_raw_mode()?;
+    Ok(())
 }
 
 fn truncate_rightward(s: &str, prompt_len: usize, width: u16) -> String {

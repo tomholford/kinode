@@ -9,6 +9,7 @@ use ethers::prelude::Provider;
 use ethers_providers::{Middleware, Ws, StreamExt};
 use serde_json::json;
 use thiserror::Error;
+use anyhow::Result;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum EthRpcAction {
@@ -47,7 +48,7 @@ pub async fn eth_rpc(
     send_to_loop: MessageSender,
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
-) {
+) -> Result<()> { // TODO swap panics for errors
     let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
@@ -213,6 +214,8 @@ pub async fn eth_rpc(
             }
         }
     }
+
+    Ok(())
 }
 
 //

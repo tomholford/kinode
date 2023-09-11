@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 
-use wasmtime_wasi::preview2::{wasi, Table, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::preview2::{DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
@@ -37,8 +37,15 @@ struct Process {
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
     contexts: HashMap<u64, ProcessContext>,
-    contexts_to_clean: Vec<u64>, //  remove these upon receiving next message
-    message_queue: VecDeque<t::KernelMessage>,
+    message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
+}
+
+#[derive(Clone, Debug)]
+struct ProcessContext {
+    // store ultimate in order to set prompting message if needed
+    prompting_message: Option<t::KernelMessage>,
+    // can be empty if a request doesn't set context, but still needs to inherit
+    context: Option<t::Context>,
 }
 
 struct ProcessWasi {
@@ -47,75 +54,19 @@ struct ProcessWasi {
     wasi: WasiCtx,
 }
 
-#[derive(Clone, Debug)]
-struct CauseMetadata {
-    id: u64,
-    source: t::Address,
-    rsvp: t::Rsvp,
-    expects_response: bool,
-}
-
 #[derive(Serialize, Deserialize)]
 struct StartProcessMetadata {
     source: t::Address,
-    name: Option<String>,
-    wasm_bytes_uri: String,
+    process_id: Option<t::ProcessId>,
+    wasm_bytes_handle: u128,
     on_panic: t::OnPanic,
-}
-
-impl CauseMetadata {
-    fn new(km: &t::KernelMessage) -> Self {
-        let t::Message::Request(ref r) = km.message else { panic!("cause not request!") };
-        CauseMetadata {
-            id: km.id,
-            source: km.source.clone(),
-            rsvp: km.rsvp.clone(),
-            expects_response: r.expects_response,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ProcessContext {
-    number_outstanding_requests: u32,
-    proximate: CauseMetadata, //  kernel only: for routing responses  TODO: needed?
-    ultimate: Option<CauseMetadata>, //  kernel only: for routing responses
-    context: Option<String>,  //  input/output from process
-}
-
-impl ProcessContext {
-    fn new(
-        proximate: &t::KernelMessage,
-        ultimate: Option<&t::KernelMessage>,
-        context: Option<String>,
-    ) -> Self {
-        ProcessContext {
-            number_outstanding_requests: 1,
-            proximate: CauseMetadata::new(proximate),
-            ultimate: match ultimate {
-                Some(ultimate) => Some(CauseMetadata::new(ultimate)),
-                None => None,
-            },
-            context,
-        }
-    }
-    fn new_from_context(
-        proximate: &t::KernelMessage,
-        ultimate: &Option<CauseMetadata>,
-        context: Option<String>,
-    ) -> Self {
-        ProcessContext {
-            number_outstanding_requests: 1,
-            proximate: CauseMetadata::new(proximate),
-            ultimate: ultimate.clone(),
-            context,
-        }
-    }
 }
 
 //  live in event loop
 type Senders = HashMap<t::ProcessId, ProcessSender>;
+//  handles are for managing liveness, map is for persistence and metadata.
 type ProcessHandles = HashMap<t::ProcessId, JoinHandle<Result<()>>>;
+type ProcessMap = HashMap<t::ProcessId, (u128, t::OnPanic)>;
 
 enum ProcessSender {
     Runtime(t::MessageSender),
@@ -140,20 +91,69 @@ impl WasiView for ProcessWasi {
 }
 
 ///
+/// intercept wasi random
+///
+
+#[async_trait::async_trait]
+impl wasi::random::insecure::Host for ProcessWasi {
+    async fn get_insecure_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            bytes.push(rand::random());
+        }
+        Ok(bytes)
+    }
+
+    async fn get_insecure_random_u64(&mut self) -> Result<u64> {
+        Ok(rand::random())
+    }
+}
+
+#[async_trait::async_trait]
+impl wasi::random::insecure_seed::Host for ProcessWasi {
+    async fn insecure_seed(&mut self) -> Result<(u64, u64)> {
+        Ok((rand::random(), rand::random()))
+    }
+}
+
+#[async_trait::async_trait]
+impl wasi::random::random::Host for ProcessWasi {
+    async fn get_random_bytes(&mut self, len: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len as usize);
+        getrandom::getrandom(&mut bytes[..])?;
+        Ok(bytes)
+    }
+
+    async fn get_random_u64(&mut self) -> Result<u64> {
+        let mut bytes = Vec::with_capacity(8);
+        getrandom::getrandom(&mut bytes[..])?;
+
+        let mut number = 0u64;
+        for (i, &byte) in bytes.iter().enumerate() {
+            number |= (byte as u64) << (i * 8);
+        }
+        Ok(number)
+    }
+}
+
+///
 /// create the process API. this is where the functions that a process can use live.
 ///
 #[async_trait::async_trait]
 impl UqProcessImports for ProcessWasi {
     //
     // system utils:
-    //
+    //f
     async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
-        self.process
+        match self
+            .process
             .send_to_terminal
             .send(t::Printout { verbosity, content })
             .await
-            .expect("print_to_terminal: error sending");
-        Ok(())
+        {
+            Ok(()) => Ok(()),
+            Err(e) => Err(anyhow::anyhow!("fatal: couldn't send to terminal: {:?}", e)),
+        }
     }
 
     async fn get_unix_time(&mut self) -> Result<u64> {
@@ -161,10 +161,6 @@ impl UqProcessImports for ProcessWasi {
             Ok(t) => Ok(t.as_secs()),
             Err(e) => Err(e.into()),
         }
-    }
-
-    async fn get_insecure_uniform_u64(&mut self) -> Result<u64> {
-        Ok(rand::random())
     }
 
     async fn get_eth_block(&mut self) -> Result<u64> {
@@ -176,25 +172,27 @@ impl UqProcessImports for ProcessWasi {
     // process management:
     //
 
+    ///  todo -> move to kernel logic to enable persitence etc.
     async fn set_on_panic(&mut self, on_panic: wit::OnPanic) -> Result<()> {
-        let on_panic = match on_panic {
-            wit::OnPanic::None => t::OnPanic::None,
-            wit::OnPanic::Restart => t::OnPanic::Restart,
-            wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
-                reqs.into_iter()
-                    .map(|(addr, req, payload)| {
-                        (
-                            de_wit_address(addr),
-                            de_wit_request(req),
-                            de_wit_payload(payload),
-                        )
-                    })
-                    .collect(),
-            ),
-        };
+        unimplemented!();
+    //     let on_panic = match on_panic {
+    //         wit::OnPanic::None => t::OnPanic::None,
+    //         wit::OnPanic::Restart => t::OnPanic::Restart,
+    //         wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
+    //             reqs.into_iter()
+    //                 .map(|(addr, req, payload)| {
+    //                     (
+    //                         de_wit_address(addr),
+    //                         de_wit_request(req),
+    //                         de_wit_payload(payload),
+    //                     )
+    //                 })
+    //                 .collect(),
+    //         ),
+    //     };
 
-        self.process.metadata.on_panic = on_panic;
-        Ok(())
+    //     self.process.metadata.on_panic = on_panic;
+    //     Ok(())
     }
 
     //
@@ -210,6 +208,9 @@ impl UqProcessImports for ProcessWasi {
         Ok(self.process.get_next_message_for_process().await)
     }
 
+    /// from a process: grab the payload part of the current prompting message.
+    /// if the prompting message did not have a payload, will return None.
+    /// will also return None if there is no prompting message.
     async fn get_payload(&mut self) -> Result<Option<wit::Payload>> {
         match self.process.prompting_message.clone() {
             Some(km) => Ok(en_wit_payload(km.payload)),
@@ -224,9 +225,12 @@ impl UqProcessImports for ProcessWasi {
         context: Option<wit::Context>,
         payload: Option<wit::Payload>,
     ) -> Result<()> {
-        let id = handle_request(&mut self.process, target, request, context, payload).await;
+        let id = self
+            .process
+            .handle_request(target, request, context, payload)
+            .await;
         match id {
-            Ok(id) => Ok(()),
+            Ok(_id) => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -241,16 +245,12 @@ impl UqProcessImports for ProcessWasi {
         )>,
     ) -> Result<()> {
         for request in requests {
-            let id = handle_request(
-                &mut self.process,
-                request.0,
-                request.1,
-                request.2,
-                request.3,
-            )
-            .await;
+            let id = self
+                .process
+                .handle_request(request.0, request.1, request.2, request.3)
+                .await;
             match id {
-                Ok(id) => continue,
+                Ok(_id) => continue,
                 Err(e) => return Err(e),
             }
         }
@@ -262,30 +262,13 @@ impl UqProcessImports for ProcessWasi {
         response: wit::Response,
         payload: Option<wit::Payload>,
     ) -> Result<()> {
-        let id = handle_response(
-            &self.process.metadata.our,
-            response,
-            payload,
-            &self.process.send_to_loop,
-            &self.process.send_to_terminal,
-            &self.process.prompting_message,
-            &mut self.process.contexts,
-        )
-        .await;
-
-        match id {
-            Ok(id) => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.process.send_response(response, payload).await;
+        Ok(())
     }
 
     async fn send_error(&mut self, error: wit::UqbarError) -> Result<()> {
-        let id = handle_process_error(&mut self.process, error).await;
-
-        match id {
-            Ok(id) => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.process.send_error(error).await;
+        Ok(())
     }
 
     async fn send_and_await_response(
@@ -294,108 +277,86 @@ impl UqProcessImports for ProcessWasi {
         request: wit::Request,
         context: Option<wit::Context>,
         payload: Option<wit::Payload>,
-    ) -> Result<(wit::Address, wit::Response, Option<wit::Context>)> {
-        self.send_request(target, request, context, payload).await?;
-        // TODO queue messages until a matching response is received
-        unimplemented!()
+    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
+    {
+        let id = self
+            .process
+            .handle_request(target, request, context, payload)
+            .await;
+        match id {
+            Ok(id) => match self.process.get_specific_message_for_process(id).await {
+                Ok((address, wit::Message::Response(response))) => {
+                    Ok(Ok((address, wit::Message::Response(response))))
+                }
+                Ok((_address, wit::Message::Request(_))) => {
+                    // this is an error
+                    Err(anyhow::anyhow!(
+                        "fatal: received Request instead of Response"
+                    ))
+                }
+                Err((net_err, context)) => Ok(Err((net_err, context))),
+            },
+            Err(e) => Err(e),
+        }
     }
 }
 
 impl Process {
-    //
-    // context management
-    //
-    async fn get_context(&mut self, message_id: u64) -> Option<t::Context> {
-        self.decrement_context(message_id).await;
-        match self.contexts.get(&message_id) {
-            Some(ref context) => Some(serde_json::to_string(&context.context).unwrap()),
-            None => {
-                self.send_to_terminal
-                    .send(t::Printout {
-                        verbosity: 1,
-                        content: "couldn't find context for Response".into(),
-                    })
-                    .await
-                    .unwrap();
-                None
-            }
-        }
-    }
-
-    async fn clean_contexts(&mut self) {
-        for id in self.contexts_to_clean.drain(..) {
-            let _ = self.contexts.remove(&id);
-        }
-        if self.contexts.len() > 0 {
-            self.send_to_terminal
-                .send(t::Printout {
-                    verbosity: 1,
-                    content: format!("contexts now reads: {:?}", self.contexts),
-                })
-                .await
-                .unwrap();
-        }
-    }
-
-    async fn insert_or_increment_context(
+    /// save a context for a given request.
+    async fn save_context(
         &mut self,
-        expects_response: bool,
-        id: u64,
-        context: ProcessContext,
+        request_id: u64,
+        request: t::Request,
+        context: Option<t::Context>,
     ) {
-        if expects_response {
-            match self.contexts.remove(&id) {
-                Some(mut existing_context) => {
-                    existing_context.number_outstanding_requests += 1;
-                    self.contexts.insert(id, existing_context);
-                }
-                None => {
-                    self.contexts.insert(id, context);
-                }
-            }
-        }
+        self.contexts.insert(
+            request_id,
+            ProcessContext {
+                prompting_message: if self.prompting_message.is_some() {
+                    if request.inherit {
+                        self.prompting_message.clone()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                },
+                context,
+            },
+        );
     }
 
-    async fn decrement_context(&mut self, id: u64) {
-        match self.contexts.get_mut(&id) {
-            Some(context) => {
-                context.number_outstanding_requests -= 1;
-                if 0 == context.number_outstanding_requests {
-                    //  remove context upon receiving next message
-                    self.contexts_to_clean.push(id.clone());
-                }
-            }
-            None => {
-                self.send_to_terminal
-                    .send(t::Printout {
-                        verbosity: 1,
-                        content: format!("decrement_context: {} not found", id),
-                    })
-                    .await
-                    .unwrap();
-            }
-        }
-    }
-
-    /// ingest latest message directed to this process
+    /// Ingest latest message directed to this process, and mark it as the prompting message.
+    /// If there is no message in the queue, wait async until one is received.
+    /// The message will only be saved as the prompting-message if it's a Request.
     async fn get_next_message_for_process(
         &mut self,
     ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
-        self.clean_contexts().await;
         let res = match self.message_queue.pop_front() {
-            Some(message_from_queue) => Ok(message_from_queue),
+            Some(message_from_queue) => message_from_queue,
             None => self.recv_in_process.recv().await.unwrap(),
         };
         match res {
-            Ok(km) => {
-                self.prompting_message = Some(km.clone());
-                self.kernel_message_to_process_receive(km).await
-            }
-            Err(e) => {
-                // TODO need to give context here!!!
-                // Err(e) => Err((e.error, self.contexts.get(&e.id))),
-                Err((en_wit_network_error(e.error), None))
-            }
+            Ok(km) => match self.contexts.remove(&km.id) {
+                None => {
+                    self.prompting_message = Some(km.clone());
+                    Ok(self.kernel_message_to_process_receive(None, km))
+                }
+                Some(context) => {
+                    self.prompting_message = match context.prompting_message {
+                        None => Some(km.clone()),
+                        Some(prompting_message) => Some(prompting_message),
+                    };
+                    Ok(self.kernel_message_to_process_receive(context.context, km))
+                }
+            },
+            Err(e) => match self.contexts.remove(&e.id) {
+                None => Err((en_wit_network_error(e.error), None)),
+                Some(context) => {
+                    self.prompting_message = context.prompting_message;
+                    Err((en_wit_network_error(e.error), context.context))
+                }
+            },
         }
     }
 
@@ -404,332 +365,260 @@ impl Process {
         &mut self,
         awaited_message_id: u64,
     ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
-        self.clean_contexts().await;
         loop {
             let res = match self.message_queue.pop_front() {
-                Some(message_from_queue) => Ok(message_from_queue),
+                Some(message_from_queue) => message_from_queue,
                 None => self.recv_in_process.recv().await.unwrap(),
             };
             match res {
                 Ok(km) => {
                     if km.id == awaited_message_id {
-                        self.prompting_message = Some(km.clone());
-                        return self.kernel_message_to_process_receive(km).await;
+                        match self.contexts.remove(&km.id) {
+                            None => {
+                                self.prompting_message = Some(km.clone());
+                                return Ok(self.kernel_message_to_process_receive(None, km));
+                            }
+                            Some(context) => {
+                                self.prompting_message = match context.prompting_message {
+                                    None => Some(km.clone()),
+                                    Some(prompting_message) => Some(prompting_message),
+                                };
+                                return Ok(
+                                    self.kernel_message_to_process_receive(context.context, km)
+                                );
+                            }
+                        }
                     } else {
-                        self.message_queue.push_back(km);
+                        self.message_queue.push_back(Ok(km));
                         continue;
                     }
                 }
                 Err(e) => {
-                    // TODO need to give context here
-                    // Err(e) => Err((e.error, self.contexts.get(&e.id))),
-                    unimplemented!()
+                    if e.id == awaited_message_id {
+                        match self.contexts.remove(&e.id) {
+                            None => return Err((en_wit_network_error(e.error), None)),
+                            Some(context) => {
+                                self.prompting_message = context.prompting_message;
+                                return Err((en_wit_network_error(e.error), context.context));
+                            }
+                        }
+                    } else {
+                        self.message_queue.push_back(Err(e));
+                        continue;
+                    }
                 }
             }
         }
     }
 
     /// convert a message from the main event loop into a result for the process to receive
-    async fn kernel_message_to_process_receive(
+    /// if the message is a response or error, get context if we have one
+    fn kernel_message_to_process_receive(
         &mut self,
+        context: Option<t::Context>,
         km: t::KernelMessage,
-    ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
-        Ok((
+    ) -> (wit::Address, wit::Message) {
+        // note: the context in the KernelMessage is not actually the one we want:
+        // (in fact it should be None, possibly always)
+        // we need to get *our* context for this message id
+        (
             en_wit_address(km.source),
             match km.message {
                 t::Message::Request(request) => wit::Message::Request(en_wit_request(request)),
-                t::Message::Response((Ok(response), context)) => {
+                t::Message::Response((Ok(response), _context)) => {
                     wit::Message::Response((Ok(en_wit_response(response)), context))
                 }
-                t::Message::Response((Err(error), context)) => wit::Message::Response((
-                    Err(en_wit_uqbar_error(error)),
-                    self.get_context(km.id).await,
-                )),
+                t::Message::Response((Err(error), _context)) => {
+                    wit::Message::Response((Err(en_wit_uqbar_error(error)), context))
+                }
             },
-        ))
+        )
     }
-}
 
-/// given a prompting message, return the id and target that
-/// a response to that message should have
-async fn make_response_id_target(
-    prompting_message: &Option<t::KernelMessage>,
-    contexts: &HashMap<u64, ProcessContext>,
-    send_to_terminal: t::PrintSender,
-) -> Option<(u64, t::Address)> {
-    let Some(ref prompting_message) = prompting_message else {
-        println!("need non-None prompting_message to handle Response");
-        return None;
-    };
-    match &prompting_message.message {
-        t::Message::Request(request) => {
-            if request.expects_response {
-                Some((prompting_message.id, prompting_message.source.clone()))
-            } else {
-                let Some(rsvp) = prompting_message.rsvp.clone() else {
-                    return None;
-                };
-                Some((prompting_message.id, rsvp.clone()))
-            }
-        }
-        t::Message::Response(_) => {
-            let Some(context) = contexts.get(&prompting_message.id) else {
-                    send_to_terminal
-                        .send(t::Printout {
-                            verbosity: 0,
-                            content: format!(
-                                "couldn't find context to route response via prompt: {:?}",
-                                prompting_message,
-                            ),
-                        })
-                        .await
-                        .unwrap();
-                    return None;
-                };
-            let Some(ref ultimate) = context.ultimate else {
-                    send_to_terminal
-                        .send(t::Printout {
-                            verbosity: 0,
-                            content: "couldn't find ultimate cause to route response"
-                                .into(),
-                        })
-                        .await
-                        .unwrap();
-                    return None;
-                };
-            if ultimate.expects_response {
-                Some((ultimate.id.clone(), ultimate.source.clone()))
-            } else {
-                let Some(rsvp) = ultimate.rsvp.clone() else {
-                        send_to_terminal
-                            .send(t::Printout {
-                                verbosity: 1,
-                                content: "no rsvp set for response (ultimate)"
-                                    .into(),
-                            })
-                            .await
-                            .unwrap();
-                        return None;
-                    };
-                Some((ultimate.id.clone(), rsvp))
-            }
-        }
-    }
-}
-
-/// take an UqbarError produced as a response to a request and turn it into
-/// a KernelMessage containing a Response, then send that to the main event loop.
-/// should never fail.
-async fn handle_process_error(process: &mut Process, error: wit::UqbarError) -> Result<u64> {
-    let source = process.metadata.our.clone();
-    let Some(prompting_message) = process.prompting_message.clone() else {
-        return Err(anyhow::anyhow!("fatal: error response without prompting message"))
-    };
-
-    let kernel_message = t::KernelMessage {
-        id: prompting_message.id,
-        source,
-        target: prompting_message.source,
-        rsvp: prompting_message.rsvp,
-        message: t::Message::Response((
-            Err(de_wit_uqbar_error(error)),
-            process.get_context(prompting_message.id).await,
-        )),
-        payload: None,
-    };
-
-    process.send_to_loop.send(kernel_message).await.unwrap();
-
-    Ok(prompting_message.id)
-}
-
-/// takes Request generated by a process and sends it to the main event loop.
-/// should never fail.
-async fn handle_request(
-    process: &mut Process,
-    target: wit::Address,
-    request: wit::Request,
-    new_context: Option<wit::Context>,
-    payload: Option<wit::Payload>,
-) -> Result<u64> {
-    let source = process.metadata.our.clone();
-    let prompting_message = &process.prompting_message;
-    // if request chooses to inherit context, match id to prompting_message
-    // otherwise, id is generated randomly
-    let request_id: u64 = if request.inherit {
-        match &prompting_message {
-            Some(ref prompting_message) => prompting_message.id,
+    /// Given the current process state, return the id and target that
+    /// a response it emits should have. This takes into
+    /// account the `rsvp` of the prompting message, if any.
+    async fn make_response_id_target(&self) -> Option<(u64, t::Address)> {
+        let Some(ref prompting_message) = self.prompting_message else {
+            println!("need non-None prompting_message to handle Response");
+            return None;
+        };
+        match &prompting_message.rsvp {
             None => {
-                // TODO can just assign random here?
-                return Err(anyhow::anyhow!(
-                    "fatal: request with inherit set but no prompting message"
-                ));
+                println!("prompting_message has no rsvp, no bueno");
+                return None;
             }
+            Some(address) => Some((prompting_message.id, address.clone())),
         }
-    } else {
-        loop {
-            let id = rand::random();
-            if !process.contexts.contains_key(&id) {
-                break id;
-            }
-        }
-    };
-    // rsvp is set if there was a Request expecting Response
-    // followed by Request(s) not expecting Response;
-    // could also be None if entire chain of Requests are
-    // not expecting Response
-    let rsvp = match prompting_message {
-        None => None,
-        Some(ref prompt) => match &prompt.message {
-            t::Message::Response(_) => None,
-            t::Message::Request(r) => {
-                if r.expects_response {
-                    Some(prompt.source.clone())
-                } else {
-                    prompt.rsvp.clone()
-                }
-            }
-        },
-    };
+    }
 
-    let target = de_wit_address(target);
-
-    let kernel_message = t::KernelMessage {
-        id: request_id,
-        source: source.clone(),
-        target,
-        rsvp,
-        message: t::Message::Request(de_wit_request(request.clone())),
-        payload: de_wit_payload(payload),
-    };
-
-    //  modify contexts
-    let process_context = match prompting_message {
-        None => ProcessContext::new(&kernel_message, None, new_context),
-        Some(ref prompting_message) => {
-            match &prompting_message.message {
-                t::Message::Request(prompt) => {
-                    //  case: prompting_message_expects_response
-                    //   ultimate stored for source
-                    //  case: !prompting_message_expects_response
-                    //   ultimate stored for rsvp
-                    ProcessContext::new(&kernel_message, Some(&prompting_message), new_context)
-                }
-                t::Message::Response(response) => {
-                    match response {
-                        (Ok(prompt), context) => {
-                            match process.contexts.get(&prompting_message.id) {
-                                Some(context) => {
-                                    //  ultimate is the ultimate of the prompt of Response
-                                    ProcessContext::new_from_context(
-                                        &kernel_message,
-                                        &context.ultimate,
-                                        new_context, // ?????
-                                    )
-                                }
-                                None => {
-                                    //  should this even be allowed?
-                                    ProcessContext::new(
-                                        &kernel_message,
-                                        Some(&prompting_message),
-                                        new_context, // ?????
-                                    )
-                                }
-                            }
-                        }
-                        (Err(uqbar_error), context) => {
-                            match process.contexts.get(&prompting_message.id) {
-                                Some(context) => {
-                                    //  ultimate is the ultimate of the prompt of Response
-                                    ProcessContext::new_from_context(
-                                        &kernel_message,
-                                        &context.ultimate,
-                                        new_context, // ?????
-                                    )
-                                }
-                                None => {
-                                    //  should this even be allowed?
-                                    ProcessContext::new(
-                                        &kernel_message,
-                                        Some(&prompting_message),
-                                        new_context,
-                                    )
-                                }
-                            }
-                        }
+    /// takes Request generated by a process and sends it to the main event loop.
+    /// should never fail.
+    async fn handle_request(
+        &mut self,
+        target: wit::Address,
+        request: wit::Request,
+        new_context: Option<wit::Context>,
+        payload: Option<wit::Payload>,
+    ) -> Result<u64> {
+        let source = self.metadata.our.clone();
+        // if request chooses to inherit context, match id to prompting_message
+        // otherwise, id is generated randomly
+        let request_id: u64 =
+            if request.inherit && !request.expects_response && self.prompting_message.is_some() {
+                self.prompting_message.as_ref().unwrap().id
+            } else {
+                loop {
+                    let id = rand::random();
+                    if !self.contexts.contains_key(&id) {
+                        break id;
                     }
                 }
-            }
-        }
-    };
+            };
 
-    process
-        .insert_or_increment_context(request.expects_response, kernel_message.id, process_context)
-        .await;
+        // rsvp is set if there was a Request expecting Response
+        // followed by inheriting Request(s) not expecting Response;
+        // this is done such that the ultimate request handler knows that,
+        // in fact, a Response *is* expected.
+        // could also be None if entire chain of Requests are
+        // not expecting Response
+        let kernel_message = t::KernelMessage {
+            id: request_id,
+            source: source.clone(),
+            target: de_wit_address(target),
+            rsvp: match (
+                request.inherit,
+                request.expects_response,
+                &self.prompting_message,
+            ) {
+                // this request inherits, but has no rsvp, so itself receives any response
+                (true, true, None) => Some(source),
+                // this request wants a response, which overrides any prompting message
+                (false, true, _) => Some(source),
+                // this request inherits, so regardless of whether it expects response,
+                // response will be routed to prompting message
+                (true, _, Some(ref prompt)) => prompt.rsvp.clone(),
+                // this request doesn't inherit, and doesn't itself want a response
+                (false, false, _) => None,
+                // no rsvp because neither prompting message nor this request wants a response
+                (_, false, None) => None,
+            },
+            message: t::Message::Request(de_wit_request(request.clone())),
+            payload: de_wit_payload(payload),
+        };
 
-    process
-        .send_to_loop
-        .send(kernel_message)
-        .await
-        .expect("fatal: kernel couldn't send request");
+        // modify the process' context map as needed.
+        // if there is a prompting message, we need to store the ultimate
+        // even if there is no new context string.
+        self.save_context(kernel_message.id, de_wit_request(request), new_context)
+            .await;
 
-    Ok(request_id)
-}
+        self.send_to_loop
+            .send(kernel_message)
+            .await
+            .expect("fatal: kernel couldn't send request");
 
-/// takes Response generated by a process and sends it to the main event loop.
-/// should never fail.
-async fn handle_response(
-    source: &t::Address,
-    response: wit::Response,
-    payload: Option<wit::Payload>,
-    send_to_loop: &t::MessageSender,
-    send_to_terminal: &t::PrintSender,
-    prompting_message: &Option<t::KernelMessage>,
-    contexts: &mut HashMap<u64, ProcessContext>,
-) -> Result<u64> {
-    let (id, target) =
-        match make_response_id_target(&prompting_message, contexts, send_to_terminal.clone()).await
-        {
+        Ok(request_id)
+    }
+
+    /// takes Response generated by a process and sends it to the main event loop.
+    async fn send_response(&mut self, response: wit::Response, payload: Option<wit::Payload>) {
+        let (id, target) = match self.make_response_id_target().await {
             Some(r) => r,
             None => {
-                send_to_terminal
+                self.send_to_terminal
                     .send(t::Printout {
                         verbosity: 1,
-                        content: format!(
-                            "dropping Response: {:?}; contexts: {:?}",
-                            payload, contexts,
-                        ),
+                        content: format!("dropping Response",),
                     })
                     .await
                     .unwrap();
-                return Err(anyhow::anyhow!("fatal: dropped Response"));
+                return;
             }
         };
 
-    let rsvp = None;
+        self.send_to_loop
+            .send(t::KernelMessage {
+                id,
+                source: self.metadata.our.clone(),
+                target,
+                rsvp: None,
+                message: t::Message::Response((
+                    Ok(de_wit_response(response)),
+                    // the context will be set by the process receiving this Response.
+                    None,
+                )),
+                payload: de_wit_payload(payload),
+            })
+            .await
+            .unwrap();
+    }
 
-    let kernel_message = t::KernelMessage {
-        id,
-        source: source.clone(),
-        target,
-        rsvp,
-        message: t::Message::Response((
-            Ok(de_wit_response(response)),
-            match contexts.get(&id) {
-                Some(context) => context.context.clone(),
-                None => None,
-            },
-        )),
-        payload: None,
-    };
+    /// take an UqbarError produced as a response to a request and turn it into
+    /// a KernelMessage containing a Response, then send that to the main event loop.
+    /// it will be sent to the prompting message. if there is no prompting message,
+    /// the error will be thrown away!
+    async fn send_error(&mut self, error: wit::UqbarError) {
+        let Some(ref prompting_message) = self.prompting_message else {
+            return
+        };
 
-    send_to_loop.send(kernel_message).await.unwrap();
+        let kernel_message = t::KernelMessage {
+            id: prompting_message.id,
+            source: self.metadata.our.clone(),
+            target: prompting_message.rsvp.clone().unwrap(),
+            rsvp: None,
+            message: t::Message::Response((Err(de_wit_uqbar_error(error)), None)),
+            payload: None,
+        };
 
-    return Ok(id);
+        self.send_to_loop.send(kernel_message).await.unwrap();
+    }
+}
+
+/// persist process_map state for next bootup
+async fn persist_state(
+    our_name: String,
+    send_to_loop: t::MessageSender,
+    process_map: ProcessMap,
+) -> Result<()> {
+    let bytes = bincode::serialize(&process_map)?;
+
+    send_to_loop
+    .send(t::KernelMessage {
+        id: 0,
+        source: t::Address {
+            node: our_name.clone(),
+            process: t::ProcessId::Name("kernel".into()),
+        },
+        target: t::Address {
+            node: our_name.clone(),
+            process: t::ProcessId::Name("lfs".into()),
+        },
+        rsvp: None,
+        message: t::Message::Request(t::Request {
+            inherit: true,
+            expects_response: true,
+            ipc: Some(
+                serde_json::to_string(&t::FsAction::SetState)
+                .unwrap(),
+            ),
+            metadata: None,
+        }),
+        payload: Some(
+            t::Payload {
+                mime: None,
+                bytes: bytes,
+            }
+        ),
+    })
+    .await?;
+    Ok(())
 }
 
 /// create a specific process, and generate a task that will run it.
 async fn make_process_loop(
+    home_directory_path: String,
     metadata: t::ProcessMetadata,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
@@ -738,8 +627,12 @@ async fn make_process_loop(
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our = metadata.our.clone();
-    let wasm_bytes_uri = metadata.wasm_bytes_uri.clone();
+    let wasm_bytes_handle = metadata.wasm_bytes_handle.clone();
     let on_panic = metadata.on_panic.clone();
+
+    // let dir = std::env::current_dir().unwrap();
+    let dir = cap_std::fs::Dir::open_ambient_dir(home_directory_path, cap_std::ambient_authority())
+        .unwrap();
 
     let component =
         Component::new(&engine, wasm_bytes).expect("make_process_loop: couldn't read file");
@@ -749,11 +642,29 @@ async fn make_process_loop(
 
     let mut table = Table::new();
     let wasi = WasiCtxBuilder::new()
-        .inherit_stdio()
+        .push_preopened_dir(dir, DirPerms::all(), FilePerms::all(), &"")
         .build(&mut table)
         .unwrap();
 
-    wasi::command::add_to_linker(&mut linker).unwrap();
+    // wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t)
+        .unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::monotonic_clock::add_to_linker(&mut linker, |t| t)
+        .unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::timezone::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::filesystem::filesystem::add_to_linker(&mut linker, |t| t)
+        .unwrap();
+    wasmtime_wasi::preview2::bindings::poll::poll::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::io::streams::add_to_linker(&mut linker, |t| t).unwrap();
+    // wasmtime_wasi::preview2::bindings::random::random::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::exit::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::environment::add_to_linker(&mut linker, |t| t)
+        .unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::preopens::add_to_linker(&mut linker, |t| t)
+        .unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stdin::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stdout::add_to_linker(&mut linker, |t| t).unwrap();
+    wasmtime_wasi::preview2::bindings::cli_base::stderr::add_to_linker(&mut linker, |t| t).unwrap();
     let mut store = Store::new(
         engine,
         ProcessWasi {
@@ -764,7 +675,6 @@ async fn make_process_loop(
                 send_to_terminal: send_to_terminal.clone(),
                 prompting_message: None,
                 contexts: HashMap::new(),
-                contexts_to_clean: Vec::new(),
                 message_queue: VecDeque::new(),
             },
             table,
@@ -838,7 +748,7 @@ async fn make_process_loop(
                                             t::ProcessId::Name(name) => Some(name.into()),
                                             t::ProcessId::Id(_) => None,
                                         },
-                                        wasm_bytes_uri,
+                                        wasm_bytes_handle,
                                         on_panic,
                                     })
                                     .unwrap(),
@@ -902,14 +812,9 @@ async fn handle_kernel_request(
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
+    process_map: &mut ProcessMap,
 ) {
     // TODO capabilities-based security
-    let lol = t::KernelCommand::StartProcess {
-        name: Some("lol".into()),
-        wasm_bytes_uri: "lol".into(),
-        on_panic: t::OnPanic::None,
-    };
-    println!("{}", serde_json::to_string(&lol).unwrap());
 
     let t::Message::Request(request) = km.message else { return };
     let command: t::KernelCommand = match serde_json::from_str(&request.ipc.unwrap_or_default()) {
@@ -926,6 +831,11 @@ async fn handle_kernel_request(
         Ok(c) => c,
     };
     match command {
+        t::KernelCommand::Shutdown => {
+            for handle in process_handles.values() {
+                handle.abort();
+            }
+        }
         //
         // initialize a new process. this is the only way to create a new process.
         // this sends a read request to filesystem, when response is received,
@@ -933,7 +843,7 @@ async fn handle_kernel_request(
         //
         t::KernelCommand::StartProcess {
             name,
-            wasm_bytes_uri,
+            wasm_bytes_handle,
             on_panic,
         } => send_to_loop
             .send(t::KernelMessage {
@@ -942,20 +852,16 @@ async fn handle_kernel_request(
                     node: our_name.clone(),
                     process: t::ProcessId::Name("kernel".into()),
                 },
-                // TODO call lfs instead
                 target: t::Address {
                     node: our_name.clone(),
-                    process: t::ProcessId::Name("filesystem".into()),
+                    process: t::ProcessId::Name("lfs".into()),
                 },
                 rsvp: None,
                 message: t::Message::Request(t::Request {
                     inherit: true,
                     expects_response: true,
                     ipc: Some(
-                        serde_json::to_string(&t::FileSystemRequest {
-                            uri_string: wasm_bytes_uri.clone(),
-                            action: t::FileSystemAction::Read,
-                        })
+                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle))
                         .unwrap(),
                     ),
                     // TODO find a better way if possible: keeping process metadata
@@ -965,8 +871,8 @@ async fn handle_kernel_request(
                     metadata: Some(
                         serde_json::to_string(&StartProcessMetadata {
                             source: km.source,
-                            name,
-                            wasm_bytes_uri,
+                            process_id: name.map(|n| t::ProcessId::Name(n)),
+                            wasm_bytes_handle,
                             on_panic,
                         })
                         .unwrap(),
@@ -976,6 +882,44 @@ async fn handle_kernel_request(
             })
             .await
             .unwrap(),
+            //  reboot from persisted process.
+            t::KernelCommand::RebootProcess {
+                process_id,
+                wasm_bytes_handle,
+                on_panic,
+            } => send_to_loop
+                .send(t::KernelMessage {
+                    id: km.id,
+                    source: t::Address {
+                        node: our_name.clone(),
+                        process: t::ProcessId::Name("kernel".into()),
+                    },
+                    target: t::Address {
+                        node: our_name.clone(),
+                        process: t::ProcessId::Name("lfs".into()),
+                    },
+                    rsvp: None,
+                    message: t::Message::Request(t::Request {
+                        inherit: true,
+                        expects_response: true,
+                        ipc: Some(
+                            serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle))
+                            .unwrap(),
+                        ),
+                        metadata: Some(
+                            serde_json::to_string(&StartProcessMetadata {
+                                source: km.source,
+                                process_id: Some(process_id),
+                                wasm_bytes_handle,
+                                on_panic,
+                            })
+                            .unwrap(),
+                        ),
+                    }),
+                    payload: None,
+                })
+                .await
+                .unwrap(),
         t::KernelCommand::KillProcess(process_id) => {
             // brutal and savage killing: aborting the task.
             // do not do this to a process if you don't want to risk
@@ -999,6 +943,9 @@ async fn handle_kernel_request(
             if !request.expects_response {
                 return;
             }
+
+            process_map.remove(&process_id);
+            let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
 
             send_to_loop
                 .send(t::KernelMessage {
@@ -1029,16 +976,18 @@ async fn handle_kernel_request(
     }
 }
 
-/// currently, the kernel only receives one class of response, file-read responses
-/// from the filesystem module. it uses these to get wasm bytes of a process and
+/// currently, the kernel only receives 2 classes of responses, file-read and set-state
+/// responses from the filesystem module. it uses these to get wasm bytes of a process and
 /// start that process.
 async fn handle_kernel_response(
     our_name: String,
+    home_directory_path: String,
     km: t::KernelMessage,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
+    process_map: &mut ProcessMap,
     engine: &Engine,
 ) {
     let t::Message::Response((Ok(ref response), _)) = km.message else {
@@ -1050,11 +999,14 @@ async fn handle_kernel_response(
     };
 
     // ignore responses that aren't filesystem responses
-    if km.source.process != t::ProcessId::Name("filesystem".into()) {
+    if km.source.process != t::ProcessId::Name("lfs".into()) {
         return;
     }
 
     let Some(ref metadata) = response.metadata else {
+        //  set-state response currently return here
+        //  we might want to match on metadata type from both, and only update
+        //  process map upon receiving confirmation that it's been persisted
         return;
     };
 
@@ -1084,64 +1036,80 @@ async fn handle_kernel_response(
 
     start_process(
         our_name,
+        home_directory_path,
         km.id,
         &payload.bytes,
         send_to_loop,
         send_to_terminal,
         senders,
         process_handles,
+        process_map,
         engine,
         meta,
     )
     .await;
 }
 
-async fn get_process_bytes(process: &str) -> Vec<u8> {
-    let process_wasm_path =
-        format!("modules/{process}/target/wasm32-unknown-unknown/release/{process}.wasm");
-    tokio::fs::read(&process_wasm_path)
-        .await
-        .expect(&process_wasm_path)
-}
-
 async fn start_process(
     our_name: String,
+    home_directory_path: String,
     km_id: u64,
     km_payload_bytes: &Vec<u8>,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
+    process_map: &mut ProcessMap,
     engine: &Engine,
     process_metadata: StartProcessMetadata,
 ) {
     let (send_to_process, recv_in_process) =
         mpsc::channel::<Result<t::KernelMessage, t::WrappedNetworkError>>(PROCESS_CHANNEL_CAPACITY);
-    let process_id = if let Some(name) = process_metadata.name {
-        if senders.contains_key(&t::ProcessId::Name(name.clone())) {
-            // TODO: make a Response to indicate failure?
-            send_to_terminal
-                .send(t::Printout {
-                    verbosity: 0,
-                    content: format!("kernel: process named {} already exists", name),
-                })
-                .await
-                .unwrap();
-            return;
-        } else {
-            t::ProcessId::Name(name)
-        }
-    } else {
-        loop {
-            // lol
-            let id: u64 = rand::random();
-            if senders.contains_key(&t::ProcessId::Id(id)) {
-                continue;
+    let process_id = match process_metadata.process_id {
+        Some(t::ProcessId::Name(name)) => {
+            if senders.contains_key(&t::ProcessId::Name(name.clone())) {
+                // TODO: make a Response to indicate failure?
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: format!("kernel: process named {} already exists", name),
+                    })
+                    .await
+                    .unwrap();
+                return;
             } else {
-                break t::ProcessId::Id(id);
+                t::ProcessId::Name(name)
+            }
+        },
+        Some(t::ProcessId::Id(id)) => {
+            if senders.contains_key(&t::ProcessId::Id(id)) {
+                // TODO: make a Response to indicate failure?
+                send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: format!("kernel: process with id {} already exists", id),
+                    })
+                    .await
+                    .unwrap();
+                return;
+            } else {
+                t::ProcessId::Id(id)
+            }
+        },
+        // first 2 Some cases were for reboot or start with defined name, this is for start without name
+        None => {
+            loop {
+                // lol
+                let id: u64 = rand::random();
+                if senders.contains_key(&t::ProcessId::Id(id)) {
+                    continue;
+                } else {
+                    break t::ProcessId::Id(id);
+                }
             }
         }
     };
+
     senders.insert(
         process_id.clone(),
         ProcessSender::Userspace(send_to_process),
@@ -1151,13 +1119,14 @@ async fn start_process(
             node: our_name.clone(),
             process: process_id.clone(),
         },
-        wasm_bytes_uri: process_metadata.wasm_bytes_uri.clone(),
-        on_panic: process_metadata.on_panic,
+        wasm_bytes_handle: process_metadata.wasm_bytes_handle.clone(),
+        on_panic: process_metadata.on_panic.clone(),
     };
     process_handles.insert(
-        process_id,
+        process_id.clone(),
         tokio::spawn(
             make_process_loop(
+                home_directory_path,
                 metadata.clone(),
                 send_to_loop.clone(),
                 send_to_terminal.clone(),
@@ -1168,6 +1137,12 @@ async fn start_process(
             .await,
         ),
     );
+
+    process_map.insert(
+        process_id,
+        (process_metadata.wasm_bytes_handle, process_metadata.on_panic));
+
+    let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
 
     send_to_loop
         .send(t::KernelMessage {
@@ -1198,6 +1173,8 @@ async fn start_process(
 /// if this dies, it's over
 async fn make_event_loop(
     our_name: String,
+    home_directory_path: String,
+    mut process_map: ProcessMap,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1208,6 +1185,7 @@ async fn make_event_loop(
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_eth_rpc: t::MessageSender,
+    send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -1230,6 +1208,10 @@ async fn make_event_loop(
             ProcessSender::Runtime(send_to_http_client),
         );
         senders.insert(
+            t::ProcessId::Name("encryptor".into()),
+            ProcessSender::Runtime(send_to_encryptor),
+        );
+        senders.insert(
             t::ProcessId::Name("lfs".into()),
             ProcessSender::Runtime(send_to_lfs),
         );
@@ -1240,49 +1222,60 @@ async fn make_event_loop(
 
         // each running process is stored in this map
         let mut process_handles: ProcessHandles = HashMap::new();
-        let mut is_debug = false;
 
-        // HERE is where the boot sequence goes?
-        start_process(
-            our_name.clone(),
-            0,       // id doesn't matter
-            &get_process_bytes("sequentialize").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("sequentialize".into()),
-                wasm_bytes_uri: "sequentialize.wasm".into(),
-                on_panic: t::OnPanic::None,
-            },
-        )
-        .await;
-        start_process(
-            our_name.clone(),
-            0,       // id doesn't matter
-            &get_process_bytes("terminal").await, // bytes of wasm app
-            send_to_loop.clone(),
-            send_to_terminal.clone(),
-            &mut senders,
-            &mut process_handles,
-            &engine,
-            StartProcessMetadata {
-                source: t::Address {
-                    node: our_name.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                name: Some("terminal".into()),
-                wasm_bytes_uri: "terminal.wasm".into(),
-                on_panic: t::OnPanic::Restart,
-            },
-        )
-        .await;
+        let mut is_debug: bool = false;
+
+        // will boot every wasm module inside /modules
+        // currently have an exclude list to avoid broken modules
+        // modules started manually by users will bootup automatically
+        // TODO remove once the modules compile!
+
+        let exclude_list: Vec<t::ProcessId> = vec![
+            // t::ProcessId::Name("apps_home".into()),
+            t::ProcessId::Name("explorer".into()),
+            // t::ProcessId::Name("http_bindings".into()),
+            // t::ProcessId::Name("http_proxy".into()),
+            t::ProcessId::Name("process_manager".into()),
+            t::ProcessId::Name("hi_lus_lus".into()),
+            t::ProcessId::Name("sequencer".into()),
+            t::ProcessId::Name("file_transfer".into()),
+            t::ProcessId::Name("file_transfer_one_off".into()),
+            t::ProcessId::Name("net_tester".into()),
+        ];
+
+        for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {
+            if !exclude_list.contains(&process_id) {
+                send_to_loop
+                    .send(t::KernelMessage {
+                        id: rand::random(),
+                        source: t::Address {
+                            node: our_name.clone(),
+                            process: t::ProcessId::Name("kernel".into()),
+                        },
+                        target: t::Address {
+                            node: our_name.clone(),
+                            process: t::ProcessId::Name("kernel".into()),
+                        },
+                        rsvp: None,
+                        message: t::Message::Request(t::Request {
+                            inherit: false,
+                            expects_response: false,
+                            ipc: Some(
+                                serde_json::to_string(&t::KernelCommand::RebootProcess {
+                                    process_id,
+                                    wasm_bytes_handle,
+                                    on_panic,
+                                })
+                                .unwrap(),
+                            ),
+                            metadata: None,
+                        }),
+                        payload: None,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
 
         // main message loop
         loop {
@@ -1294,7 +1287,7 @@ async fn make_event_loop(
                     }
                 },
                 ne = network_error_recv.recv() => {
-                    let wrapped_network_error = ne.expect("fatal: event loop died");
+                    let Some(wrapped_network_error) = ne else { return Ok(()) };
                     let _ = send_to_terminal.send(
                         t::Printout {
                             verbosity: 1,
@@ -1307,8 +1300,10 @@ async fn make_event_loop(
                             // TODO: this failing should crash kernel
                             sender.send(Err(wrapped_network_error)).await.unwrap();
                         }
-                        Some(ProcessSender::Runtime(sender)) => {
-                            // uhhhhh TODO should runtime modules get these? no
+                        Some(ProcessSender::Runtime(_sender)) => {
+                            // TODO should runtime modules get these? no
+                            // this will change if a runtime process ever makes
+                            // a message directed to not-our-node
                         }
                         None => {
                             send_to_terminal
@@ -1359,16 +1354,19 @@ async fn make_event_loop(
                                         send_to_terminal.clone(),
                                         &mut senders,
                                         &mut process_handles,
+                                        &mut process_map,
                                     ).await;
                                 }
                                 t::Message::Response(_) => {
                                     handle_kernel_response(
                                         our_name.clone(),
+                                        home_directory_path.clone(),
                                         kernel_message,
                                         send_to_loop.clone(),
                                         send_to_terminal.clone(),
                                         &mut senders,
                                         &mut process_handles,
+                                        &mut process_map,
                                         &engine,
                                     ).await;
                                 }
@@ -1408,6 +1406,8 @@ async fn make_event_loop(
 /// kernel entry point. creates event loop which contains all WASM processes
 pub async fn kernel(
     our: t::Identity,
+    home_directory_path: String,
+    process_map: ProcessMap,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     recv_in_loop: t::MessageReceiver,
@@ -1419,7 +1419,8 @@ pub async fn kernel(
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_eth_rpc: t::MessageSender,
-) {
+    send_to_encryptor: t::MessageSender,
+) -> Result<()> {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
     config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
@@ -1430,6 +1431,8 @@ pub async fn kernel(
     let event_loop_handle = tokio::spawn(
         make_event_loop(
             our.name.clone(),
+            home_directory_path,
+            process_map,
             recv_in_loop,
             network_error_recv,
             recv_debug_in_loop,
@@ -1440,10 +1443,11 @@ pub async fn kernel(
             send_to_http_server,
             send_to_http_client,
             send_to_eth_rpc,
+            send_to_encryptor,
             send_to_terminal.clone(),
             engine,
         )
         .await,
     );
-    let _ = event_loop_handle.await;
+    event_loop_handle.await.unwrap()
 }

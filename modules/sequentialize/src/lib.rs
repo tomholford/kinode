@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 mod process_lib;
 struct Component;
-use bindings::{component::uq_process::types::*, UqProcess};
+use bindings::{component::uq_process::types::*, Guest};
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -77,7 +77,7 @@ fn handle_message(
     }
 }
 
-impl UqProcess for Component {
+impl Guest for Component {
     fn init(our: Address) {
         bindings::print_to_terminal(1, "sequentialize: begin");
 

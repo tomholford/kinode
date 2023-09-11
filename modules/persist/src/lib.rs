@@ -1,145 +1,130 @@
 cargo_component_bindings::generate!();
 
-use serde::{Serialize, Deserialize};
-
-use bindings::{MicrokernelProcess, print_to_terminal, receive};
-use bindings::component::microkernel_process::types;
+use bindings::component::uq_process::types::*;
+use bindings::{print_to_terminal, receive, get_payload, Guest, Address, Response, Context, Payload};
+use serde::{Deserialize, Serialize};
 
 mod process_lib;
 
 struct Component;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProcessReference {
-    pub node: String,
-    pub identifier: ProcessIdentifier,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ProcessIdentifier {
-    Id(u64),
-    Name(String),
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Payload {
-    json: Option<serde_json::Value>,
-    bytes: Option<Vec<u8>>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RequestOnPanic {
-    pub target: ProcessReference,
-    pub payload: Payload,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum SendOnPanic {
-    None,
-    Restart,
-    Requests(Vec<RequestOnPanic>),
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ProcessManagerCommand {
-    Initialize { jwt_secret_bytes: Option<Vec<u8>> },
-    Start { process_name: String, wasm_bytes_uri: String, send_on_panic: SendOnPanic },
-    Stop { process_name: String },
-    Restart { process_name: String },
-    ListRunningProcesses,
-    PersistState,
-}
-#[derive(Debug, Serialize, Deserialize)]
-pub enum ProcessManagerResponse {
-    Initialize,
-    ListRunningProcesses { processes: Vec<String> },
-    PersistState([u8; 32]),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum PersistRequest {
-    Initialize,
-    Get,
-    Set { new_value: u64 },
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct State {
     val: Option<u64>,
 }
 
-fn persist_state(
-    our_name: &str,
-    state: &State,
-) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>> {
-    print_to_terminal(1, "kernel: persist pm state");
-    process_lib::send_and_await_receive(
-        our_name.into(),
-        types::ProcessIdentifier::Name("kernel".into()),
-        Some(ProcessManagerCommand::PersistState),
-        types::OutboundPayloadBytes::Circumvent(bincode::serialize(state)?),
-    )
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsAction {
+    Write,
+    Replace(u128),
+    Append(Option<u128>),
+    Read(u128),
+    ReadChunk(ReadChunkRequest),
+    Delete(u128),
+    Length(u128),
+    //  process state management
+    GetState,
+    SetState,
 }
 
-fn handle_message(
-    state: &mut State,
-    our_name: &str,
-) -> anyhow::Result<()> {
-    let (message, _context) = receive()?;
-
-    match message {
-        types::InboundMessage::Request(types::InboundRequest {
-            is_expecting_response: _,
-            payload: types::InboundPayload {
-                source: _,
-                json,
-                bytes,
-            },
-        }) => {
-            match process_lib::parse_message_json(json)? {
-                PersistRequest::Initialize => {
-                    match bytes {
-                        types::InboundPayloadBytes::Some(bytes) => {
-                            state.val = bincode::deserialize(&bytes[..])?;
-                        },
-                        _ => {},
-                    }
-                    let _ = process_lib::send_response(
-                        None::<State>,
-                        types::OutboundPayloadBytes::None,
-                        None::<State>,
-                    )?;
-                },
-                PersistRequest::Get => {
-                    print_to_terminal(
-                        0,
-                        format!("persist: state: {:?}", state).as_str(),
-                    );
-                },
-                PersistRequest::Set { new_value } => {
-                    state.val = Some(new_value);
-                    let _ = persist_state(our_name, state);
-                },
-            }
-        },
-        types::InboundMessage::Response(_) => {},
-    }
-
-    Ok(())
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ReadChunkRequest {
+    pub file_uuid: u128,
+    pub start: u64,
+    pub length: u64,
 }
 
-impl MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
-        print_to_terminal(1, "persist: begin");
+#[derive(Debug, Serialize, Deserialize)]
+enum PersistRequest {
+    Get,
+    Set { new: u64 },
+}
 
-        let mut state = State { val: None };
+#[derive(Serialize, Deserialize, Debug)]
+pub enum FsResponse {
+    //  bytes are in payload_bytes
+    Read(u128),
+    ReadChunk(u128),
+    Write(u128),
+    Append(u128),
+    Delete(u128),
+    Length(u64),
+    GetState,
+    SetState
+    //  use FileSystemError
+}
+
+impl Guest for Component {
+    fn init(our: Address) {
+        print_to_terminal(1, "persist: start");
+
+        let mut state = State {
+            val: None
+        };
+        //  can't await yet, match on FsResponse.
+        //  refactor to await when available!
+        let _ = process_lib::get_state(our.node.clone());
+
         loop {
-            match handle_message(
-                &mut state,
-                &our.node,
-                // &process_name,
-            ) {
-                Ok(()) => {},
-                Err(e) => {
-                    print_to_terminal(0, format!("persist: error: {:?}", e).as_str());
-                },
+            let Ok((source, message)) = receive() else {
+                print_to_terminal(0, "persist: got network error");
+                continue;
             };
+
+            match message {
+                Message::Request(request) => {
+                    let persist_msg = serde_json::from_str::<PersistRequest>(&request.clone().ipc.unwrap_or_default());
+                    if let Ok(msg) = persist_msg {
+                        match msg {
+                            PersistRequest::Get => {
+                                print_to_terminal(0, &format!("persist: Get state: {:?}", state));
+                                continue;
+                            },
+                            PersistRequest::Set { new } => {
+                                print_to_terminal(0, "persist: got Set request");
+                                state.val = Some(new);
+                                let _ = process_lib::set_state(our.node.clone(), bincode::serialize(&state).unwrap());
+                                continue;
+                            },
+                        }
+                    } else {
+                        print_to_terminal(0, &format!("persist: got invalid request {:?}", request.clone()));
+                        continue;
+                    }
+                },
+                Message::Response((Ok(response), _)) => {
+                    let fs_msg = serde_json::from_str::<FsResponse>(&response.clone().ipc.unwrap_or_default());
+                    if let Ok(fs_msg) = fs_msg {
+                        match fs_msg {
+                            FsResponse::GetState => {
+                                if let Some(payload) = get_payload() {
+                                    if !payload.bytes.is_empty() {
+                                        match bincode::deserialize(&payload.bytes) {
+                                            Ok(deserialized_state) => state = deserialized_state,
+                                            Err(e) => {
+                                                print_to_terminal(0, &format!("persist: deserialization error: {:?}", e));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                print_to_terminal(0, &format!("persist: Get state: {:?}", state));
+
+                                continue;
+                            },
+                            _ => { print_to_terminal(0, "other!"); }
+                        }
+                    } else {
+                        print_to_terminal(0, &format!("persist: got invalid response {:?}", response.clone()));
+                        continue;
+                    }
+                },
+                _ => {
+                    print_to_terminal(0, "persist: got unexpected message");
+                    continue;
+                }
+            }
+
         }
     }
 }

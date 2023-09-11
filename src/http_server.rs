@@ -1,5 +1,6 @@
+use anyhow::Result;
 use crate::types::*;
- use serde_urlencoded;
+use serde_urlencoded;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -18,11 +19,11 @@ pub async fn http_server(
     mut recv_in_server: MessageReceiver,
     send_to_loop: MessageSender,
     print_tx: PrintSender,
-) {
+) -> Result<()> {
     let http_response_senders = Arc::new(Mutex::new(HashMap::new()));
     let our_name = our.clone();
 
-    tokio::join!(
+    let _ = tokio::join!(
         http_serve(
             our.clone(),
             our_port,
@@ -68,6 +69,7 @@ pub async fn http_server(
             }
         }
     );
+    Err(anyhow::anyhow!("http_server: exited"))
 }
 
 async fn http_handle_messages(

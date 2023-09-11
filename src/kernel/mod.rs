@@ -831,6 +831,11 @@ async fn handle_kernel_request(
         Ok(c) => c,
     };
     match command {
+        t::KernelCommand::Shutdown => {
+            for handle in process_handles.values() {
+                handle.abort();
+            }
+        }
         //
         // initialize a new process. this is the only way to create a new process.
         // this sends a read request to filesystem, when response is received,
@@ -1273,7 +1278,7 @@ async fn make_event_loop(
                     }
                 },
                 ne = network_error_recv.recv() => {
-                    let wrapped_network_error = ne.expect("fatal: event loop died");
+                    let Some(wrapped_network_error) = ne else { return Ok(()) };
                     let _ = send_to_terminal.send(
                         t::Printout {
                             verbosity: 1,
@@ -1404,7 +1409,7 @@ pub async fn kernel(
     send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
-) {
+) -> Result<()> {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
     config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
@@ -1431,5 +1436,5 @@ pub async fn kernel(
         )
         .await,
     );
-    let _ = event_loop_handle.await;
+    event_loop_handle.await.unwrap()
 }

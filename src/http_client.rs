@@ -1,4 +1,5 @@
 use crate::types::*;
+use anyhow::Result;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 
@@ -12,7 +13,7 @@ pub async fn http_client(
     send_to_loop: MessageSender,
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
-) {
+) -> Result<()> {
     while let Some(message) = recv_in_client.recv().await {
         let KernelMessage {
             id,
@@ -27,7 +28,7 @@ pub async fn http_client(
             }),
             payload: _,
         } = message.clone() else {
-            panic!("http_client: bad message");
+            return Err(anyhow::anyhow!("http_client: bad message"))
         };
 
         let our_name = our_name.clone();
@@ -56,6 +57,7 @@ pub async fn http_client(
             }
         });
     }
+    Err(anyhow::anyhow!("http_client: exited"))
 }
 
 async fn handle_message(

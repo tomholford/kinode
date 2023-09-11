@@ -2,6 +2,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key,
 };
+use anyhow::Result;
 use lazy_static::__Deref;
 use reqwest;
 use ring::pbkdf2;
@@ -40,7 +41,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
-async fn indexing(blockchain_url: String, pki: OnchainPKI, _print_sender: PrintSender) {
+async fn indexing(
+    blockchain_url: String,
+    pki: OnchainPKI,
+    _print_sender: PrintSender,
+) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         interval.tick().await;
@@ -331,7 +336,6 @@ async fn main() {
         .await
         .unwrap();
 
-
         let kernel_address = Address {
             node: our.name.clone(),
             process: ProcessId::Name("kernel".into()),
@@ -404,14 +408,16 @@ async fn main() {
 
     //  bootstrap FS.
     let _ = print_sender
-    .send(Printout {
-        verbosity: 0,
-        content: "bootstrapping fs...".to_string(),
-    })
-    .await;
+        .send(Printout {
+            verbosity: 0,
+            content: "bootstrapping fs...".to_string(),
+        })
+        .await;
 
-    let (kernel_process_map, manifest, wal, fs_directory)
-        = lfs::bootstrap(home_directory_path.clone()).await.expect("fs bootstrap failed!");
+    let (kernel_process_map, manifest, wal, fs_directory) =
+        lfs::bootstrap(home_directory_path.clone())
+            .await
+            .expect("fs bootstrap failed!");
 
     let _ = kill_tx.send(true);
     let _ = print_sender
@@ -438,8 +444,8 @@ async fn main() {
      *
      *  if any of these modules fail, the program exits with an error.
      */
-
-    let kernel_handle = tokio::spawn(kernel::kernel(
+    let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
+    tasks.spawn(kernel::kernel(
         our.clone(),
         home_directory_path.into(),
         kernel_process_map,
@@ -454,7 +460,7 @@ async fn main() {
         http_server_sender,
         http_client_message_sender,
     ));
-    let net_handle = tokio::spawn(net::networking(
+    tasks.spawn(net::networking(
         our.clone(),
         our_ip,
         networking_keypair,
@@ -464,19 +470,19 @@ async fn main() {
         print_sender.clone(),
         net_message_receiver,
     ));
-    let indexing_handle = tokio::spawn(indexing(
+    tasks.spawn(indexing(
         blockchain_url.clone(),
         pki.clone(),
         print_sender.clone(),
     ));
-    let fs_handle = tokio::spawn(filesystem::fs_sender(
+    tasks.spawn(filesystem::fs_sender(
         our.name.clone(),
         home_directory_path.into(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         fs_message_receiver,
     ));
-    let lfs_handle = tokio::spawn(lfs::fs_sender(
+    tasks.spawn(lfs::fs_sender(
         our.name.clone(),
         fs_directory,
         manifest,
@@ -485,42 +491,77 @@ async fn main() {
         print_sender.clone(),
         lfs_message_receiver,
     ));
-    let http_server_handle = tokio::spawn(http_server::http_server(
+    tasks.spawn(http_server::http_server(
         our.name.clone(),
         http_server_port,
         http_server_receiver,
         kernel_message_sender.clone(),
         print_sender.clone(),
     ));
-    let http_client_handle = tokio::spawn(http_client::http_client(
+    tasks.spawn(http_client::http_client(
         our.name.clone(),
         kernel_message_sender.clone(),
         http_client_message_receiver,
         print_sender.clone(),
     ));
-    // TODO: abort all these so graceful shutdown doesn't look like a crash
-    let quit: String = tokio::select! {
-        term = terminal::terminal(
-            &our,
+    // if a runtime task exits, try to recover it,
+    // unless it was terminal signaling a quit
+    let quit_msg: String = tokio::select! {
+        Some(res) = tasks.join_next() => {
+            if let Err(e) = res {
+                format!("what does this mean? {:?}", e)
+            } else if let Ok(Err(e)) = res {
+                format!(
+                    "\x1b[38;5;196muh oh, a kernel process crashed: {}\x1b[0m",
+                    e
+                )
+                // TODO restart the task
+            } else {
+                format!("what does this mean???")
+                // TODO restart the task
+            }
+        }
+        quit = terminal::terminal(
+            our.clone(),
             VERSION,
             home_directory_path.into(),
             kernel_message_sender.clone(),
             kernel_debug_message_sender,
             print_sender.clone(),
             print_receiver,
-        ) => match term {
-            Ok(_) => "graceful shutdown".to_string(),
-            Err(e) => format!("exiting with error: {:?}", e),
-        },
-        _ = kernel_handle      => {"fatal: kernel exit".into()},
-        _ = net_handle         => {"fatal: net exit".into()},
-        _ = indexing_handle    => {"fatal: indexer exit".into()},
-        _ = fs_handle          => {"fatal: fs exit".into()},
-        _ = http_server_handle => {"fatal: http_server exit".into()},
-        _ = http_client_handle => {"fatal: http_client exit".into()},
-        _ = lfs_handle         => {"fatal: lfs exit".into()},
+        ) => {
+            match quit {
+                Ok(_) => "graceful exit".into(),
+                Err(e) => e.to_string(),
+            }
+        }
     };
+    // gracefully abort all running processes in kernel
+    let _ = kernel_message_sender
+        .send(KernelMessage {
+            id: 0,
+            source: Address {
+                node: our.name.clone(),
+                process: ProcessId::Name("kernel".into()),
+            },
+            target: Address {
+                node: our.name.clone(),
+                process: ProcessId::Name("kernel".into()),
+            },
+            rsvp: None,
+            message: Message::Request(Request {
+                inherit: false,
+                expects_response: false,
+                ipc: Some(serde_json::to_string(&KernelCommand::Shutdown).unwrap()),
+                metadata: None,
+            }),
+            payload: None,
+        })
+        .await;
+    // abort all remaining tasks
+    tasks.shutdown().await;
     let _ = crossterm::terminal::disable_raw_mode();
     println!("");
-    println!("\x1b[38;5;196m{}\x1b[0m", quit);
+    println!("\x1b[38;5;196m{}\x1b[0m", quit_msg);
+    return;
 }

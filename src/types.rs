@@ -233,11 +233,13 @@ pub enum KernelCommand {
         on_panic: OnPanic,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
-    RebootProcess {         // kernel only
+    RebootProcess {
+        // kernel only
         process_id: ProcessId,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
-    }
+    },
+    Shutdown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -285,8 +287,7 @@ pub enum FsResponse {
     Delete(u128),
     Length(u64),
     GetState,
-    SetState
-    //  use FileSystemError
+    SetState, //  use FileSystemError
 }
 
 impl FileSystemError {

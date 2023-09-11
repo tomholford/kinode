@@ -85,7 +85,7 @@ pub struct PqiUpdate {
     pub public_key: String,
     pub ip: String,
     pub port: u16,
-    pub routers: Vec<u64>, // TODO should be eth types
+    pub routers: Vec<String>,
 }
 
 pub async fn networking(
@@ -509,24 +509,6 @@ async fn handle_incoming_message(
                     })
                     .await;
 
-                // TODO this should come from log.data
-                // TODO probably randomly generate these if possible
-
-                let routers: Vec<String> = vec![];
-                // TODO why isn't this working
-                // {
-                //     let names_ref = names.clone();
-                //     async {
-                //         log.routers.iter()
-                //             .filter_map(|&num| async {
-                //                 // Lock for read access and fetch the string
-                //                 let lock = names_ref.read().await;
-                //                 lock.get(&num).cloned()
-                //             }.await)
-                //             .collect()
-                //     }.await
-                // };
-
                 let _ = pki.write().await.insert(
                     log.name.clone(),
                     Identity {
@@ -534,7 +516,7 @@ async fn handle_incoming_message(
                         address: log.owner,
                         networking_key: log.public_key,
                         ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 { None } else { Some((log.ip, log.port)) } ,
-                        allowed_routers: routers,
+                        allowed_routers: log.routers,
                     }
                 );
             }

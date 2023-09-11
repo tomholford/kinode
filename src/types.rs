@@ -24,8 +24,7 @@ pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
 //
 // types used for UQI: uqbar's identity system
 //
-pub type PqiId = u64; // TODO maybe U256
-pub type PKINames = Arc<RwLock<HashMap<PqiId, String>>>;
+pub type PKINames = Arc<RwLock<HashMap<String, String>>>; // TODO maybe U256 to String
 pub type OnchainPKI = Arc<RwLock<HashMap<String, Identity>>>;
 
 #[derive(Debug, Serialize, Deserialize)]

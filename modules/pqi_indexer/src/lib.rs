@@ -122,56 +122,58 @@ impl UqProcess for Component {
                             bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e.topics).as_str());
                         }
                         WsChanged::SIGNATURE_HASH => {
-                            bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e.topics).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e).as_str());
+
+                            let node       = &e.topics[1];
+                            let decoded    = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
+                            let public_key = hex::encode(decoded.0);
+                            let (ip, port) = split_ip_and_port(decoded.1);
+                            let routers    = decoded.2;
+
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE: {:?}", node).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: DECODED: {:?}", decoded).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: PUB KEY: {:?}", public_key).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: IP PORT: {:?} {:?}", ip, port).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: ROUTERS: {:?}", routers).as_str());
+                            
+                            let json_payload = json!({
+                                "PqiUpdate": {
+                                    // TODO name
+                                    "node": node,
+                                    "public_key": format!("0x{}", public_key),
+                                    "ip": format!(
+                                        "{}.{}.{}.{}",
+                                        (ip >> 24) & 0xFF,
+                                        (ip >> 16) & 0xFF,
+                                        (ip >> 8) & 0xFF,
+                                        ip & 0xFF
+                                    ),
+                                    "port": port,
+                                    "routers": routers,
+                                }
+                            }).to_string();
+
+                            bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
+                            
+                            send_request(
+                                &Address{
+                                    node: our.node.clone(),
+                                    process: ProcessId::Name("net".to_string()),
+                                },
+                                &Request{
+                                    inherit: false,
+                                    expects_response: false,
+                                    metadata: None,
+                                    ipc: Some(json_payload),
+                                },
+                                None,
+                                None, 
+                            );
                         }
                         _ => {
                             bindings::print_to_terminal(0, format!("pqi_indexer: got unknown event: {:?}", e.topics).as_str());
                         }
                     }
-
-                    // let pqi_id = hex_to_u64(&e.topics[1].to_string()).unwrap(); // TODO u64
-
-                    // let decoded = CreateEntry::decode_data(&decode_hex(&e.data).unwrap(), true).unwrap();
-                    // let nft_contract = decoded.0;
-                    // let nft_id       = decoded.1.to_string(); // TODO should probably stay a hex string...
-                    // let public_key   = hex::encode(decoded.2);
-                    // let (ip, port)   = split_ip_and_port(decoded.3);
-                    // let routers      = decoded.4;
-                    
-                    // let json_payload = json!({
-                    //     "PqiUpdate": {
-                    //         "pqi_id": pqi_id,
-                    //         "nft_contract": nft_contract.to_string(),
-                    //         "nft_id": nft_id,
-                    //         "public_key": format!("0x{}", public_key),
-                    //         "ip": format!(
-                    //             "{}.{}.{}.{}",
-                    //             (ip >> 24) & 0xFF,
-                    //             (ip >> 16) & 0xFF,
-                    //             (ip >> 8) & 0xFF,
-                    //             ip & 0xFF
-                    //         ),
-                    //         "port": port,
-                    //         "routers": routers,
-                    //     }
-                    // }).to_string();
-
-                    // bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
-                    
-                    // send_request(
-                    //     &Address{
-                    //         node: our.node.clone(),
-                    //         process: ProcessId::Name("net".to_string()),
-                    //     },
-                    //     &Request{
-                    //         inherit: false,
-                    //         expects_response: false,
-                    //         metadata: None,
-                    //         ipc: Some(json_payload),
-                    //     },
-                    //     None,
-                    //     None, 
-                    // );
                 }
             }
         }
@@ -191,6 +193,17 @@ fn decode_hex(s: &str) -> FixedBytes<32> {
     let mut arr = [0_u8; 32];
     arr.copy_from_slice(&hex::decode(hex_part).unwrap()[0..32]);
     FixedBytes(arr)
+}
+
+fn decode_hex_to_vec(s: &str) -> Vec<u8> {
+    // If the string starts with "0x", skip the prefix
+    let hex_part = if s.starts_with("0x") {
+        &s[2..]
+    } else {
+        s
+    };
+
+    hex::decode(hex_part).unwrap()
 }
 
 fn hex_to_u64(hex: &str) -> Result<u64, std::num::ParseIntError> {

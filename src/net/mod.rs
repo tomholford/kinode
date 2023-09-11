@@ -79,9 +79,7 @@ pub enum NetActions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PqiUpdate {
-    pub pqi_id: u64,
-    pub nft_contract: String,
-    pub nft_id: String,
+    pub node: String,
     pub public_key: String,
     pub ip: String,
     pub port: u16,
@@ -513,7 +511,7 @@ async fn handle_incoming_message(
                 // TODO probably randomly generate these if possible
                 let temp_rand_name: String = "TODO".to_string();
 
-                let _ = names.write().await.insert(log.pqi_id, temp_rand_name.clone());
+                let _ = names.write().await.insert(log.node, temp_rand_name.clone());
 
                 let routers: Vec<String> = vec![];
                 // TODO why isn't this working

@@ -4,6 +4,7 @@ use bindings::component::uq_process::types::*;
 use bindings::{print_to_terminal, receive, send_request, send_requests, UqProcess};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use alloy_primitives::FixedBytes;
 use alloy_sol_types::{sol, SolEnum, SolType, SolCall, SolEvent};
 use hex;
 
@@ -87,7 +88,6 @@ impl UqProcess for Component {
                             "events": [
                                 "WsChanged(uint256,bytes32,uint48,bytes32[])",
                             ],
-                            "events": ["Transfer(address,address,uint256)"],
                             "topic1": null,
                             "topic2": null,
                             "topic3": null,
@@ -117,7 +117,18 @@ impl UqProcess for Component {
             match msg {
                 // anticipating more message types later
                 AllActions::EventSubscription(e) => {
-                    bindings::print_to_terminal(0, format!("pqi_indexer: got event: {:?}", e).as_str());
+                    match decode_hex(&e.topics[0].clone()) {
+                        NameRegistered::SIGNATURE_HASH => {
+                            bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e.topics).as_str());
+                        }
+                        WsChanged::SIGNATURE_HASH => {
+                            bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e.topics).as_str());
+                        }
+                        _ => {
+                            bindings::print_to_terminal(0, format!("pqi_indexer: got unknown event: {:?}", e.topics).as_str());
+                        }
+                    }
+
                     // let pqi_id = hex_to_u64(&e.topics[1].to_string()).unwrap(); // TODO u64
 
                     // let decoded = CreateEntry::decode_data(&decode_hex(&e.data).unwrap(), true).unwrap();
@@ -169,14 +180,17 @@ impl UqProcess for Component {
 
 // helpers
 // TODO these probably exist somewhere in alloy...not sure where though.
-fn decode_hex(s: &str) -> Result<Vec<u8>, hex::FromHexError> {
+fn decode_hex(s: &str) -> FixedBytes<32> {
     // If the string starts with "0x", skip the prefix
     let hex_part = if s.starts_with("0x") {
         &s[2..]
     } else {
         s
     };
-    hex::decode(hex_part)
+
+    let mut arr = [0_u8; 32];
+    arr.copy_from_slice(&hex::decode(hex_part).unwrap()[0..32]);
+    FixedBytes(arr)
 }
 
 fn hex_to_u64(hex: &str) -> Result<u64, std::num::ParseIntError> {

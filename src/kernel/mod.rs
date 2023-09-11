@@ -1174,7 +1174,7 @@ async fn start_process(
 async fn make_event_loop(
     our_name: String,
     home_directory_path: String,
-    process_map: ProcessMap,
+    mut process_map: ProcessMap,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1213,14 +1213,10 @@ async fn make_event_loop(
         // each running process is stored in this map
         let mut process_handles: ProcessHandles = HashMap::new();
 
-        // process persistance and metadata in this map
-        let mut process_map = process_map;
-
         let mut is_debug: bool = false;
 
-
         // will boot every wasm module inside /modules
-        // currently have an exclude list to avoid broken moduels
+        // currently have an exclude list to avoid broken modules
         // modules started manually by users will bootup automatically
         // TODO remove once the modules compile!
 
@@ -1232,6 +1228,9 @@ async fn make_event_loop(
             t::ProcessId::Name("process_manager".into()),
             t::ProcessId::Name("hi_lus_lus".into()),
             t::ProcessId::Name("sequencer".into()),
+            t::ProcessId::Name("file_transfer".into()),
+            t::ProcessId::Name("file_transfer_one_off".into()),
+            t::ProcessId::Name("net_tester".into()),
         ];
 
         for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {

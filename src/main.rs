@@ -433,11 +433,6 @@ async fn main() {
         })
         .await;
 
-    // at boot, always save username to disk for login
-    fs::write(format!("{}/.user", home_directory_path), our.name.clone())
-        .await
-        .unwrap();
-
     /*
      *  the kernel module will handle our userspace processes and receives
      *  all "messages", the basic message format for uqbar.

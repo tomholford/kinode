@@ -34,11 +34,14 @@ fn main() {
         .unwrap();
 
     // Build wasm32-wasi apps.
-    const WASI_APPS: [&str; 4] = [
+    const WASI_APPS: [&str; 7] = [
         "terminal",
         "sequentialize",
         "key_value",
         "persist",
+        "http_bindings",
+        "http_proxy",
+        "apps_home",
     ];
     for name in WASI_APPS {
         // only execute if one of the modules has source code changes

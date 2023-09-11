@@ -252,9 +252,9 @@
       const CONNECTION_ERROR = 'There was an error connecting to your wallet. Please try again.'
 
       function genFetchRoute(route) {
-        return window.location.pathname.includes('/http-proxy/serve/') ?
+        return (window.location.pathname.includes('/http-proxy/serve/') ?
           `/http-proxy/serve/${window.location.pathname.split('/')[3]}/${route}`:
-          route
+          route).replace('//', '/')
       }
 
       async function loadWallet() {

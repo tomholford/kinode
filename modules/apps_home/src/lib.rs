@@ -1,7 +1,8 @@
 cargo_component_bindings::generate!();
 
-use bindings::{MicrokernelProcess, print_to_terminal, receive};
-use bindings::component::microkernel_process::types;
+use bindings::{print_to_terminal, receive, send_request, send_response, get_payload, Guest};
+use bindings::component::uq_process::types::*;
+use serde_json::json;
 
 mod process_lib;
 
@@ -9,80 +10,139 @@ struct Component;
 
 const APPS_HOME_PAGE: &str = include_str!("home.html");
 
-impl MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
+impl Guest for Component {
+    fn init(our: Address) {
         print_to_terminal(1, "apps_home: start");
-        let Some(process_name) = our.name else {
-            print_to_terminal(0, "apps_home: require our.name set");
-            panic!();
-        };
 
-        let _ = process_lib::send_one_request(
-            false,
-            &our.node,
-            types::ProcessIdentifier::Name("http_bindings".into()),
-            Some(serde_json::json!({
-                "action": "bind-app",
-                "path": "/",
-                "app": process_name,
-                "authenticated": true,
-            })),
-            types::OutboundPayloadBytes::None,
-            None::<String>,
+        send_request(
+            &Address {
+                node: our.node.clone(),
+                process: ProcessId::Name("http_bindings".to_string()),
+            },
+            &Request {
+                inherit: false,
+                expects_response: false,
+                ipc: Some(serde_json::json!({
+                    "action": "bind-app",
+                    "path": "/",
+                    "app": "apps_home",
+                    "authenticated": true,
+                }).to_string()),
+                metadata: None,
+            },
+            None,
+            None
         );
 
         loop {
-            let (message, _) = receive().unwrap();  //  TODO: handle error properly
-            let types::InboundMessage::Request(types::InboundRequest {
-                is_expecting_response: _,
-                payload: types::InboundPayload {
-                    source: _,
-                    ref json,
-                    bytes: _,
-                },
-            }) = message else {
-                panic!("foo")
+            let Ok((_source, message)) = receive() else {
+                print_to_terminal(0, "apps_home: got network error");
+                continue;
             };
-            let Some(json) = json else {
-                panic!("bar");
+            let Message::Request(request) = message else {
+                print_to_terminal(0, "apps_home: got unexpected message");
+                continue;
             };
-            let message_from_loop: serde_json::Value = serde_json::from_str(json).unwrap();
-            print_to_terminal(1, format!("apps-home: got request: {}", message_from_loop).as_str());
-            print_to_terminal(1, format!("METHOD: {}", message_from_loop["method"]).as_str());
 
-            if message_from_loop["path"] == "/" && message_from_loop["method"] == "GET" {
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
+            if let Some(json) = request.ipc {
+                print_to_terminal(1, format!("apps_home: JSON {}", json).as_str());
+                let message_json: serde_json::Value = match serde_json::from_str(&json) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        print_to_terminal(1, "apps_home: failed to parse ipc JSON, skipping");
+                        continue;
+                    },
+                };
+
+                print_to_terminal(1, "apps_home: parsed ipc JSON");
+
+                if message_json["path"] == "/" && message_json["method"] == "GET" {
+                    print_to_terminal(1, "apps_home: sending response");
+
+                    send_response(
+                        &Response {
+                            ipc: Some(serde_json::json!({
+                                "action": "response",
+                                "status": 200,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            metadata: None,
                         },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        APPS_HOME_PAGE
-                            .replace("${our}", &our.node.to_string())
-                            .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
-                );
-            } else {
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": 404,
-                        "headers": {
-                            "Content-Type": "text/html",
+                        Some(&Payload {
+                            mime: Some("text/html".to_string()),
+                            bytes: APPS_HOME_PAGE.replace("${our}", &our.node).to_string().as_bytes().to_vec(),
+                        }),
+                    );
+                } else if message_json["path"].is_string() {
+                    send_response(
+                        &Response {
+                            ipc: Some(json!({
+                                "action": "response",
+                                "status": 404,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            metadata: None,
                         },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        "Not Found"
-                            .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
-                );
+                        Some(&Payload {
+                            mime: Some("text/html".to_string()),
+                            bytes: "Not Found"
+                                .to_string()
+                                .as_bytes()
+                                .to_vec(),
+                        }),
+                    );
+                } else {
+                    if let Some(payload) = get_payload() {
+                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&payload.bytes) {
+                            print_to_terminal(1, format!("JSON: {}", json).as_str());
+                            if json["message"] == "ping" {
+                                // WebSocket pushes are sent as requests
+                                send_request(
+                                    &Address {
+                                        node: our.node.clone(),
+                                        process: ProcessId::Name("encryptor".to_string()),
+                                    },
+                                    &Request {
+                                        inherit: false,
+                                        expects_response: false,
+                                        ipc: Some(serde_json::json!({
+                                            "EncryptAndForwardAction": {
+                                                "channel_id": "apps_home",
+                                                "forward_to": {
+                                                    "node": our.node.clone(),
+                                                    "process": {
+                                                        "Name": "http_server"
+                                                    }, // If the message passed in an ID then we could send to just that ID
+                                                }, // node, process
+                                                "json": Some(serde_json::json!({ // this is the JSON to forward
+                                                    "WebSocketPush": {
+                                                        "target": {
+                                                            "node": our.node.clone(),
+                                                            "id": "apps_home", // If the message passed in an ID then we could send to just that ID
+                                                        }
+                                                    }
+                                                })),
+                                            }
+
+                                        }).to_string()),
+                                        metadata: None,
+                                    },
+                                    None,
+                                    Some(&Payload {
+                                        mime: Some("application/json".to_string()),
+                                        bytes: serde_json::json!({
+                                            "pong": true
+                                        }).to_string().as_bytes().to_vec(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }

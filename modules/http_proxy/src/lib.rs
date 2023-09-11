@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
 
-use bindings::{MicrokernelProcess, print_to_terminal, receive, send};
-use bindings::component::microkernel_process::types;
+use bindings::{print_to_terminal, receive, send_requests, send_request, send_response, send_and_await_response, get_payload, Guest};
+use bindings::component::uq_process::types::*;
 
 mod process_lib;
 
-const PROXY_HOME_PAGE: &str = include_str!("http-proxy.html");
+const PROXY_HOME_PAGE: &str = include_str!("http_proxy.html");
 
 struct Component;
 
@@ -24,153 +24,207 @@ pub struct FileSystemRequest {
     pub action: FileSystemAction,
 }
 
-impl MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
-    // fn run_process(our_name: String, process_name: String) {
-        print_to_terminal(1, "http_proxy: start");
-        let Some(process_name) = our.name else {
-            print_to_terminal(0, "http_proxy: require our.name set");
-            panic!();
-        };
+fn send_http_response(
+    status: u16,
+    headers: HashMap<String, String>,
+    payload_bytes: Vec<u8>,
+) {
+    send_response(
+        &Response {
+            ipc: Some(serde_json::json!({
+                "status": status,
+                "headers": headers,
+            }).to_string()),
+            metadata: None,
+        },
+        Some(&Payload {
+            mime: Some("text/html".to_string()),
+            bytes: payload_bytes,
+        })
+    )
+}
 
-        let our_bindings = types::ProcessReference {
-            node: our.node.clone(),
-            identifier: types::ProcessIdentifier::Name("http_bindings".into()),
-        };
-        send(Ok(&types::OutboundMessage::Requests(vec![(
-            vec![
-                types::OutboundRequest {
-                    is_expecting_response: false,
-                    target: our_bindings.clone(),
-                    payload: process_lib::make_payload(
-                        Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/http-proxy",
-                            "authenticated": true,
-                            "app": process_name
-                        })),
-                        types::OutboundPayloadBytes::None,
-                    ).unwrap(),  //  TODO
-                },
-                types::OutboundRequest {
-                    is_expecting_response: false,
-                    target: our_bindings.clone(),
-                    payload: process_lib::make_payload(
-                        Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/http-proxy/static/.*",
-                            "authenticated": true,
-                            "app": process_name
-                        })),
-                        types::OutboundPayloadBytes::None,
-                    ).unwrap(),  //  TODO
-                },
-                types::OutboundRequest {
-                    is_expecting_response: false,
-                    target: our_bindings.clone(),
-                    payload: process_lib::make_payload(
-                        Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/http-proxy/list",
-                            "app": process_name
-                        })),
-                        types::OutboundPayloadBytes::None,
-                    ).unwrap(),  //  TODO
-                },
-                types::OutboundRequest {
-                    is_expecting_response: false,
-                    target: our_bindings.clone(),
-                    payload: process_lib::make_payload(
-                        Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/http-proxy/register",
-                            "app": process_name
-                        })),
-                        types::OutboundPayloadBytes::None,
-                    ).unwrap(),  //  TODO
-                },
-                types::OutboundRequest {
-                    is_expecting_response: false,
-                    target: our_bindings.clone(),
-                    payload: process_lib::make_payload(
-                        Some(serde_json::json!({
-                            "action": "bind-app",
-                            "path": "/http-proxy/serve/:username/.*",
-                            "app": process_name
-                        })),
-                        types::OutboundPayloadBytes::None,
-                    ).unwrap(),  //  TODO
-                },
-            ],
-            "".into(),
-        )])));
+fn send_not_found () {
+    send_http_response(404,HashMap::new(),"Not Found".to_string().as_bytes().to_vec())
+}
+
+impl Guest for Component {
+    fn init(our: Address) {
+        print_to_terminal(1, "http_proxy: start");
 
         let mut registrations: HashMap<String, String> = HashMap::new();
 
-        loop {
-            let (message, _) = receive().unwrap();  //  TODO: handle error properly
-            let types::InboundMessage::Request(types::InboundRequest {
-                is_expecting_response: _,
-                payload: types::InboundPayload {
-                    source: _,
-                    ref json,
-                    bytes,
-                },
-            }) = message else {
-                panic!("foo")
-            };
+        let bindings_address = Address {
+            node: our.node.clone(),
+            process: ProcessId::Name("http_bindings".to_string()),
+        };
 
-            let Some(json) = json else {
-                print_to_terminal(0, "http-proxy: no json payload");
+        // <address, request, option<context>, option<payload>>
+        let http_endpoint_binding_requests: [(Address, Request, Option<Context>, Option<Payload>); 5] = [
+            (
+                bindings_address.clone(),
+                Request {
+                    inherit: false,
+                    expects_response: false,
+                    ipc: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy",
+                        "authenticated": true,
+                        "app": "http_proxy",
+                    }).to_string()),
+                    metadata: None,
+                },
+                None,
+                None
+            ),
+            (
+                bindings_address.clone(),
+                Request {
+                    inherit: false,
+                    expects_response: false,
+                    ipc: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy/static/.*",
+                        "authenticated": true,
+                        "app": "http_proxy",
+                    }).to_string()),
+                    metadata: None,
+                },
+                None,
+                None
+            ),
+            (
+                bindings_address.clone(),
+                Request {
+                    inherit: false,
+                    expects_response: false,
+                    ipc: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy/list",
+                        "app": "http_proxy",
+                    }).to_string()),
+                    metadata: None,
+                },
+                None,
+                None
+            ),
+            (
+                bindings_address.clone(),
+                Request {
+                    inherit: false,
+                    expects_response: false,
+                    ipc: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy/register",
+                        "app": "http_proxy",
+                    }).to_string()),
+                    metadata: None,
+                },
+                None,
+                None
+            ),
+            (
+                bindings_address.clone(),
+                Request {
+                    inherit: false,
+                    expects_response: false,
+                    ipc: Some(serde_json::json!({
+                        "action": "bind-app",
+                        "path": "/http-proxy/serve/:username/.*",
+                        "app": "http_proxy",
+                    }).to_string()),
+                    metadata: None,
+                },
+                None,
+                None
+            ),
+        ];
+        send_requests(&http_endpoint_binding_requests);
+
+        loop {
+            let Ok((source, message)) = receive() else {
+                print_to_terminal(0, "http_proxy: got network error");
+                let mut headers = HashMap::new();
+                headers.insert("Content-Type".to_string(), "text/html".to_string());
+                send_http_response(503, headers, format!("<h1>Node Offline</h1>").as_bytes().to_vec());
                 continue;
             };
-            let message_from_loop: serde_json::Value = serde_json::from_str(&json).unwrap();
-            print_to_terminal(1, format!("http-proxy: got request: {}", message_from_loop).as_str());
+            let Message::Request(request) = message else {
+                print_to_terminal(0, "http_proxy: got unexpected message");
+                continue;
+            };
 
-            if message_from_loop["path"] == "/http-proxy" && message_from_loop["method"] == "GET" {
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        PROXY_HOME_PAGE
+            let Some(json) = request.ipc else {
+                print_to_terminal(1, "http_proxy: no ipc json");
+                continue;
+            };
+
+            let message_json: serde_json::Value = match serde_json::from_str(&json) {
+                Ok(v) => v,
+                Err(_) => {
+                    print_to_terminal(1, "http_proxy: failed to parse ipc JSON, skipping");
+                    continue;
+                },
+            };
+
+            print_to_terminal(1, format!("http_proxy: got request: {}", message_json).as_str());
+
+            if message_json["path"] == "/http-proxy" && message_json["method"] == "GET" {
+                send_response(
+                    &Response {
+                        ipc: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 200,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        metadata: None,
+                    },
+                    Some(&Payload {
+                        mime: Some("text/html".to_string()),
+                        bytes: PROXY_HOME_PAGE
                             .replace("${our}", &our.node)
                             .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
+                            .to_vec(),
+                    }),
                 );
-            } else if message_from_loop["path"] == "/http-proxy/list" && message_from_loop["method"] == "GET" {
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": 200,
-                        "headers": {
-                            "Content-Type": "application/json",
-                        },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        serde_json::json!({"registrations": registrations})
+            } else if message_json["path"] == "/http-proxy/list" && message_json["method"] == "GET" {
+                send_response(
+                    &Response {
+                        ipc: Some(serde_json::json!({
+                            "action": "response",
+                            "status": 200,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
+                        }).to_string()),
+                        metadata: None,
+                    },
+                    Some(&Payload {
+                        mime: Some("application/json".to_string()),
+                        bytes: serde_json::json!({"registrations": registrations})
                             .to_string()
                             .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
+                            .to_vec(),
+                    }),
                 );
-            } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "POST" {
+            } else if message_json["path"] == "/http-proxy/register" && message_json["method"] == "POST" {
                 let mut status = 204;
-                let types::InboundPayloadBytes::Some(body_bytes) = bytes else {
+
+                let Some(payload) = get_payload() else {
+                    print_to_terminal(1, "/http-proxy/register POST with no bytes");
                     continue;
                 };
-                let body_json_string = match String::from_utf8(body_bytes) {
+
+                let body: serde_json::Value = match serde_json::from_slice(&payload.bytes) {
                     Ok(s) => s,
-                    Err(_) => String::new()
+                    Err(e) => {
+                        print_to_terminal(1, format!("Bad body format: {}", e).as_str());
+                        continue;
+                    }
                 };
-                let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+
                 let username = body["username"].as_str().unwrap_or("");
 
                 print_to_terminal(1, format!("Register proxy for: {}", username).as_str());
@@ -181,25 +235,28 @@ impl MicrokernelProcess for Component {
                     status = 400;
                 }
 
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": status,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        (if status == 400 { "Bad Request" } else { "Success" })
+                send_response(
+                    &Response {
+                        ipc: Some(serde_json::json!({
+                            "action": "response",
+                            "status": status,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        metadata: None,
+                    },
+                    Some(&Payload {
+                        mime: Some("text/html".to_string()),
+                        bytes: (if status == 400 { "Bad Request" } else { "Success" })
                             .to_string()
                             .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
+                            .to_vec(),
+                    }),
                 );
-            } else if message_from_loop["path"] == "/http-proxy/register" && message_from_loop["method"] == "DELETE" {
+            } else if message_json["path"] == "/http-proxy/register" && message_json["method"] == "DELETE" {
                 print_to_terminal(1, "HERE IN /http-proxy/register to delete something");
-                let username = message_from_loop["query_params"]["username"].as_str().unwrap_or("");
+                let username = message_json["query_params"]["username"].as_str().unwrap_or("");
 
                 let mut status = 204;
 
@@ -209,60 +266,51 @@ impl MicrokernelProcess for Component {
                     status = 400;
                 }
 
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": status,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        (if status == 400 { "Bad Request" } else { "Success" })
+                send_response(
+                    &Response {
+                        ipc: Some(serde_json::json!({
+                            "action": "response",
+                            "status": status,
+                            "headers": {
+                                "Content-Type": "text/html",
+                            },
+                        }).to_string()),
+                        metadata: None,
+                    },
+                    Some(&Payload {
+                        mime: Some("text/html".to_string()),
+                        bytes: (if status == 400 { "Bad Request" } else { "Success" })
                             .to_string()
                             .as_bytes()
                             .to_vec()
-                    ),
-                    None::<String>,
+                    }),
                 );
-            } else if message_from_loop["path"] == "/http-proxy/serve/:username/.*" {
-                let username = message_from_loop["url_params"]["username"].as_str().unwrap_or("");
-                let raw_path = message_from_loop["raw_path"].as_str().unwrap_or("");
+            } else if message_json["path"] == "/http-proxy/serve/:username/.*" {
+                let username = message_json["url_params"]["username"].as_str().unwrap_or("");
+                let raw_path = message_json["raw_path"].as_str().unwrap_or("");
                 print_to_terminal(1, format!("proxy for user: {}", username).as_str());
 
                 if username.is_empty() || raw_path.is_empty() {
-                    let _ = process_lib::send_response(
-                        Some(serde_json::json!({
-                            "action": "response",
-                            "status": 404,
-                            "headers": {
-                                "Content-Type": "text/html",
-                            },
-                        })),
-                        types::OutboundPayloadBytes::Some(
-                            "Not Found"
-                                .to_string()
-                                .as_bytes()
-                                .to_vec()
-                        ),
-                        None::<String>,
-                    );
+                    send_not_found();
                 } else if !registrations.contains_key(username) {
-                    let _ = process_lib::send_response(
-                        Some(serde_json::json!({
-                            "action": "response",
-                            "status": 403,
-                            "headers": {
-                                "Content-Type": "text/html",
-                            },
-                        })),
-                        types::OutboundPayloadBytes::Some(
-                            "Not Authorized"
+                    send_response(
+                        &Response {
+                            ipc: Some(json!({
+                                "action": "response",
+                                "status": 403,
+                                "headers": {
+                                    "Content-Type": "text/html",
+                                },
+                            }).to_string()),
+                            metadata: None,
+                        },
+                        Some(&Payload {
+                            mime: Some("text/html".to_string()),
+                            bytes: "Not Authorized"
                                 .to_string()
                                 .as_bytes()
-                                .to_vec()
-                        ),
-                        None::<String>,
+                                .to_vec(),
+                        }),
                     );
                 } else {
                     let path_parts: Vec<&str> = raw_path.split('/').collect();
@@ -273,120 +321,106 @@ impl MicrokernelProcess for Component {
                         print_to_terminal(1, format!("Path to proxy: {}", proxied_path).as_str());
                     }
 
-                    let bytes = match process_lib::make_outbound_bytes_from_noncircumvented_inbound(bytes) {
-                        Ok(bytes) => bytes,
-                        Err(_) => {
-                             print_to_terminal(0, "http_proxy unexpectedly received Circumvented inbound bytes; failing HTTP request");
-                             let _ = process_lib::send_response(
-                                 Some(serde_json::json!({
-                                     "action": "response",
-                                     "status": 404,
-                                     "headers": {
-                                         "Content-Type": "text/html",
-                                     },
-                                 })),
-                                 types::OutboundPayloadBytes::Some(
-                                     "http_proxy unexpectedly received Circumvented inbound bytes; failing HTTP request"
-                                         .to_string()
-                                         .as_bytes()
-                                         .to_vec()
-                                 ),
-                                 None::<String>,
-                             );
-                             continue;
-                        },
-                    };
+                    let payload = get_payload();
 
-                    let res = process_lib::send_and_await_receive(
-                        username.into(),
-                        types::ProcessIdentifier::Name("http_bindings".into()),
-                        Some(json!({
-                            "action": "request",
-                            "method": message_from_loop["method"],
-                            "path": proxied_path,
-                            "headers": message_from_loop["headers"],
-                            "proxy_path": raw_path,
-                            "query_params": message_from_loop["query_params"],
-                        })),
-                        bytes,
-                    ).unwrap(); // TODO unwrap
-                    let Ok(types::InboundMessage::Response(types::InboundPayload {
-                        source: _,
-                        json: res_json,
-                        bytes: res_bytes,
-                    })) = res else {
-                        panic!("foobar");  //  TODO
-                    };
-
-
-                    print_to_terminal(1, "FINISHED YIELD AND AWAIT");
-                    match res_json {
-                        Some(ref json) => {
-                            if json.contains("Offline") {
-                                let _ = process_lib::send_response(
-                                    Some(serde_json::json!({
-                                        "action": "response",
-                                        "status": 404,
-                                        "headers": {
-                                            "Content-Type": "text/html",
-                                        },
-                                    })),
-                                    types::OutboundPayloadBytes::Some(
-                                        "Node is offline"
-                                            .to_string()
-                                            .as_bytes()
-                                            .to_vec()
-                                    ),
-                                    None::<String>,
-                                );
-                            } else {
-                                let res_bytes = process_lib::make_outbound_bytes_from_noncircumvented_inbound(
-                                    res_bytes,
-                                ).unwrap();
-                                let _ = process_lib::send_response(
-                                    res_json,
-                                    res_bytes,
-                                    None::<String>,
-                                );
-                            }
+                    send_request(
+                        &Address {
+                            node: username.into(),
+                            process: ProcessId::Name("http_bindings".to_string()),
                         },
-                        None => {
-                            let _ = process_lib::send_response(
-                                Some(serde_json::json!({
-                                    "action": "response",
-                                    "status": 404,
-                                    "headers": {
-                                        "Content-Type": "text/html",
-                                    },
-                                })),
-                                types::OutboundPayloadBytes::Some(
-                                    "Not Found"
-                                        .to_string()
-                                        .as_bytes()
-                                        .to_vec()
-                                ),
-                                None::<String>,
-                            );
+                        &Request {
+                            inherit: true,
+                            expects_response: false,
+                            ipc: Some(json!({
+                                "action": "request",
+                                "method": message_json["method"],
+                                "path": proxied_path,
+                                "headers": message_json["headers"],
+                                "proxy_path": raw_path,
+                                "query_params": message_json["query_params"],
+                            }).to_string()),
+                            metadata: None,
                         },
-                    };
+                        None,
+                        payload.as_ref(),
+                    );
+
+                    // if let Ok((_, response_message)) = send_and_await_response(
+                    //     &Address {
+                    //         node: username.into(),
+                    //         process: ProcessId::Name("http_bindings".to_string()),
+                    //     },
+                    //     &Request {
+                    //         inherit: true,
+                    //         expects_response: true,
+                    //         ipc: Some(json!({
+                    //             "action": "request",
+                    //             "method": message_json["method"],
+                    //             "path": proxied_path,
+                    //             "headers": message_json["headers"],
+                    //             "proxy_path": raw_path,
+                    //             "query_params": message_json["query_params"],
+                    //         }).to_string()),
+                    //         metadata: None,
+                    //     },
+                    //     None,
+                    //     payload.as_ref(),
+                    // ) {
+                    //     print_to_terminal(1, "FINISHED YIELD AND AWAIT");
+                    //     match response_message {
+                    //         Message::Response((response_wrapper, _)) => {
+                    //             if let Ok(response) = response_wrapper {
+                    //                 if let Some(response_json) = response.ipc {
+                    //                     if response_json.contains("Offline") {
+                    //                         send_response(
+                    //                             &Response {
+                    //                                 ipc: Some(json!({
+                    //                                     "action": "response",
+                    //                                     "status": 404,
+                    //                                     "headers": {
+                    //                                         "Content-Type": "text/html",
+                    //                                     },
+                    //                                 }).to_string()),
+                    //                                 metadata: None,
+                    //                             },
+                    //                             Some(&Payload {
+                    //                                 mime: Some("text/html".to_string()),
+                    //                                 bytes: "Node is offline"
+                    //                                     .to_string()
+                    //                                     .as_bytes()
+                    //                                     .to_vec(),
+                    //                             }),
+                    //                         );
+                    //                         continue;
+                    //                     } else {
+                    //                         let payload = get_payload();
+
+                    //                         send_response(
+                    //                             &Response {
+                    //                                 ipc: Some(response_json),
+                    //                                 metadata: None,
+                    //                             },
+                    //                             payload.as_ref(),
+                    //                         );
+                    //                         continue;
+                    //                     }
+                    //                 } else {
+                    //                     send_not_found();
+                    //                 }
+                    //             } else {
+                    //                 send_not_found();
+                    //             }
+                    //         }
+                    //         _ => {
+                    //             send_not_found();
+                    //         }
+                    //     }
+                    // } else {
+                    //     send_not_found();
+                    // }
                 }
             } else {
-                let _ = process_lib::send_response(
-                    Some(serde_json::json!({
-                        "action": "response",
-                        "status": 404,
-                        "headers": {
-                            "Content-Type": "text/html",
-                        },
-                    })),
-                    types::OutboundPayloadBytes::Some(
-                        "Not Found"
-                            .to_string()
-                            .as_bytes()
-                            .to_vec()
-                    ),
-                    None::<String>,
-                );
+                send_not_found();
             }
         }
     }

@@ -10,27 +10,20 @@ use ring::signature::{self, KeyPair};
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use warp::{Filter, Rejection, Reply};
-use jwt::{SignWithKey, VerifyWithKey, Error};
+use warp::{Filter, Rejection, Reply, http::{header::{HeaderValue, SET_COOKIE}}};
+use jwt::SignWithKey;
 use hmac::Hmac;
 use sha2::Sha256;
-use serde::{Serialize, Deserialize};
 
 use crate::types::*;
 
 type RegistrationSender = mpsc::Sender<(Registration, Document, Vec<u8>, String)>;
 
-#[derive(Serialize, Deserialize)]
-struct JwtClaims {
-  username: String,
-  expiration: u64,
-}
-
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 pub const ITERATIONS: u32 = 1_000_000;
 pub const DISK_KEY_SALT: &'static [u8; 32] = b"742d35Cc6634C0532925a3b844Bc454e";
 
-fn generate_jwt(jwt_secret_bytes: &[u8], username: String) -> Option<String> {
+pub fn generate_jwt(jwt_secret_bytes: &[u8], username: String) -> Option<String> {
     let jwt_secret: Hmac<Sha256> = match Hmac::new_from_slice(&jwt_secret_bytes) {
         Ok(secret) => secret,
         Err(_) => return None,
@@ -120,7 +113,7 @@ pub async fn register(
     let routes = warp::path("register").and(
         // 1. serve register.html right here
         warp::get()
-            .map(move || warp::reply::html(REGISTER_PAGE.clone()))
+            .map(move || warp::reply::html(REGISTER_PAGE))
             // 2. await a single POST
             //    - username
             //    - password
@@ -178,22 +171,26 @@ async fn handle_put(
     registration: Registration,
     networking_keypair: Document,
     jwt_secret_bytes: [u8; 32],
-    redir_port: u16,
+    _redir_port: u16,
 ) -> Result<impl Reply, Rejection> {
     let token = match generate_jwt(&jwt_secret_bytes, registration.username.clone()) {
         Some(token) => token,
         None => return Err(warp::reject()),
     };
-
-    let response = warp::reply::html(redir_port.to_string());
     let cookie_value = format!("uqbar-auth_{}={};", &registration.username, &token);
-    let response_with_cookie = warp::reply::with_header(response, "set-cookie", cookie_value);
+    let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &registration.username, &token);
+
+    let mut response = warp::reply::html("Success".to_string()).into_response();
+            
+    let headers = response.headers_mut();
+    headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
+    headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
         .send((registration, networking_keypair, jwt_secret_bytes.to_vec(), signature))
         .await
         .unwrap();
-    Ok(response_with_cookie)
+    Ok(response)
 }
 
 /// Serve the login page, just get a password
@@ -288,13 +285,16 @@ async fn handle_password(
         Some(token) => token,
         None => return Err(warp::reject()),
     };
-
-    let response = warp::reply::html("Success".to_string());
     let cookie_value = format!("uqbar-auth_{}={};", &username, &token);
-    let response_with_cookie = warp::reply::with_header(response, "set-cookie", cookie_value);
-    // TODO: set auth cookie in response
+    let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &username, &token);
 
+    let mut response = warp::reply::html("Success".to_string()).into_response();
+            
+    let headers = response.headers_mut();
+    headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
+    headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
+    
     tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
     // TODO unhappy paths where key has changed / can't be decrypted
-    Ok(response_with_cookie)
+    Ok(response)
 }

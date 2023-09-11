@@ -1184,6 +1184,7 @@ async fn make_event_loop(
     send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
@@ -1200,6 +1201,10 @@ async fn make_event_loop(
         senders.insert(
             t::ProcessId::Name("http_client".into()),
             ProcessSender::Runtime(send_to_http_client),
+        );
+        senders.insert(
+            t::ProcessId::Name("encryptor".into()),
+            ProcessSender::Runtime(send_to_encryptor),
         );
         senders.insert(
             t::ProcessId::Name("lfs".into()),
@@ -1221,10 +1226,10 @@ async fn make_event_loop(
         // TODO remove once the modules compile!
 
         let exclude_list: Vec<t::ProcessId> = vec![
-            t::ProcessId::Name("apps_home".into()),
+            // t::ProcessId::Name("apps_home".into()),
             t::ProcessId::Name("explorer".into()),
-            t::ProcessId::Name("http_bindings".into()),
-            t::ProcessId::Name("http_proxy".into()),
+            // t::ProcessId::Name("http_bindings".into()),
+            // t::ProcessId::Name("http_proxy".into()),
             t::ProcessId::Name("process_manager".into()),
             t::ProcessId::Name("hi_lus_lus".into()),
             t::ProcessId::Name("sequencer".into()),
@@ -1408,6 +1413,7 @@ pub async fn kernel(
     send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_encryptor: t::MessageSender,
 ) -> Result<()> {
     let mut config = Config::new();
     config.cache_config_load_default().unwrap();
@@ -1430,6 +1436,7 @@ pub async fn kernel(
             send_to_lfs,
             send_to_http_server,
             send_to_http_client,
+            send_to_encryptor,
             send_to_terminal.clone(),
             engine,
         )

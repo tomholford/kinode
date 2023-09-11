@@ -75,7 +75,7 @@ pub struct Handshake {
 pub async fn networking(
     our: Identity,
     our_ip: String,
-    keypair: Ed25519KeyPair,
+    keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
@@ -83,7 +83,7 @@ pub async fn networking(
     mut message_rx: MessageReceiver,
 ) -> Result<()> {
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
-    let keypair = Arc::new(keypair);
+    let keypair = keypair.clone();
 
     tokio::select! {
         _listener = async {

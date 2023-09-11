@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::{fs, time::timeout};
 
-use crate::http_server::find_open_port;
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
@@ -28,6 +27,7 @@ mod net;
 mod register;
 mod terminal;
 mod types;
+mod encryptor;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -36,6 +36,7 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
+const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -106,14 +107,15 @@ async fn main() {
     // new FS channel: todo merge
     let (lfs_message_sender, lfs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
-    // http server channel (eyre)
+    // http server channel w/ websockets (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
-    let (http_client_message_sender, http_client_message_receiver): (
-        MessageSender,
-        MessageReceiver,
-    ) = mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    let (http_client_sender, http_client_receiver): (MessageSender,MessageReceiver) =
+        mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    // encryptor handles end-to-end encryption for client messages
+    let (encryptor_sender, encryptor_receiver): (MessageSender,MessageReceiver ) =
+        mpsc::channel(ENCRYPTOR_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
@@ -164,11 +166,11 @@ async fn main() {
     // username, address, networking key, and routing info.
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
-    let http_server_port = find_open_port(8080).await.unwrap();
+    let http_server_port = http_server::find_open_port(8080).await.unwrap();
     let (kill_tx, kill_rx) = oneshot::channel::<bool>();
     let keyfile = fs::read(format!("{}/.network.keys", home_directory_path)).await;
 
-    let (our, networking_keypair, _jwt_secret_bytes): (
+    let (our, networking_keypair, jwt_secret_bytes): (
         Identity,
         signature::Ed25519KeyPair,
         Vec<u8>,
@@ -277,7 +279,7 @@ async fn main() {
 
         // TODO: if IP is localhost, assign a router...
         let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
-        let ws_port = find_open_port(9000).await.unwrap();
+        let ws_port = http_server::find_open_port(9000).await.unwrap();
         let our = Identity {
             name: registration.username.clone(),
             address: registration.address.clone(),
@@ -341,67 +343,6 @@ async fn main() {
             process: ProcessId::Name("kernel".into()),
         };
 
-        // send jwt_secret to http_bindings
-        kernel_message_sender
-            .send(KernelMessage {
-                id: rand::random(),
-                source: kernel_address.clone(),
-                target: Address {
-                    node: our.name.clone(),
-                    process: ProcessId::Name("sequentialize".into()),
-                },
-                rsvp: None,
-                message: Message::Request(Request {
-                    inherit: false,
-                    expects_response: false,
-                    ipc: Some(
-                        serde_json::to_string(&SequentializeRequest::QueueMessage(QueueMessage {
-                            target: ProcessId::Name("http_bindings".into()),
-                            request: Request {
-                                inherit: false,
-                                expects_response: false,
-                                ipc: Some(
-                                    serde_json::to_string(
-                                        &serde_json::json!({"action": "set-jwt-secret"}),
-                                    )
-                                    .unwrap(),
-                                ),
-                                metadata: None,
-                            },
-                        }))
-                        .unwrap(),
-                    ),
-                    metadata: None,
-                }),
-                payload: Some(Payload {
-                    mime: None,
-                    bytes: jwt_secret_bytes.to_vec(),
-                }),
-            })
-            .await
-            .unwrap();
-
-        // run sequentialize queue
-        kernel_message_sender
-            .send(KernelMessage {
-                id: rand::random(),
-                source: kernel_address.clone(),
-                target: Address {
-                    node: our.name.clone(),
-                    process: ProcessId::Name("sequentialize".into()),
-                },
-                rsvp: None,
-                message: Message::Request(Request {
-                    inherit: false,
-                    expects_response: false,
-                    ipc: Some(serde_json::to_string(&SequentializeRequest::RunQueue).unwrap()),
-                    metadata: None,
-                }),
-                payload: None,
-            })
-            .await
-            .unwrap();
-
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)
     };
@@ -439,6 +380,8 @@ async fn main() {
      *
      *  if any of these modules fail, the program exits with an error.
      */
+    let networking_keypair_arc = Arc::new(networking_keypair);
+
     let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
     tasks.spawn(kernel::kernel(
         our.clone(),
@@ -453,12 +396,13 @@ async fn main() {
         fs_message_sender,
         lfs_message_sender,
         http_server_sender,
-        http_client_message_sender,
+        http_client_sender,
+        encryptor_sender,
     ));
     tasks.spawn(net::networking(
         our.clone(),
         our_ip,
-        networking_keypair,
+        networking_keypair_arc.clone(),
         pki.clone(),
         kernel_message_sender.clone(),
         network_error_sender,
@@ -489,6 +433,7 @@ async fn main() {
     tasks.spawn(http_server::http_server(
         our.name.clone(),
         http_server_port,
+        jwt_secret_bytes.clone(),
         http_server_receiver,
         kernel_message_sender.clone(),
         print_sender.clone(),
@@ -496,7 +441,14 @@ async fn main() {
     tasks.spawn(http_client::http_client(
         our.name.clone(),
         kernel_message_sender.clone(),
-        http_client_message_receiver,
+        http_client_receiver,
+        print_sender.clone(),
+    ));
+    tasks.spawn(encryptor::encryptor(
+        our.name.clone(),
+        networking_keypair_arc.clone(),
+        kernel_message_sender.clone(),
+        encryptor_receiver,
         print_sender.clone(),
     ));
     // if a runtime task exits, try to recover it,

@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{print_to_terminal, receive, send_request, UqProcess};
+use bindings::{print_to_terminal, receive, send_request, send_requests, UqProcess};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use alloy_sol_types::{sol, SolEnum, SolType, SolCall, SolEvent};
@@ -28,49 +28,75 @@ struct EthEvent {
 }
 
 sol! {
-    // interface IPQI {
-        event CreateEntry(uint64 indexed pqiId, address nftContract, uint256 tokenId,
-            bytes32 publicKey, uint48 ipAndPort, uint64[] routers);
-        event ModifyEntry(uint64 indexed pqiId, address nftContract, uint256 tokenId,
-            bytes32 publicKey, uint48 ipAndPort, uint64[] routers);
-    // }
+    event WsChanged(uint256 indexed node, bytes32 publicKey, uint48 ipAndPort,
+                    bytes32[] routers);
+
+    event NameRegistered(uint256 indexed node, bytes name, address owner);
+
+    // TODO we have to watch other events but for now this is fine
 }
 
 impl UqProcess for Component {
     fn init(our: Address) {
         bindings::print_to_terminal(0, "pqi_indexer: start");
 
-        let event_sub_res = send_request( // TODO send_and_await_response
-            &Address{
-                node: our.node.clone(),
-                process: ProcessId::Name("eth_rpc".to_string()),
-            },
-            &Request{
-                inherit: false, // TODO what
-                expects_response: true,
-                metadata: None,
-                ipc: Some(json!({
-                    // TODO hardcoded goerli deployments
-                    "SubscribeEvents": {
-                        "addresses": ["0x83cc06a336cf7B37ed16A94eEE4aFb7644C50842"],
-                        "from_block": 14212933,
-                        "to_block": null,
-                        "events": [
-                            "CreateEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
-                            "ModifyEntry(uint64,address,uint256,bytes32,uint48,uint64[])",
-                        ],
-                        "topic1": null,
-                        "topic2": null,
-                        "topic3": null,
-                }}).to_string()),
-            },
-            None,
-            None, 
-        );
-
-        // event_sub_res.content.payload.json.map(|json| {
-        //     bindings::print_to_terminal(0, format!("event subscription response: {:?}", json).as_str());
-        // });
+        let event_sub_res = send_requests(&[ // TODO _and_await_response???
+            (
+                Address{
+                    node: our.node.clone(),
+                    process: ProcessId::Name("eth_rpc".to_string()),
+                },
+                Request{
+                    inherit: false, // TODO what
+                    expects_response: true,
+                    metadata: None,
+                    ipc: Some(json!({
+                        // TODO new deployments
+                        // QnsRegistry
+                        "SubscribeEvents": {
+                            "addresses": null, // TODO fill this in with test deployments ["0xBc56878166877a687a9Ba077D098aea3270f7E1c"],
+                            "from_block": 0,
+                            "to_block": null,
+                            "events": [
+                                "NameRegistered(uint256,bytes,address)"
+                            ],
+                            "topic1": null,
+                            "topic2": null,
+                            "topic3": null,
+                    }}).to_string()),
+                },
+                None,
+                None,
+            ),
+            (
+                Address{
+                    node: our.node.clone(),
+                    process: ProcessId::Name("eth_rpc".to_string()),
+                },
+                Request{
+                    inherit: false, // TODO what
+                    expects_response: true,
+                    metadata: None,
+                    ipc: Some(json!({
+                        // TODO new deployments
+                        // PublicResolver
+                        "SubscribeEvents": {
+                            "addresses": null, // TODO fill this in with test deployments later ["0x3Cfbc06A4FAdE3329aA103FC1dcF709D646F4c36"],
+                            "from_block": 0,
+                            "to_block": null,
+                            "events": [
+                                "WsChanged(uint256,bytes32,uint48,bytes32[])",
+                            ],
+                            "events": ["Transfer(address,address,uint256)"],
+                            "topic1": null,
+                            "topic2": null,
+                            "topic3": null,
+                    }}).to_string()),
+                },
+                None,
+                None,
+            )
+        ]);
 
         bindings::print_to_terminal(0, "pqi_indexer: subscribed to events");
 
@@ -91,49 +117,50 @@ impl UqProcess for Component {
             match msg {
                 // anticipating more message types later
                 AllActions::EventSubscription(e) => {
-                    let pqi_id = hex_to_u64(&e.topics[1].to_string()).unwrap(); // TODO u64
+                    bindings::print_to_terminal(0, format!("pqi_indexer: got event: {:?}", e).as_str());
+                    // let pqi_id = hex_to_u64(&e.topics[1].to_string()).unwrap(); // TODO u64
 
-                    let decoded = CreateEntry::decode_data(&decode_hex(&e.data).unwrap(), true).unwrap();
-                    let nft_contract = decoded.0;
-                    let nft_id       = decoded.1.to_string(); // TODO should probably stay a hex string...
-                    let public_key   = hex::encode(decoded.2);
-                    let (ip, port)   = split_ip_and_port(decoded.3);
-                    let routers      = decoded.4;
+                    // let decoded = CreateEntry::decode_data(&decode_hex(&e.data).unwrap(), true).unwrap();
+                    // let nft_contract = decoded.0;
+                    // let nft_id       = decoded.1.to_string(); // TODO should probably stay a hex string...
+                    // let public_key   = hex::encode(decoded.2);
+                    // let (ip, port)   = split_ip_and_port(decoded.3);
+                    // let routers      = decoded.4;
                     
-                    let json_payload = json!({
-                        "PqiUpdate": {
-                            "pqi_id": pqi_id,
-                            "nft_contract": nft_contract.to_string(),
-                            "nft_id": nft_id,
-                            "public_key": format!("0x{}", public_key),
-                            "ip": format!(
-                                "{}.{}.{}.{}",
-                                (ip >> 24) & 0xFF,
-                                (ip >> 16) & 0xFF,
-                                (ip >> 8) & 0xFF,
-                                ip & 0xFF
-                            ),
-                            "port": port,
-                            "routers": routers,
-                        }
-                    }).to_string();
+                    // let json_payload = json!({
+                    //     "PqiUpdate": {
+                    //         "pqi_id": pqi_id,
+                    //         "nft_contract": nft_contract.to_string(),
+                    //         "nft_id": nft_id,
+                    //         "public_key": format!("0x{}", public_key),
+                    //         "ip": format!(
+                    //             "{}.{}.{}.{}",
+                    //             (ip >> 24) & 0xFF,
+                    //             (ip >> 16) & 0xFF,
+                    //             (ip >> 8) & 0xFF,
+                    //             ip & 0xFF
+                    //         ),
+                    //         "port": port,
+                    //         "routers": routers,
+                    //     }
+                    // }).to_string();
 
-                    bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
+                    // bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
                     
-                    send_request(
-                        &Address{
-                            node: our.node.clone(),
-                            process: ProcessId::Name("net".to_string()),
-                        },
-                        &Request{
-                            inherit: false,
-                            expects_response: false,
-                            metadata: None,
-                            ipc: Some(json_payload),
-                        },
-                        None,
-                        None, 
-                    );
+                    // send_request(
+                    //     &Address{
+                    //         node: our.node.clone(),
+                    //         process: ProcessId::Name("net".to_string()),
+                    //     },
+                    //     &Request{
+                    //         inherit: false,
+                    //         expects_response: false,
+                    //         metadata: None,
+                    //         ipc: Some(json_payload),
+                    //     },
+                    //     None,
+                    //     None, 
+                    // );
                 }
             }
         }

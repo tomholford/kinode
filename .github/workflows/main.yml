@@ -1,0 +1,25 @@
+- name: Lint Action
+  # You may pin to the exact commit or the version.
+  # uses: wearerequired/lint-action@548d8a7c4b04d3553d32ed5b6e91eb171e10e7bb
+  uses: wearerequired/lint-action@v2.3.0
+  with:
+    # The GitHub token used to authenticated with GitHub.
+    github_token: # optional, default is ${{ github.token }}
+    # Whether the workflow run should also fail when linter failures are detected
+    continue_on_error: # optional, default is true
+    # Whether linters should try to fix code style issues automatically
+    auto_fix: # optional, default is false
+    # Whether to commit and push the changes made by auto_fix
+    commit: # optional, default is true
+    # Bypass the pre-commit and pre-push git hooks
+    git_no_verify: # optional, default is false
+    # Username for auto-fix commits
+    git_name: # optional, default is Lint Action
+    # Email address for auto-fix commits
+    git_email: # optional, default is lint-action@samuelmeuli.com
+    # Template for auto-fix commit messages. The "${linter}" variable can be used to insert the name of the linter which has created the auto-fix
+    commit_message: # optional, default is Fix code style issues with ${linter}
+    # Template for the name of the check run. The "${linter}" and "${dir}" variables can be used to insert the name and directory of the linter.
+    check_name: # optional, default is ${linter}
+    # Whether the check run should conclude with a neutral status instead of success when the linter finds only warnings
+    neutral_check_on_warning: # optional, default is false

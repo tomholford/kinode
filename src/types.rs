@@ -542,8 +542,8 @@ impl HttpServerError {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
-  pub username: String,
-  pub expiration: u64,
+    pub username: String,
+    pub expiration: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -586,9 +586,9 @@ pub struct ServerAction {
 pub enum HttpServerMessage {
     WebSocketPush(WebSocketPush),
     ServerAction(ServerAction),
-    WsRegister(WsRegister), // Coming from a proxy
-    WsProxyDisconnect(WsProxyDisconnect), // Coming from a proxy
-    WsMessage(WsMessage), // Coming from a proxy
+    WsRegister(WsRegister),                 // Coming from a proxy
+    WsProxyDisconnect(WsProxyDisconnect),   // Coming from a proxy
+    WsMessage(WsMessage),                   // Coming from a proxy
     EncryptedWsMessage(EncryptedWsMessage), // Coming from a proxy
 }
 
@@ -621,7 +621,7 @@ pub struct EncryptedWsMessage {
     pub channel_id: String,
     pub target: Address,
     pub encrypted: String, // Encrypted JSON as hex with the 32-byte authentication tag appended
-    pub nonce: String, // Hex of the 12-byte nonce
+    pub nonce: String,     // Hex of the 12-byte nonce
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1,19 +1,19 @@
-use anyhow::Result;
-use crate::types::*;
-use crate::register;
 use crate::http_server::server_fns::*;
+use crate::register;
+use crate::types::*;
+use anyhow::Result;
 
-use serde_urlencoded;
-use futures::StreamExt;
 use futures::SinkExt;
+use futures::StreamExt;
+use serde_urlencoded;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::oneshot;
-use warp::{Filter, Reply};
+use tokio::sync::Mutex;
 use warp::http::{header::HeaderValue, StatusCode};
-use warp::ws::{Ws, WebSocket};
+use warp::ws::{WebSocket, Ws};
+use warp::{Filter, Reply};
 
 mod server_fns;
 
@@ -68,16 +68,19 @@ pub async fn http_server(
                     ws_proxies.clone(),
                     jwt_secret_bytes.clone(),
                     send_to_loop.clone(),
-                    print_tx.clone()
-                ).await {
-                    send_to_loop.send(
-                        make_error_message(
+                    print_tx.clone(),
+                )
+                .await
+                {
+                    send_to_loop
+                        .send(make_error_message(
                             our_name.clone(),
                             id.clone(),
                             source.clone(),
-                            e
-                        )
-                    ).await.unwrap();
+                            e,
+                        ))
+                        .await
+                        .unwrap();
                 }
             }
         }
@@ -101,9 +104,22 @@ async fn handle_websocket(
 
     while let Some(Ok(msg)) = read_stream.next().await {
         if msg.is_binary() {
-            let _ = print_tx.send(Printout { verbosity: 1, content: format!("GOT WEBSOCKET BYTES") }).await;
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!("GOT WEBSOCKET BYTES"),
+                })
+                .await;
             let bytes = msg.as_bytes();
-            let _ = print_tx.send(Printout { verbosity: 1, content: format!("WEBSOCKET MESSAGE (BYTES) {}", String::from_utf8(bytes.to_vec()).unwrap_or_default()) }).await;
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 1,
+                    content: format!(
+                        "WEBSOCKET MESSAGE (BYTES) {}",
+                        String::from_utf8(bytes.to_vec()).unwrap_or_default()
+                    ),
+                })
+                .await;
             match serde_json::from_slice::<WebSocketClientMessage>(&bytes) {
                 Ok(parsed_msg) => {
                     handle_incoming_ws(
@@ -114,17 +130,28 @@ async fn handle_websocket(
                         send_to_loop.clone(),
                         print_tx.clone(),
                         write_stream.clone(),
-                        ws_id.clone()
-                    ).await;
-                },
+                        ws_id.clone(),
+                    )
+                    .await;
+                }
                 Err(e) => {
-                    let _ = print_tx.send(Printout { verbosity: 1, content: format!("Failed to parse WebSocket message: {}", e) }).await;
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 1,
+                            content: format!("Failed to parse WebSocket message: {}", e),
+                        })
+                        .await;
                 }
             }
         } else if msg.is_text() {
             match msg.to_str() {
                 Ok(msg_str) => {
-                    let _ = print_tx.send(Printout { verbosity: 1, content: format!("WEBSOCKET MESSAGE (TEXT): {}", msg_str) }).await;
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 1,
+                            content: format!("WEBSOCKET MESSAGE (TEXT): {}", msg_str),
+                        })
+                        .await;
                     match serde_json::from_str(&msg_str) {
                         Ok(parsed_msg) => {
                             handle_incoming_ws(
@@ -135,13 +162,14 @@ async fn handle_websocket(
                                 send_to_loop.clone(),
                                 print_tx.clone(),
                                 write_stream.clone(),
-                                ws_id.clone()
-                            ).await;
+                                ws_id.clone(),
+                            )
+                            .await;
                         }
-                        _ => ()
+                        _ => (),
                     }
                 }
-                _ => ()
+                _ => (),
             }
         } else if msg.is_close() {
             // Delete the websocket from the map
@@ -155,8 +183,9 @@ async fn handle_websocket(
                             our.clone(),
                             channel_id.clone(),
                             send_to_loop.clone(),
-                            print_tx.clone()
-                        ).await;
+                            print_tx.clone(),
+                        )
+                        .await;
                     }
                 }
             }
@@ -182,10 +211,7 @@ async fn http_handle_messages(
             let mut senders = http_response_senders.lock().await;
 
             match response {
-                Ok(Response {
-                    ipc,
-                    metadata: _,
-                }) => {
+                Ok(Response { ipc, metadata: _ }) => {
                     let Some(ref json) = ipc else {
                         return Err(HttpServerError::NoJson);
                     };
@@ -197,28 +223,66 @@ async fn http_handle_messages(
                     let bytes = payload.bytes;
 
                     if let Ok(mut request) = serde_json::from_str::<HttpResponse>(json) {
-                        let _ = print_tx.send(Printout {verbosity: 1, content: format!("ID: {}", id.to_string())}).await;
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!("ID: {}", id.to_string()),
+                            })
+                            .await;
                         for (id, _) in senders.iter() {
-                            let _ = print_tx.send(Printout {verbosity: 1, content: format!("existing: {}", id.to_string())}).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("existing: {}", id.to_string()),
+                                })
+                                .await;
                         }
 
                         match senders.remove(&id) {
                             Some((path, channel)) => {
-                                let segments: Vec<&str> = path.split('/').filter(|&segment| !segment.is_empty()).collect();
+                                let segments: Vec<&str> = path
+                                    .split('/')
+                                    .filter(|&segment| !segment.is_empty())
+                                    .collect();
 
                                 // If we're getting back a /login from a proxy (or our own node), then we should generate a jwt from the secret + the name of the ship, and then attach it to a header
-                                if request.status < 400 && (segments.len() == 1 || segments.len() == 4) && matches!(segments.last(), Some(&"login")) {
-                                    if let Some(auth_cookie) = request.headers.get("set-cookie"){
+                                if request.status < 400
+                                    && (segments.len() == 1 || segments.len() == 4)
+                                    && matches!(segments.last(), Some(&"login"))
+                                {
+                                    if let Some(auth_cookie) = request.headers.get("set-cookie") {
                                         let mut ws_auth_username = our.clone();
-                                        if segments.len() == 4 && matches!(segments.get(0), Some(&"http-proxy")) && matches!(segments.get(1), Some(&"serve")) {
+                                        if segments.len() == 4
+                                            && matches!(segments.get(0), Some(&"http-proxy"))
+                                            && matches!(segments.get(1), Some(&"serve"))
+                                        {
                                             if let Some(segment) = segments.get(2) {
                                                 ws_auth_username = segment.to_string();
                                             }
                                         }
-                                        if let Some(token) = register::generate_jwt(jwt_secret_bytes.to_vec().as_slice(), ws_auth_username.clone()) {
-                                            let auth_cookie_with_ws = format!("{}; uqbar-ws-auth_{}={};", auth_cookie, ws_auth_username.clone(), token);
-                                            request.headers.insert("set-cookie".to_string(), auth_cookie_with_ws);
-                                            let _ = print_tx.send(Printout {verbosity: 1, content: format!("SET WS AUTH COOKIE WITH USERNAME: {}", ws_auth_username)}).await;
+                                        if let Some(token) = register::generate_jwt(
+                                            jwt_secret_bytes.to_vec().as_slice(),
+                                            ws_auth_username.clone(),
+                                        ) {
+                                            let auth_cookie_with_ws = format!(
+                                                "{}; uqbar-ws-auth_{}={};",
+                                                auth_cookie,
+                                                ws_auth_username.clone(),
+                                                token
+                                            );
+                                            request.headers.insert(
+                                                "set-cookie".to_string(),
+                                                auth_cookie_with_ws,
+                                            );
+                                            let _ = print_tx
+                                                .send(Printout {
+                                                    verbosity: 1,
+                                                    content: format!(
+                                                        "SET WS AUTH COOKIE WITH USERNAME: {}",
+                                                        ws_auth_username
+                                                    ),
+                                                })
+                                                .await;
                                         }
                                     }
                                 }
@@ -230,13 +294,21 @@ async fn http_handle_messages(
                                 });
                             }
                             None => {
-                                panic!("http_server: inconsistent state, no key found for id {}", id);
+                                panic!(
+                                    "http_server: inconsistent state, no key found for id {}",
+                                    id
+                                );
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = print_tx.send(Printout {verbosity: 1, content: format!("GOT HTTP RESPONSE ERROR")}).await;
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 1,
+                            content: format!("GOT HTTP RESPONSE ERROR"),
+                        })
+                        .await;
                     let mut error_headers = HashMap::new();
                     error_headers.insert("Content-Type".to_string(), "text/html".to_string());
                     match senders.remove(&id) {
@@ -248,12 +320,14 @@ async fn http_handle_messages(
                             });
                         }
                         None => {
-                            panic!("http_server: inconsistent state, no key found for id {}", id);
+                            panic!(
+                                "http_server: inconsistent state, no key found for id {}",
+                                id
+                            );
                         }
                     }
                 }
             }
-
         }
         Message::Request(Request {
             expects_response,
@@ -277,7 +351,9 @@ async fn http_handle_messages(
                             let mut ws_map = websockets.lock().await;
                             let send_text = is_text.unwrap_or(false);
                             let response_data = if send_text {
-                                warp::ws::Message::text(String::from_utf8(bytes.clone()).unwrap_or_default())
+                                warp::ws::Message::text(
+                                    String::from_utf8(bytes.clone()).unwrap_or_default(),
+                                )
                             } else {
                                 warp::ws::Message::binary(bytes.clone())
                             };
@@ -332,18 +408,21 @@ async fn http_handle_messages(
                             if let Some(node_map) = ws_map.get_mut(&target.node) {
                                 if let Some(socket_id) = &target.id {
                                     if let Some(ws_map) = node_map.get_mut(socket_id) {
-
                                         // Iterate over ws_map values and send message to all websockets
                                         for ws in ws_map.values_mut() {
                                             let mut locked_write_stream = ws.lock().await;
-                                            let _ = locked_write_stream.send(response_data.clone()).await; // TODO: change this to binary
+                                            let _ = locked_write_stream
+                                                .send(response_data.clone())
+                                                .await; // TODO: change this to binary
                                         }
                                     } else {
                                         // Send to all websockets
                                         for ws_map in node_map.values_mut() {
                                             for ws in ws_map.values_mut() {
                                                 let mut locked_write_stream = ws.lock().await;
-                                                let _ = locked_write_stream.send(response_data.clone()).await;
+                                                let _ = locked_write_stream
+                                                    .send(response_data.clone())
+                                                    .await;
                                             }
                                         }
                                     }
@@ -352,7 +431,9 @@ async fn http_handle_messages(
                                     for ws_map in node_map.values_mut() {
                                         for ws in ws_map.values_mut() {
                                             let mut locked_write_stream = ws.lock().await;
-                                            let _ = locked_write_stream.send(response_data.clone()).await;
+                                            let _ = locked_write_stream
+                                                .send(response_data.clone())
+                                                .await;
                                         }
                                     }
                                 }
@@ -377,9 +458,12 @@ async fn http_handle_messages(
                                     message: Message::Request(Request {
                                         inherit: false,
                                         expects_response: false,
-                                        ipc: Some(serde_json::json!({
-                                            "action": "set-jwt-secret"
-                                        }).to_string()),
+                                        ipc: Some(
+                                            serde_json::json!({
+                                                "action": "set-jwt-secret"
+                                            })
+                                            .to_string(),
+                                        ),
                                         metadata: None,
                                     }),
                                     payload: Some(Payload {
@@ -391,23 +475,49 @@ async fn http_handle_messages(
                                 send_to_loop.send(message).await.unwrap();
                             }
                         }
-                        HttpServerMessage::WsRegister(WsRegister { auth_token, ws_auth_token: _, channel_id }) => {
-                            if let Ok(node) = parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec()) {
-                                add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone()).await;
+                        HttpServerMessage::WsRegister(WsRegister {
+                            auth_token,
+                            ws_auth_token: _,
+                            channel_id,
+                        }) => {
+                            if let Ok(node) =
+                                parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
+                            {
+                                add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
+                                    .await;
                             }
                         }
                         HttpServerMessage::WsProxyDisconnect(WsProxyDisconnect { channel_id }) => {
-                            let _ = print_tx.send(Printout {verbosity: 1,content: format!("WsDisconnect")}).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("WsDisconnect"),
+                                })
+                                .await;
                             // Check the ws_proxies for this channel_id, if it exists, delete the node that forwarded
                             let mut locked_proxies = ws_proxies.lock().await;
                             if let Some(proxy_nodes) = locked_proxies.get_mut(&channel_id) {
-                                let _ = print_tx.send(Printout {verbosity: 1,content: format!("disconnected")}).await;
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 1,
+                                        content: format!("disconnected"),
+                                    })
+                                    .await;
                                 proxy_nodes.remove(&source.node);
                             }
                         }
-                        HttpServerMessage::WsMessage(WsMessage { auth_token, ws_auth_token: _, channel_id, target, json }) => {
-                            if let Ok(node) = parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec()) {
-                                add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone()).await;
+                        HttpServerMessage::WsMessage(WsMessage {
+                            auth_token,
+                            ws_auth_token: _,
+                            channel_id,
+                            target,
+                            json,
+                        }) => {
+                            if let Ok(node) =
+                                parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
+                            {
+                                add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
+                                    .await;
 
                                 handle_ws_message(
                                     target.clone(),
@@ -415,12 +525,27 @@ async fn http_handle_messages(
                                     our.clone(),
                                     send_to_loop.clone(),
                                     print_tx.clone(),
-                                ).await;
+                                )
+                                .await;
                             }
                         }
-                        HttpServerMessage::EncryptedWsMessage(EncryptedWsMessage { auth_token, ws_auth_token: _, channel_id, target, encrypted, nonce }) => {
-                            if let Ok(node) = parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec()) {
-                                add_ws_proxy(ws_proxies.clone(), channel_id.clone(), source.node.clone()).await;
+                        HttpServerMessage::EncryptedWsMessage(EncryptedWsMessage {
+                            auth_token,
+                            ws_auth_token: _,
+                            channel_id,
+                            target,
+                            encrypted,
+                            nonce,
+                        }) => {
+                            if let Ok(node) =
+                                parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
+                            {
+                                add_ws_proxy(
+                                    ws_proxies.clone(),
+                                    channel_id.clone(),
+                                    source.node.clone(),
+                                )
+                                .await;
 
                                 handle_encrypted_ws_message(
                                     target.clone(),
@@ -430,11 +555,12 @@ async fn http_handle_messages(
                                     nonce.clone(),
                                     send_to_loop.clone(),
                                     print_tx.clone(),
-                                ).await;
+                                )
+                                .await;
                             }
                         }
                     }
-                },
+                }
                 Err(_) => (),
             }
         }
@@ -465,18 +591,26 @@ async fn http_serve(
         .and(warp::any().map(move || websockets.clone()))
         .and(warp::any().map(move || cloned_msg_tx.clone()))
         .and(warp::any().map(move || cloned_print_tx.clone()))
-        .map(|
-            ws_connection: Ws,
-            our: String,
-            jwt_secret_bytes: Vec<u8>,
-            websockets: WebSockets,
-            send_to_loop: MessageSender,
-            print_tx: PrintSender
-        | {
-            ws_connection.on_upgrade(move |ws: WebSocket| async move {
-                handle_websocket(ws, our, jwt_secret_bytes, websockets, send_to_loop, print_tx).await
-            })
-        });
+        .map(
+            |ws_connection: Ws,
+             our: String,
+             jwt_secret_bytes: Vec<u8>,
+             websockets: WebSockets,
+             send_to_loop: MessageSender,
+             print_tx: PrintSender| {
+                ws_connection.on_upgrade(move |ws: WebSocket| async move {
+                    handle_websocket(
+                        ws,
+                        our,
+                        jwt_secret_bytes,
+                        websockets,
+                        send_to_loop,
+                        print_tx,
+                    )
+                    .await
+                })
+            },
+        );
 
     let print_tx_move = print_tx.clone();
     let filter = warp::filters::method::method()
@@ -512,7 +646,9 @@ async fn http_serve(
             content: format!("http_server: running on: {}", our_port),
         })
         .await;
-    warp::serve(filter_with_ws).run(([0, 0, 0, 0], our_port)).await;
+    warp::serve(filter_with_ws)
+        .run(([0, 0, 0, 0], our_port))
+        .await;
 }
 
 async fn handler(
@@ -545,13 +681,16 @@ async fn handler(
         message: Message::Request(Request {
             inherit: false,
             expects_response: true,
-            ipc: Some(serde_json::json!({
-                "action": "request".to_string(),
-                "method": method.to_string(),
-                "path": path_str.clone(),
-                "headers": serialize_headers(&headers),
-                "query_params": query_params,
-            }).to_string()),
+            ipc: Some(
+                serde_json::json!({
+                    "action": "request".to_string(),
+                    "method": method.to_string(),
+                    "path": path_str.clone(),
+                    "headers": serialize_headers(&headers),
+                    "query_params": query_params,
+                })
+                .to_string(),
+            ),
             metadata: None,
         }),
         payload: Some(Payload {
@@ -582,7 +721,10 @@ async fn handler(
     for (header_name, header_value) in deserialize_headers(from_channel.headers).iter() {
         if header_name == "set-cookie" || header_name == "Set-Cookie" {
             if let Ok(cookie) = header_value.to_str() {
-                let cookie_headers: Vec<&str> = cookie.split("; ").filter(|&cookie| !cookie.is_empty()).collect();
+                let cookie_headers: Vec<&str> = cookie
+                    .split("; ")
+                    .filter(|&cookie| !cookie.is_empty())
+                    .collect();
                 for cookie_header in cookie_headers {
                     if let Ok(valid_cookie) = HeaderValue::from_str(cookie_header) {
                         existing_headers.append(header_name, valid_cookie);

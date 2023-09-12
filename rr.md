@@ -62,3 +62,18 @@ It is possible to use both the payload field and the IPC field of a message at t
 Messages that result in networking failures are returned to the process that created them, as an Error. There are two kinds of networking errors: Offline and Timeout. Offline means the remote target node cannot be reached. Timeout means that the target node is reachable, but the message was not sent within 5 seconds. (THIS NUMBER SUBJECT TO CHANGE, COULD BE UP TO 30)
 
 A network error will give the process the original message along with any payload or context, so the process can handle re-sending, crashing, or otherwise dealing with the failure as it sees fit. If the error comes from a response, the process may send a response again: it will be directed towards the original outstanding request that the failed response was for.
+
+### Capabilities
+
+Processes, and apps composed of them, must acquire capabilities from the system in order to perform system-level operations. Processes themselves can also produce capabilities in order to give them to other processes. For more information about the general capabilities-based security paradigm, [insert link to good article here].
+
+Examples of capabilities:
+
+- access to files:
+    When a file is saved by a process, the filesystem returns a handle to that file upon success. This handle is the only way to read or write to that file. The process can clone the handle and share it via message with another process, or split the handle and only clone and share the 'read' or 'write' aspect.
+
+- access to networking:
+    TODO does a process need a cap granted to it at launch to "do networking"?
+
+- access to other processes:
+    if you have the handle (AKA identity) for a process, you can message it. how do you get that handle? someone has to give it to you, via a message. if a process wants to be accessible by anyone, it should pick a *name* that can be shared out-of-band.

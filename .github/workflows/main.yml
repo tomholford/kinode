@@ -1,25 +1,13 @@
-name: Rust
+name: Rustfmt
 
-on:
-  pull_request:
-    branches: [ "main" ]
-
-env:
-  CARGO_TERM_COLOR: always
+on: push
 
 jobs:
-  build:
-
+  format:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-    - run: rustup toolchain install nightly
-    - name: rust-rustfmt-check
-      # You may pin to the exact commit or the version.
-      # uses: mbrobbel/rustfmt-check@d8a22d8a78264c51e7439cc9a2d9f607cc8be328
-      uses: mbrobbel/rustfmt-check@0.8.0
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        # Output mode (commit or review)
-        mode: review # optional, default is commit
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mbrobbel/rustfmt-check@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

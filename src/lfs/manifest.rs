@@ -1,3 +1,5 @@
+use super::wal::ToDelete;
+use crate::types::{FileSystemError, ProcessId};
 use blake3::Hasher;
 ///  append-only log file of your local filesystem (and backups)
 use serde::{Deserialize, Serialize};
@@ -7,8 +9,6 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{self, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::RwLock;
-use super::wal::ToDelete;
-use crate::types::{FileSystemError, ProcessId};
 
 //   ON-DISK, MANIFEST
 #[derive(Serialize, Deserialize, Clone)]
@@ -99,10 +99,7 @@ impl Manifest {
         read_lock.values().map(|file| file.hash).collect()
     }
 
-    pub async fn add_local(
-        &self,
-        entry: &BackupEntry,
-    ) -> Result<(), FileSystemError> {
+    pub async fn add_local(&self, entry: &BackupEntry) -> Result<(), FileSystemError> {
         let mut manifest_file = self.manifest_file.write().await;
 
         let record = ManifestRecord::Backup(entry.clone());
@@ -111,7 +108,7 @@ impl Manifest {
 
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&entry_length.to_le_bytes()); // add the metadata length prefix
-        buffer.extend_from_slice(&serialized_entry);           // add the serialized metadata
+        buffer.extend_from_slice(&serialized_entry); // add the serialized metadata
 
         if let Err(e) = manifest_file.write_all(&buffer).await {
             return Err(FileSystemError::LFSError {
@@ -124,7 +121,8 @@ impl Manifest {
 
         if let Some(process) = &entry.process {
             let mut wprocess_state = self.process_state.write().await;
-            wprocess_state.insert(process.clone(),
+            wprocess_state.insert(
+                process.clone(),
                 InMemoryFile {
                     hash: entry.file_hash,
                     file_type: entry.file_type,
@@ -147,10 +145,18 @@ impl Manifest {
         Ok(())
     }
 
-    pub async fn read(&self, file_uuid: u128, start: Option<u64>, length: Option<u64>) -> Result<Vec<u8>, FileSystemError> {
-        let file = self.get_by_uuid(&file_uuid).await.ok_or_else(|| FileSystemError::LFSError {
-            error: format!("no file found for id: {:?}", file_uuid),
-        })?;
+    pub async fn read(
+        &self,
+        file_uuid: u128,
+        start: Option<u64>,
+        length: Option<u64>,
+    ) -> Result<Vec<u8>, FileSystemError> {
+        let file = self
+            .get_by_uuid(&file_uuid)
+            .await
+            .ok_or_else(|| FileSystemError::LFSError {
+                error: format!("no file found for id: {:?}", file_uuid),
+            })?;
 
         let data = match file.file_type {
             FileType::Appendable => {
@@ -195,18 +201,15 @@ impl Manifest {
                 let mut hash = [0u8; 32];
                 hash.copy_from_slice(&file_hash);
 
-
                 if self.get_by_hash(&hash).await.is_none() {
                     if !process_hashes.contains(&hash) {
                         let _ = fs::remove_file(path).await;
                     }
                 }
             }
-
         }
         Ok(())
     }
-
 
     pub async fn add_delete(&self, file: &ToDelete) -> Result<(), FileSystemError> {
         let file_uuid = match file {
@@ -223,7 +226,7 @@ impl Manifest {
         };
 
         if file_uuid == 0 {
-            return Ok(());  // pmwrite case
+            return Ok(()); // pmwrite case
         }
 
         let entry = ManifestRecord::Delete(file_uuid.clone());
@@ -254,7 +257,11 @@ impl Manifest {
     }
 
     // note: in-mem only
-    pub async fn insert(&self, file_uuid: u128, new_file: InMemoryFile) -> Result<(), FileSystemError> {
+    pub async fn insert(
+        &self,
+        file_uuid: u128,
+        new_file: InMemoryFile,
+    ) -> Result<(), FileSystemError> {
         let mut wmanifest = self.manifest.write().await;
         let mut whash_index = self.hash_index.write().await;
 
@@ -323,15 +330,15 @@ async fn load_manifest(
                         },
                     );
                 } else {
-                manifest.insert(
-                    entry.file_uuid,
-                    InMemoryFile {
-                        hash: entry.file_hash,
-                        file_type: entry.file_type,
-                        hasher: Hasher::new(),
-                        file_length: entry.file_length,
-                    },
-                );
+                    manifest.insert(
+                        entry.file_uuid,
+                        InMemoryFile {
+                            hash: entry.file_hash,
+                            file_type: entry.file_type,
+                            hasher: Hasher::new(),
+                            file_length: entry.file_length,
+                        },
+                    );
                 }
                 // move to the next position after the metadata,
                 current_position += 8 + metadata_length as u64;
@@ -392,7 +399,7 @@ async fn verify_manifest(
             }
             FileType::Immutable => {
                 hash_index.insert(in_memory_file.hash, *uuid);
-            },
+            }
             FileType::Writeable => {
                 //  todo chunking, replay
                 hash_index.insert(in_memory_file.hash, *uuid);

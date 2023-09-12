@@ -234,7 +234,9 @@ pub async fn fs_sender(
     //  TODO: store or back up in DB/kv?
     while let Some(km) = recv_in_fs.recv().await {
         let ProcessId::Name(source_process) = &km.source.process else {
-            return Err(anyhow::anyhow!("filesystem: require source identifier contain process name"))
+            return Err(anyhow::anyhow!(
+                "filesystem: require source identifier contain process name"
+            ));
             // return Err(FileSystemError::FsError {
             //     what: "to_absolute_path".into(),
             //     path: "home_directory_path".into(),
@@ -346,11 +348,12 @@ async fn handle_request(
         ipc: Some(ipc),
         metadata, // we return this to Requester for kernel reasons
         ..
-    }) = message else {
+    }) = message
+    else {
         return Err(FileSystemError::BadJson {
             json: "".into(),
             error: "not a Request with payload".into(),
-        })
+        });
     };
 
     let request: FileSystemRequest = match serde_json::from_str(&ipc) {
@@ -370,7 +373,7 @@ async fn handle_request(
             what: "to_absolute_path".into(),
             path: "home_directory_path".into(),
             error: "need source process name".into(),
-        })
+        });
     };
     // let file_path = get_file_path(&request.uri_string).await;
     let file_path =
@@ -432,7 +435,9 @@ async fn handle_request(
         }
         FileSystemAction::Write => {
             let Some(payload) = payload else {
-                return Err(FileSystemError::BadBytes { action: "Write".into() })
+                return Err(FileSystemError::BadBytes {
+                    action: "Write".into(),
+                });
             };
             if let Err(e) = fs::write(&file_path, payload.bytes).await {
                 return Err(FileSystemError::WriteFailed {
@@ -673,7 +678,9 @@ async fn handle_request(
                 }
             };
             let Some(payload) = payload else {
-                return Err(FileSystemError::BadBytes { action: "Append".into() })
+                return Err(FileSystemError::BadBytes {
+                    action: "Append".into(),
+                });
             };
             if let Err(e) = file.write_all_buf(&mut Bytes::from(payload.bytes)).await {
                 return Err(FileSystemError::WriteFailed {

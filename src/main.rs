@@ -18,6 +18,7 @@ use tokio::{fs, time::timeout};
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
+mod encryptor;
 mod filesystem;
 mod http_client;
 mod http_server;
@@ -27,7 +28,6 @@ mod net;
 mod register;
 mod terminal;
 mod types;
-mod encryptor;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -111,10 +111,10 @@ async fn main() {
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
-    let (http_client_sender, http_client_receiver): (MessageSender,MessageReceiver) =
+    let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
     // encryptor handles end-to-end encryption for client messages
-    let (encryptor_sender, encryptor_receiver): (MessageSender,MessageReceiver ) =
+    let (encryptor_sender, encryptor_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(ENCRYPTOR_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
@@ -337,11 +337,6 @@ async fn main() {
         )
         .await
         .unwrap();
-
-        let kernel_address = Address {
-            node: our.name.clone(),
-            process: ProcessId::Name("kernel".into()),
-        };
 
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)

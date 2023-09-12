@@ -631,7 +631,10 @@ async fn peer_handler(
                 }
                 _ => {
                     if socket_tx.is_closed() {
-                        result_tx.unwrap().send(Err(NetworkErrorKind::Offline)).unwrap();
+                        result_tx
+                            .unwrap()
+                            .send(Err(NetworkErrorKind::Offline))
+                            .unwrap();
                     } else {
                         let _ = socket_tx.send((message, result_tx));
                     }

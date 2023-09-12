@@ -196,6 +196,18 @@ pub struct Printout {
 pub type Rsvp = Option<Address>;
 
 //
+//  capabilities, managed by kernel
+//
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Capability {
+    pub issuer: Address,
+    pub name: String,
+    pub params: Option<String>, // JSON-string
+    // pub signature: String, // signed by the kernel, so we can verify that the kernel issued it
+}
+
+//
 //  boot/startup specific types???
 //
 

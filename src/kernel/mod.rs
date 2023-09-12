@@ -1,8 +1,10 @@
 use anyhow::Result;
+use ring::signature;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use wasmtime::component::*;
@@ -37,6 +39,7 @@ struct Process {
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
     contexts: HashMap<u64, ProcessContext>,
+    capabilities: std::collections::HashSet<t::Capability>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
 }
 
@@ -671,6 +674,7 @@ async fn make_process_loop(
                 send_to_terminal: send_to_terminal.clone(),
                 prompting_message: None,
                 contexts: HashMap::new(),
+                capabilities: std::collections::HashSet::new(),
                 message_queue: VecDeque::new(),
             },
             table,
@@ -1402,6 +1406,7 @@ async fn make_event_loop(
 /// kernel entry point. creates event loop which contains all WASM processes
 pub async fn kernel(
     our: t::Identity,
+    keypair: Arc<signature::Ed25519KeyPair>,
     home_directory_path: String,
     process_map: ProcessMap,
     send_to_loop: t::MessageSender,

@@ -380,6 +380,7 @@ async fn main() {
     let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
     tasks.spawn(kernel::kernel(
         our.clone(),
+        networking_keypair_arc.clone(),
         home_directory_path.into(),
         kernel_process_map,
         kernel_message_sender.clone(),

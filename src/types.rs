@@ -204,7 +204,7 @@ pub struct Capability {
     pub issuer: Address,
     pub name: String,
     pub params: Option<String>, // JSON-string
-    // pub signature: String, // signed by the kernel, so we can verify that the kernel issued it
+                                // pub signature: String, // signed by the kernel, so we can verify that the kernel issued it
 }
 
 //

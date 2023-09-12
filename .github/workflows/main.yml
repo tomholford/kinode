@@ -16,6 +16,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    # selecting a toolchain either by action or manual `rustup` calls should happen
+    # before the plugin, as the cache uses the current rustc version as its cache key
+    - run: |
+        rustup toolchain install nightly
+        cargo install wasm-tools
+        rustup target add wasm32-wasi
+        rustup target add wasm32-wasi --toolchain nightly
+        cargo install cargo-wasi
     - name: Cargo Cache
       uses: actions/cache@v1
       with:
@@ -35,12 +43,6 @@ jobs:
           ${{ runner.os }}-cargo-target
           
     - name: Build
-      run: |
-        rustup toolchain install nightly
-        cargo install wasm-tools
-        rustup target add wasm32-wasi
-        rustup target add wasm32-wasi --toolchain nightly
-        cargo install cargo-wasi
-        cargo +nightly build
+      run: cargo +nightly build
     - name: Lint
       uses: wearerequired/lint-action@v2.3.0

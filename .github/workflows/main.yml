@@ -21,5 +21,6 @@ jobs:
       # uses: mbrobbel/rustfmt-check@d8a22d8a78264c51e7439cc9a2d9f607cc8be328
       uses: mbrobbel/rustfmt-check@0.8.0
       with:
+        token: ${{ secrets.GITHUB_TOKEN }}
         # Output mode (commit or review)
         mode: review # optional, default is commit

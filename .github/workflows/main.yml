@@ -16,33 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    # selecting a toolchain either by action or manual `rustup` calls should happen
-    # before the plugin, as the cache uses the current rustc version as its cache key
-    - run: |
-        rustup toolchain install nightly
-        cargo install wasm-tools
-        rustup target add wasm32-wasi
-        rustup target add wasm32-wasi --toolchain nightly
-        cargo install cargo-wasi
-    - name: Cargo Cache
-      uses: actions/cache@v1
+    - name: rust-rustfmt-check
+      # You may pin to the exact commit or the version.
+      # uses: mbrobbel/rustfmt-check@d8a22d8a78264c51e7439cc9a2d9f607cc8be328
+      uses: mbrobbel/rustfmt-check@0.8.0
       with:
-        path: ~/.cargo
-        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-${{ hashFiles('Cargo.toml') }}
-          ${{ runner.os }}-cargo
-
-    - name: Cargo Target Cache
-      uses: actions/cache@v1
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-target-${{ hashFiles('Cargo.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-target-${{ hashFiles('Cargo.toml') }}
-          ${{ runner.os }}-cargo-target
-          
-    - name: Build
-      run: cargo +nightly build
-    - name: Lint
-      uses: wearerequired/lint-action@v2.3.0
+        # Output mode (commit or review)
+        mode: review # optional, default is commit

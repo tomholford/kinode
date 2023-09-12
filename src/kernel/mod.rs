@@ -60,6 +60,7 @@ struct StartProcessMetadata {
     process_id: Option<t::ProcessId>,
     wasm_bytes_handle: u128,
     on_panic: t::OnPanic,
+    reboot: bool,
 }
 
 //  live in event loop
@@ -874,6 +875,7 @@ async fn handle_kernel_request(
                             process_id: name.map(|n| t::ProcessId::Name(n)),
                             wasm_bytes_handle,
                             on_panic,
+                            reboot: false,
                         })
                         .unwrap(),
                     ),
@@ -912,6 +914,7 @@ async fn handle_kernel_request(
                                 process_id: Some(process_id),
                                 wasm_bytes_handle,
                                 on_panic,
+                                reboot: true,
                             })
                             .unwrap(),
                         ),
@@ -1142,7 +1145,10 @@ async fn start_process(
         process_id,
         (process_metadata.wasm_bytes_handle, process_metadata.on_panic));
 
-    let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+    if !process_metadata.reboot {
+        // if new, persist
+        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+    }
 
     send_to_loop
         .send(t::KernelMessage {

@@ -452,7 +452,7 @@ async fn main() {
         http_client_receiver,
         print_sender.clone(),
     ));
-    tasks::spawn(vfs::vfs(
+    tasks.spawn(vfs::vfs(
         our.name.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),

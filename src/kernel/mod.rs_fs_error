@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 
-use wasmtime_wasi::preview2::{bindings::io::streams, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::preview2::{DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
@@ -128,50 +128,50 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         offset: filesystem::Filesize,
         len: filesystem::Filesize,
         advice: filesystem::Advice,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         println!("kernel: got advise()");
-        Ok(Ok(()))
+        Ok(())
     }
 
-    async fn sync_data(&mut self, fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn sync_data(&mut self, fd: filesystem::Descriptor) -> Result<(), filesystem::Error> {
         println!("kernel: got sync_data()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn get_flags(
         &mut self,
         fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorFlags, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::DescriptorFlags, filesystem::Error> {
         println!("kernel: got get_flags()");
         use filesystem::DescriptorFlags;
         let mut flags = DescriptorFlags::empty();
         flags |= DescriptorFlags::READ;
 
-        let entry_type = get_vfs_fd_entry_type(self, fd).await?;
+        let entry_type = get_vfs_fd_entry_type(self, fd).await;
 
         match entry_type {
-            t::GetEntryType::Dir => {
+            GetEntryType::Dir => {
                 flags |= DescriptorFlags::MUTATE_DIRECTORY;
             },
-            t::GetEntryType::File => {
+            GetEntryType::File => {
                 flags |= DescriptorFlags::WRITE;
             },
         }
 
-        Ok(Ok(flags))
+        Ok(flags)
     }
 
     async fn get_type(
         &mut self,
         fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorType, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::DescriptorType, filesystem::Error> {
         println!("kernel: got get_type()");
 
-        let entry_type = get_vfs_fd_entry_type(self, fd).await?;
+        let entry_type = get_vfs_fd_entry_type(self, fd).await;
 
         match entry_type {
-            t::GetEntryType::Dir => Ok(Ok(filesystem::DescriptorType::Directory)),
-            t::GetEntryType::File => Ok(Ok(filesystem::DescriptorType::RegularFile)),
+            GetEntryType::Dir => Ok(filesystem::DescriptorType::Directory),
+            GetEntryType::File => Ok(filesystem::DescriptorType::File),
         }
     }
 
@@ -179,10 +179,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         size: filesystem::Filesize,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         //  TODO
         println!("kernel: got set_size()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn set_times(
@@ -190,9 +190,9 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         fd: filesystem::Descriptor,
         atim: filesystem::NewTimestamp,
         mtim: filesystem::NewTimestamp,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         println!("kernel: got set_times()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn read(
@@ -200,19 +200,19 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         fd: filesystem::Descriptor,
         len: filesystem::Filesize,
         offset: filesystem::Filesize,
-    ) -> Result<Result<(Vec<u8>, bool), filesystem::ErrorCode>> {
+    ) -> Result<(Vec<u8>, bool), filesystem::Error> {
         println!("kernel: got read()");
 
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetFileChunk {
+                ipc: Some(serde_json::to_string(&VfsRequest::FdGetFileChunk {
                     fd,
                     offset,
                     length: len,
@@ -221,7 +221,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         //  TODO: check response fields
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
@@ -229,18 +229,13 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetFileChunk { fd: _, offset: _, length: _ } = response else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdGetFileChunk { fd: _, offset: _, length: _ } = response else {
             panic!("");
         };
 
-        let Some(ref prompting_message) = self.process.prompting_message else {
-            panic!("");
-        };
-        let Some(ref payload) = prompting_message.payload else {
-            panic!("");
-        };
-        Ok(Ok((payload.bytes.clone(), false)))  //  TODO: this bool must be true when hit EOF
+        let Some(payload) = self.process.prompting_message.payload;
+        Ok((payload.bytes, false))  //  TODO: this bool must be true when hit EOF
     }
 
     async fn write(
@@ -248,7 +243,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         fd: filesystem::Descriptor,
         buf: Vec<u8>,
         offset: filesystem::Filesize,
-    ) -> Result<Result<filesystem::Filesize, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::Filesize, filesystem::Error> {
         //  TODO: use mutable
         unimplemented!();
     }
@@ -256,86 +251,86 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     async fn read_directory(
         &mut self,
         fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DirectoryEntryStream, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::DirectoryEntryStream, filesystem::Error> {
         println!("kernel: got read_directory()");
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntry { fd }).unwrap()),
+                ipc: Some(serde_json::to_string(&VfsRequest::FdGetEntry { fd }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetEntry { fd: _, stream_id } = response else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdGetEntry { fd: _, stream_id } = response else {
             panic!("");
         };
         let Some(stream_id) = stream_id else {
             panic!("");
         };
 
-        Ok(Ok(stream_id))
+        Ok(stream_id)
     }
 
     async fn read_directory_entry(
         &mut self,
         stream: filesystem::DirectoryEntryStream,
-    ) -> Result<Result<Option<filesystem::DirectoryEntry>, filesystem::ErrorCode>> {
+    ) -> Result<Option<filesystem::DirectoryEntry>, filesystem::Error> {
         println!("kernel: got read_directory_entry()");
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdDirStreamNext {
-                    stream_id: stream,
+                ipc: Some(serde_json::to_string(&VfsRequest::FdDirStreamNext {
+                    stream,
                 }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdDirStreamNext { stream_id: _, child } = response else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdDirStreamNext { stream_id: _, child } = response else {
             panic!("");
         };
         match child {
-            None => Ok(Ok(None)),
+            None => Ok(None),
             Some(child) => {
                 let entry_type =
-                    if child.chars().last() == Some('/') {
+                    if child.chars().last() == '/' {
                         filesystem::DescriptorType::Directory
                     } else {
-                        filesystem::DescriptorType::RegularFile
+                        filesystem::DescriptorType::File
                     };
-                Ok(Ok(Some(filesystem::DirectoryEntry {
+                Ok(Some(filesystem::DirectoryEntry {
                     inode: None,
-                    type_: entry_type,
+                    r#type: entry_type,
                     name: child,
-                })))
+                }))
             },
         }
     }
@@ -348,192 +343,183 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let _ = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdDirStreamDrop {
-                    stream_id: stream,
+                ipc: Some(serde_json::to_string(&VfsRequest::FdDirStreamDrop {
+                    stream,
                 }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         Ok(())
     }
 
-    async fn sync(&mut self, fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn sync(&mut self, fd: filesystem::Descriptor) -> Result<(), filesystem::Error> {
         println!("kernel: got sync()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn create_directory_at(
         &mut self,
         fd: filesystem::Descriptor,
         path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         println!("kernel: got create_directory_at()");
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
+                ipc: Some(serde_json::to_string(&VfsRequest::FdGetPath { fd }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
-            panic!("");
-        };
-        let Some(full_path) = full_path else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdGetPath { fd: _, full_path } = response else {
             panic!("");
         };
 
-        if full_path.chars().last() != Some('/') {
+        if full_path.chars().last() != '/' {
             panic!("");
         }
 
-        let full_path = format!("{}{}", full_path, path);
+        let full_path = full_path.join(path);
 
         let _ = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::Add {
+                ipc: Some(serde_json::to_string(&VfsRequest::Add {
                     full_path,
-                    entry_type: t::AddEntryType::Dir,
+                    entry_type: AddEntryType::Dir,
                 }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
 
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn stat(
         &mut self,
         fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::DescriptorStat, filesystem::Error> {
         println!("kernel: got stat()");
-        let now = {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            filesystem::Datetime {
-                seconds: t.as_secs(),
-                nanoseconds: t.subsec_nanos(),
-            }
-        };
-        // let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        //     Ok(t) => Ok(filesystem::Datetime {
-        //         seconds: t.as_secs(),
-        //         nanoseconds: t.subsec_nanos(),
-        //     }),
-        //     Err(e) => return Err(e.into()),
-        // }?;
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(t) => Ok(
+                filesystem::datetime {
+                    seconds: t.as_secs(),
+                    nanoseconds: t.subsec_nanos(),
+                }
+            ),
+            Err(e) => Err(e.into()),
+        }?;
 
         //  get entry type
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetType { fd }).unwrap()),
+                ipc: Some(serde_json::to_string(&VfsRequest::FdGetType { fd }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdGetType { fd: _, entry_type } = response else {
             panic!("");
         };
 
         match entry_type {
-            t::GetEntryType::Dir => {
-                Ok(Ok(filesystem::DescriptorStat {
+            EntryType::Dir => {
+                Ok(filesystem::DescriptorStat {
                     device: 0,
                     inode: 0,
-                    type_: filesystem::DescriptorType::Directory,
+                    r#type: filesystem::DescriptorType::Directory,
                     link_count: 1,
                     size: 0,
                     data_access_timestamp: now.clone(),
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
-                }))
+                })
             },
-            t::GetEntryType::File => {
+            EntryType::File => {
                 //  get size
                 let (_, response) = send_and_await_response(
                     self,
                     wit::Address {
-                        node: self.process.metadata.our.node,
-                        process: wit::ProcessId::Name("vfs".into()),
+                        node: process.process.metadata.our.node,
+                        process: "vfs".into(),
                     },
                     wit::Request {
                         inherit: false,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntryLength {
+                        ipc: Some(serde_json::to_string(&VfsRequest::FdGetEntryLength {
                             fd,
                         }).unwrap()),
                         metadata: None,
                     },
                     None,
                     None,
-                ).await?.unwrap();
+                ).await??;
                 let wit::Message::Response((Ok(wit::Response {
                     ipc: Some(ipc),
                     metadata: _,
                 }), _)) = response else {
                     panic!("");  //  TODO: error handle
                 };
-                let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-                let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
+                let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+                let VfsResponse::FdGetEntryLength { fd: _, length } = response else {
                     panic!("");
                 };
 
-                Ok(Ok(filesystem::DescriptorStat {
+                Ok(filesystem::DescriptorStat {
                     device: 0,
                     inode: 0,
-                    type_: filesystem::DescriptorType::RegularFile,
+                    r#type: filesystem::DescriptorType::File,
                     link_count: 1,
                     size: length,
                     data_access_timestamp: now.clone(),
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
-                }))
+                })
             },
         }
     }
@@ -543,124 +529,115 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         fd: filesystem::Descriptor,
         path_flags: filesystem::PathFlags,
         path: String,
-    ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::DescriptorStat, filesystem::Error> {
         println!("kernel: got stat_at()");
-        let now = {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            filesystem::Datetime {
-                seconds: t.as_secs(),
-                nanoseconds: t.subsec_nanos(),
-            }
-        };
-        // let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        //     Ok(t) => Ok(filesystem::Datetime {
-        //         seconds: t.as_secs(),
-        //         nanoseconds: t.subsec_nanos(),
-        //     }),
-        //     Err(e) => return Err(e.into()),
-        // }?;
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(t) => Ok(
+                filesystem::datetime {
+                    seconds: t.as_secs(),
+                    nanoseconds: t.subsec_nanos(),
+                }
+            ),
+            Err(e) => Err(e.into()),
+        }?;
 
         //  get full path
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
-                process: wit::ProcessId::Name("vfs".into()),
+                node: process.process.metadata.our.node,
+                process: "vfs".into(),
             },
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
+                ipc: Some(serde_json::to_string(&VfsRequest::FdGetPath { fd }).unwrap()),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        ).await??;
         let wit::Message::Response((Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
         }), _)) = response else {
             panic!("");  //  TODO: error handle
         };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
-            panic!("");
-        };
-        let Some(full_path) = full_path else {
+        let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+        let VfsResponse::FdGetPath { fd: _, full_path } = response else {
             panic!("");
         };
 
-        if full_path.chars().last() != Some('/') {
+        if full_path.chars().last() != '/' {
             panic!("");
         }
 
-        let full_path = format!("{}{}", full_path, path);
+        let full_path = full_path.join(path);
 
         //  get entry type
         //  TODO: do we need to handle non-`/`-ending directories?
         //         if so, probably need to query without and then with `/` if without
         //         doesnt return anything
         let entry_type =
-            if full_path.chars().last() == Some('/') {
+            if full_path.chars().last() != '/' {
                 filesystem::DescriptorType::Directory
             } else {
-                filesystem::DescriptorType::RegularFile
+                filesystem::DescriptorType::File
             };
 
         match entry_type {
             filesystem::DescriptorType::Directory => {
-                Ok(Ok(filesystem::DescriptorStat {
+                Ok(filesystem::DescriptorStat {
                     device: 0,
                     inode: 0,
-                    type_: filesystem::DescriptorType::Directory,
+                    r#type: filesystem::DescriptorType::Directory,
                     link_count: 1,
                     size: 0,
                     data_access_timestamp: now.clone(),
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
-                }))
+                })
             },
-            filesystem::DescriptorType::RegularFile => {
+            filesystem::DescriptorType::File => {
                 //  get size
                 let (_, response) = send_and_await_response(
                     self,
                     wit::Address {
-                        node: self.process.metadata.our.node,
-                        process: wit::ProcessId::Name("vfs".into()),
+                        node: process.process.metadata.our.node,
+                        process: "vfs".into(),
                     },
                     wit::Request {
                         inherit: false,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntryLength {
+                        ipc: Some(serde_json::to_string(&VfsRequest::FdGetEntryLength {
                             fd,
                         }).unwrap()),
                         metadata: None,
                     },
                     None,
                     None,
-                ).await?.unwrap();
+                ).await??;
                 let wit::Message::Response((Ok(wit::Response {
                     ipc: Some(ipc),
                     metadata: _,
                 }), _)) = response else {
                     panic!("");  //  TODO: error handle
                 };
-                let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-                let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
+                let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+                let VfsResponse::FdGetEntryLength { fd: _, length } = response else {
                     panic!("");
                 };
 
-                Ok(Ok(filesystem::DescriptorStat {
+                Ok(filesystem::DescriptorStat {
                     device: 0,
                     inode: 0,
-                    type_: filesystem::DescriptorType::RegularFile,
+                    r#type: filesystem::DescriptorType::File,
                     link_count: 1,
                     size: length,
                     data_access_timestamp: now.clone(),
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
-                }))
+                })
             },
         }
     }
@@ -672,9 +649,9 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         path: String,
         atim: filesystem::NewTimestamp,
         mtim: filesystem::NewTimestamp,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         println!("kernel: got set_times_at()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn link_at(
@@ -685,7 +662,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         old_path: String,
         new_descriptor: filesystem::Descriptor,
         new_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         println!("kernel: got link_at()");
         unimplemented!("");
         // let table = self.table();
@@ -717,7 +694,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         // TODO: These are the permissions to use when creating a new file.
         // Not implemented yet.
         _mode: filesystem::Modes,
-    ) -> Result<Result<filesystem::Descriptor, filesystem::ErrorCode>> {
+    ) -> Result<filesystem::Descriptor, filesystem::Error> {
         //  TODO
         println!("kernel: got open_at()");
         unimplemented!();
@@ -838,7 +815,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         path: String,
-    ) -> Result<Result<String, filesystem::ErrorCode>> {
+    ) -> Result<String, filesystem::Error> {
         println!("kernel: got readlink_at()");
         unimplemented!();
     }
@@ -847,10 +824,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         //  TODO: do we need to actually implement?
         println!("kernel: got remove_directory_at()");
-        Ok(Ok(()))
+        Ok(())
     }
 
     async fn rename_at(
@@ -859,7 +836,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         old_path: String,
         new_fd: filesystem::Descriptor,
         new_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         //  TODO
         println!("kernel: got rename_at()");
         unimplemented!();
@@ -870,7 +847,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         fd: filesystem::Descriptor,
         src_path: String,
         dest_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         //  TODO
         println!("kernel: got symlink_at()");
         unimplemented!();
@@ -880,7 +857,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         //  TODO
         println!("kernel: got unlink_file_at()");
         unimplemented!();
@@ -892,7 +869,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         _path_flags: filesystem::PathFlags,
         _path: String,
         _access: filesystem::AccessType,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem access_at is not implemented")
     }
 
@@ -902,7 +879,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         _path_flags: filesystem::PathFlags,
         _path: String,
         _mode: filesystem::Modes,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem change_file_permissions_at is not implemented")
     }
 
@@ -912,36 +889,36 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         _path_flags: filesystem::PathFlags,
         _path: String,
         _mode: filesystem::Modes,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem change_directory_permissions_at is not implemented")
     }
 
-    async fn lock_shared(&mut self, _fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn lock_shared(&mut self, _fd: filesystem::Descriptor) -> Result<(), filesystem::Error> {
         todo!("filesystem lock_shared is not implemented")
     }
 
     async fn lock_exclusive(
         &mut self,
         _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem lock_exclusive is not implemented")
     }
 
     async fn try_lock_shared(
         &mut self,
         _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem try_lock_shared is not implemented")
     }
 
     async fn try_lock_exclusive(
         &mut self,
         _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
+    ) -> Result<(), filesystem::Error> {
         todo!("filesystem try_lock_exclusive is not implemented")
     }
 
-    async fn unlock(&mut self, _fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn unlock(&mut self, _fd: filesystem::Descriptor) -> Result<(), filesystem::Error> {
         todo!("filesystem unlock is not implemented")
     }
 
@@ -949,7 +926,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         offset: filesystem::Filesize,
-    ) -> Result<Result<streams::InputStream, filesystem::ErrorCode>> {
+    ) -> Result<streams::InputStream, filesystem::Error> {
         //  TODO
         println!("kernel: got read_via_stream()");
         unimplemented!();
@@ -962,7 +939,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         // let f = self.table().get_file(fd)?;
 
         // if !f.perms.contains(FilePerms::READ) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
+        //     Err(filesystem::ErrorCode::BadDescriptor)?;
         // }
         // // Duplicate the file descriptor so that we get an indepenent lifetime.
         // let clone = std::sync::Arc::clone(&f.file);
@@ -982,7 +959,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         &mut self,
         fd: filesystem::Descriptor,
         offset: filesystem::Filesize,
-    ) -> Result<Result<streams::OutputStream, filesystem::ErrorCode>> {
+    ) -> Result<streams::OutputStream, filesystem::Error> {
         //  TODO
         println!("kernel: got write_via_stream()");
         unimplemented!();
@@ -995,7 +972,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         // let f = self.table().get_file(fd)?;
 
         // if !f.perms.contains(FilePerms::WRITE) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
+        //     Err(filesystem::ErrorCode::BadDescriptor)?;
         // }
 
         // // Duplicate the file descriptor so that we get an indepenent lifetime.
@@ -1015,7 +992,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     async fn append_via_stream(
         &mut self,
         fd: filesystem::Descriptor,
-    ) -> Result<Result<streams::OutputStream, filesystem::ErrorCode>> {
+    ) -> Result<streams::OutputStream, filesystem::Error> {
         //  TODO
         println!("kernel: got append_via_stream()");
         unimplemented!();
@@ -1028,7 +1005,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         // let f = self.table().get_file(fd)?;
 
         // if !f.perms.contains(FilePerms::WRITE) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
+        //     Err(filesystem::ErrorCode::BadDescriptor)?;
         // }
         // // Duplicate the file descriptor so that we get an indepenent lifetime.
         // let clone = std::sync::Arc::clone(&f.file);
@@ -1235,7 +1212,7 @@ impl UqProcessImports for ProcessWasi {
     ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
     {
         send_and_await_response(
-            self,
+            &mut self.process,
             target,
             request,
             context,
@@ -1580,7 +1557,7 @@ async fn persist_state(
 }
 
 async fn send_and_await_response(
-    process: &mut ProcessWasi,
+    &mut process: ProcessWasi,
     target: wit::Address,
     request: wit::Request,
     context: Option<wit::Context>,
@@ -1608,33 +1585,33 @@ async fn send_and_await_response(
 }
 
 async fn get_vfs_fd_entry_type(
-    process: &mut ProcessWasi,
+    &mut process: ProcessWasi,
     fd: filesystem::Descriptor,
-) -> Result<t::GetEntryType> {
+) -> Result<GetEntryType> {
     let (_, response) = send_and_await_response(
-        process,
+        self,
         wit::Address {
-            node: process.process.metadata.our.node.clone(),
-            process: wit::ProcessId::Name("vfs".into()),
+            node: process.process.metadata.our.node,
+            process: "vfs".into(),
         },
         wit::Request {
             inherit: false,
             expects_response: true,
-            ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetType { fd }).unwrap()),
+            ipc: Some(serde_json::to_string(&VfsRequest::FdGetType { fd }).unwrap()),
             metadata: None,
         },
         None,
         None,
     )
-        .await?.unwrap();  //  TODO
+        .await??;
     let wit::Message::Response((Ok(wit::Response {
         ipc: Some(ipc),
         metadata: _,
     }), _)) = response else {
         panic!("");  //  TODO: error handle
     };
-    let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-    let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
+    let response: VfsResponse = serde_json::from_str(&ipc).unwrap();
+    let VfsResponse::FdGetType { fd: _, entry_type } = response else {
         panic!("");
     };
 

@@ -97,7 +97,7 @@ impl WasiView for ProcessWasi {
 // ///
 //
 // #[async_trait::async_trait]
-// impl wasi::clocks::wall_clocks::Host for ProcessWasi {
+// impl wasi::clocks::wall_clock::Host for ProcessWasi {
 // }
 //
 // ///
@@ -206,7 +206,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -261,7 +261,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -298,7 +298,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -348,7 +348,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let _ = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -379,7 +379,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -414,7 +414,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let _ = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -458,7 +458,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -499,7 +499,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                 let (_, response) = send_and_await_response(
                     self,
                     wit::Address {
-                        node: self.process.metadata.our.node,
+                        node: self.process.metadata.our.node.clone(),
                         process: wit::ProcessId::Name("vfs".into()),
                     },
                     wit::Request {
@@ -565,7 +565,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let (_, response) = send_and_await_response(
             self,
             wit::Address {
-                node: self.process.metadata.our.node,
+                node: self.process.metadata.our.node.clone(),
                 process: wit::ProcessId::Name("vfs".into()),
             },
             wit::Request {
@@ -626,7 +626,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                 let (_, response) = send_and_await_response(
                     self,
                     wit::Address {
-                        node: self.process.metadata.our.node,
+                        node: self.process.metadata.our.node.clone(),
                         process: wit::ProcessId::Name("vfs".into()),
                     },
                     wit::Request {
@@ -661,6 +661,9 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
                 }))
+            },
+            _ => {
+                panic!("");
             },
         }
     }
@@ -1672,8 +1675,8 @@ async fn make_process_loop(
         .unwrap();
 
     // wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
-    wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t)
-        .unwrap();
+    // wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t)
+    //     .unwrap();
     wasmtime_wasi::preview2::bindings::clocks::monotonic_clock::add_to_linker(&mut linker, |t| t)
         .unwrap();
     wasmtime_wasi::preview2::bindings::clocks::timezone::add_to_linker(&mut linker, |t| t).unwrap();

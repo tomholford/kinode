@@ -22,8 +22,14 @@ package wasi:filesystem
 /// directory, or reaches a symlink to an absolute or rooted path in the
 /// underlying filesystem, the function fails with `error-code::not-permitted`.
 interface filesystem {
-    use wasi:io/streams.{input-stream, output-stream}
-    use wasi:clocks/wall-clock.{datetime}
+    type input-stream = u32
+    type output-stream = u32
+    record datetime {
+        seconds: u64,
+        nanoseconds: u32,
+    }
+    // use wasi:io/streams.{input-stream, output-stream}
+    // use wasi:clocks/wall-clock.{datetime}
 
     /// File size or length of a region within a file.
     type filesize = u64

@@ -345,11 +345,6 @@ async fn main() {
         .await
         .unwrap();
 
-        let kernel_address = Address {
-            node: our.name.clone(),
-            process: ProcessId::Name("kernel".into()),
-        };
-
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)
     };

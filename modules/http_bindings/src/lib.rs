@@ -18,6 +18,7 @@ struct Component;
 struct BoundPath {
     app: String,
     authenticated: bool,
+    local_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,7 +144,7 @@ impl Guest for Component {
             };
 
             let action = message_json["action"].as_str().unwrap_or("");
-            // Safely unwrap the path as a string
+            let address = message_json["address"].as_str().unwrap_or(""); // origin HTTP address
             let path = message_json["path"].as_str().unwrap_or("");
             let app = message_json["app"].as_str().unwrap_or("");
 
@@ -183,6 +184,7 @@ impl Guest for Component {
                         BoundPath {
                             app: app.to_string(),
                             authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
+                            local_only: message_json.get("local_only").and_then(|v| v.as_bool()).unwrap_or(false),
                         }
                     });
                 }
@@ -419,6 +421,15 @@ impl Guest for Component {
                                 }, "Auth cookie not valid".as_bytes().to_vec());
                                 continue;
                             }
+                        }
+
+                        if bound_path.local_only && !address.starts_with("127.0.0.1:") {
+                            send_http_response(message_json["id"].to_string(), 403, {
+                                let mut headers = HashMap::new();
+                                headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                headers
+                            }, "<h1>Localhost Origin Required</h1>".as_bytes().to_vec());
+                            continue;
                         }
 
                         // import send-request: func(target: address, request: request, context: option<context>, payload: option<payload>)

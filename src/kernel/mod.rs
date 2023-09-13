@@ -38,6 +38,7 @@ struct Process {
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
+    last_payload: Option<t::Payload>,
     contexts: HashMap<u64, ProcessContext>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
 }
@@ -62,6 +63,7 @@ struct StartProcessMetadata {
     process_id: Option<t::ProcessId>,
     wasm_bytes_handle: u128,
     on_panic: t::OnPanic,
+    reboot: bool,
 }
 
 //  live in event loop
@@ -1131,26 +1133,26 @@ impl UqProcessImports for ProcessWasi {
     //
 
     ///  todo -> move to kernel logic to enable persitence etc.
-    async fn set_on_panic(&mut self, on_panic: wit::OnPanic) -> Result<()> {
+    async fn set_on_panic(&mut self, _on_panic: wit::OnPanic) -> Result<()> {
         unimplemented!();
-    //     let on_panic = match on_panic {
-    //         wit::OnPanic::None => t::OnPanic::None,
-    //         wit::OnPanic::Restart => t::OnPanic::Restart,
-    //         wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
-    //             reqs.into_iter()
-    //                 .map(|(addr, req, payload)| {
-    //                     (
-    //                         de_wit_address(addr),
-    //                         de_wit_request(req),
-    //                         de_wit_payload(payload),
-    //                     )
-    //                 })
-    //                 .collect(),
-    //         ),
-    //     };
+        //     let on_panic = match on_panic {
+        //         wit::OnPanic::None => t::OnPanic::None,
+        //         wit::OnPanic::Restart => t::OnPanic::Restart,
+        //         wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
+        //             reqs.into_iter()
+        //                 .map(|(addr, req, payload)| {
+        //                     (
+        //                         de_wit_address(addr),
+        //                         de_wit_request(req),
+        //                         de_wit_payload(payload),
+        //                     )
+        //                 })
+        //                 .collect(),
+        //         ),
+        //     };
 
-    //     self.process.metadata.on_panic = on_panic;
-    //     Ok(())
+        //     self.process.metadata.on_panic = on_panic;
+        //     Ok(())
     }
 
     //
@@ -1170,10 +1172,7 @@ impl UqProcessImports for ProcessWasi {
     /// if the prompting message did not have a payload, will return None.
     /// will also return None if there is no prompting message.
     async fn get_payload(&mut self) -> Result<Option<wit::Payload>> {
-        match self.process.prompting_message.clone() {
-            Some(km) => Ok(en_wit_payload(km.payload)),
-            None => Ok(None),
-        }
+        Ok(en_wit_payload(self.process.last_payload.clone()))
     }
 
     async fn send_request(
@@ -1269,21 +1268,12 @@ impl UqProcessImports for ProcessWasi {
 
 impl Process {
     /// save a context for a given request.
-    async fn save_context(
-        &mut self,
-        request_id: u64,
-        request: t::Request,
-        context: Option<t::Context>,
-    ) {
+    async fn save_context(&mut self, request_id: u64, context: Option<t::Context>) {
         self.contexts.insert(
             request_id,
             ProcessContext {
                 prompting_message: if self.prompting_message.is_some() {
-                    if request.inherit {
-                        self.prompting_message.clone()
-                    } else {
-                        None
-                    }
+                    self.prompting_message.clone()
                 } else {
                     None
                 },
@@ -1305,10 +1295,12 @@ impl Process {
         match res {
             Ok(km) => match self.contexts.remove(&km.id) {
                 None => {
+                    self.last_payload = km.payload.clone();
                     self.prompting_message = Some(km.clone());
                     Ok(self.kernel_message_to_process_receive(None, km))
                 }
                 Some(context) => {
+                    self.last_payload = km.payload.clone();
                     self.prompting_message = match context.prompting_message {
                         None => Some(km.clone()),
                         Some(prompting_message) => Some(prompting_message),
@@ -1341,10 +1333,12 @@ impl Process {
                     if km.id == awaited_message_id {
                         match self.contexts.remove(&km.id) {
                             None => {
+                                self.last_payload = km.payload.clone();
                                 self.prompting_message = Some(km.clone());
                                 return Ok(self.kernel_message_to_process_receive(None, km));
                             }
                             Some(context) => {
+                                self.last_payload = km.payload.clone();
                                 self.prompting_message = match context.prompting_message {
                                     None => Some(km.clone()),
                                     Some(prompting_message) => Some(prompting_message),
@@ -1476,8 +1470,7 @@ impl Process {
         // modify the process' context map as needed.
         // if there is a prompting message, we need to store the ultimate
         // even if there is no new context string.
-        self.save_context(kernel_message.id, de_wit_request(request), new_context)
-            .await;
+        self.save_context(kernel_message.id, new_context).await;
 
         self.send_to_loop
             .send(kernel_message)
@@ -1526,7 +1519,7 @@ impl Process {
     /// the error will be thrown away!
     async fn send_error(&mut self, error: wit::UqbarError) {
         let Some(ref prompting_message) = self.prompting_message else {
-            return
+            return;
         };
 
         let kernel_message = t::KernelMessage {
@@ -1565,18 +1558,13 @@ async fn persist_state(
             message: t::Message::Request(t::Request {
                 inherit: true,
                 expects_response: true,
-                ipc: Some(
-                    serde_json::to_string(&t::FsAction::SetState)
-                    .unwrap(),
-                ),
+                ipc: Some(serde_json::to_string(&t::FsAction::SetState).unwrap()),
                 metadata: None,
             }),
-            payload: Some(
-                t::Payload {
-                    mime: None,
-                    bytes,
-                }
-            ),
+            payload: Some(t::Payload {
+                mime: None,
+                bytes,
+            }),
         })
         .await?;
     Ok(())
@@ -1702,6 +1690,7 @@ async fn make_process_loop(
                 send_to_loop: send_to_loop.clone(),
                 send_to_terminal: send_to_terminal.clone(),
                 prompting_message: None,
+                last_payload: None,
                 contexts: HashMap::new(),
                 message_queue: VecDeque::new(),
             },
@@ -1844,7 +1833,9 @@ async fn handle_kernel_request(
 ) {
     // TODO capabilities-based security
 
-    let t::Message::Request(request) = km.message else { return };
+    let t::Message::Request(request) = km.message else {
+        return;
+    };
     let command: t::KernelCommand = match serde_json::from_str(&request.ipc.unwrap_or_default()) {
         Err(e) => {
             send_to_terminal
@@ -1889,8 +1880,7 @@ async fn handle_kernel_request(
                     inherit: true,
                     expects_response: true,
                     ipc: Some(
-                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle))
-                        .unwrap(),
+                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle)).unwrap(),
                     ),
                     // TODO find a better way if possible: keeping process metadata
                     // in request/response roundtrip because kernel itself doesn't
@@ -1902,6 +1892,7 @@ async fn handle_kernel_request(
                             process_id: name.map(|n| t::ProcessId::Name(n)),
                             wasm_bytes_handle,
                             on_panic,
+                            reboot: false,
                         })
                         .unwrap(),
                     ),
@@ -1910,44 +1901,44 @@ async fn handle_kernel_request(
             })
             .await
             .unwrap(),
-            //  reboot from persisted process.
-            t::KernelCommand::RebootProcess {
-                process_id,
-                wasm_bytes_handle,
-                on_panic,
-            } => send_to_loop
-                .send(t::KernelMessage {
-                    id: km.id,
-                    source: t::Address {
-                        node: our_name.clone(),
-                        process: t::ProcessId::Name("kernel".into()),
-                    },
-                    target: t::Address {
-                        node: our_name.clone(),
-                        process: t::ProcessId::Name("lfs".into()),
-                    },
-                    rsvp: None,
-                    message: t::Message::Request(t::Request {
-                        inherit: true,
-                        expects_response: true,
-                        ipc: Some(
-                            serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle))
-                            .unwrap(),
-                        ),
-                        metadata: Some(
-                            serde_json::to_string(&StartProcessMetadata {
-                                source: km.source,
-                                process_id: Some(process_id),
-                                wasm_bytes_handle,
-                                on_panic,
-                            })
-                            .unwrap(),
-                        ),
-                    }),
-                    payload: None,
-                })
-                .await
-                .unwrap(),
+        //  reboot from persisted process.
+        t::KernelCommand::RebootProcess {
+            process_id,
+            wasm_bytes_handle,
+            on_panic,
+        } => send_to_loop
+            .send(t::KernelMessage {
+                id: km.id,
+                source: t::Address {
+                    node: our_name.clone(),
+                    process: t::ProcessId::Name("kernel".into()),
+                },
+                target: t::Address {
+                    node: our_name.clone(),
+                    process: t::ProcessId::Name("lfs".into()),
+                },
+                rsvp: None,
+                message: t::Message::Request(t::Request {
+                    inherit: true,
+                    expects_response: true,
+                    ipc: Some(
+                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle)).unwrap(),
+                    ),
+                    metadata: Some(
+                        serde_json::to_string(&StartProcessMetadata {
+                            source: km.source,
+                            process_id: Some(process_id),
+                            wasm_bytes_handle,
+                            on_panic,
+                            reboot: true,
+                        })
+                        .unwrap(),
+                    ),
+                }),
+                payload: None,
+            })
+            .await
+            .unwrap(),
         t::KernelCommand::KillProcess(process_id) => {
             // brutal and savage killing: aborting the task.
             // do not do this to a process if you don't want to risk
@@ -2019,10 +2010,12 @@ async fn handle_kernel_response(
     engine: &Engine,
 ) {
     let t::Message::Response((Ok(ref response), _)) = km.message else {
-        let _ = send_to_terminal.send(t::Printout {
-            verbosity: 1,
-            content: "kernel: got weird Response".into(),
-        }).await;
+        let _ = send_to_terminal
+            .send(t::Printout {
+                verbosity: 1,
+                content: "kernel: got weird Response".into(),
+            })
+            .await;
         return;
     };
 
@@ -2053,7 +2046,7 @@ async fn handle_kernel_response(
 
     let Some(ref payload) = km.payload else {
         send_to_terminal
-            .send(t::Printout{
+            .send(t::Printout {
                 verbosity: 0,
                 content: "kernel: process startup requires bytes".into(),
             })
@@ -2108,7 +2101,7 @@ async fn start_process(
             } else {
                 t::ProcessId::Name(name)
             }
-        },
+        }
         Some(t::ProcessId::Id(id)) => {
             if senders.contains_key(&t::ProcessId::Id(id)) {
                 // TODO: make a Response to indicate failure?
@@ -2123,7 +2116,7 @@ async fn start_process(
             } else {
                 t::ProcessId::Id(id)
             }
-        },
+        }
         // first 2 Some cases were for reboot or start with defined name, this is for start without name
         None => {
             loop {
@@ -2168,9 +2161,16 @@ async fn start_process(
 
     process_map.insert(
         process_id,
-        (process_metadata.wasm_bytes_handle, process_metadata.on_panic));
+        (
+            process_metadata.wasm_bytes_handle,
+            process_metadata.on_panic,
+        ),
+    );
 
-    let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+    if !process_metadata.reboot {
+        // if new, persist
+        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+    }
 
     send_to_loop
         .send(t::KernelMessage {
@@ -2259,16 +2259,10 @@ async fn make_event_loop(
         // TODO remove once the modules compile!
 
         let exclude_list: Vec<t::ProcessId> = vec![
-            // t::ProcessId::Name("apps_home".into()),
             t::ProcessId::Name("explorer".into()),
-            // t::ProcessId::Name("http_bindings".into()),
-            // t::ProcessId::Name("http_proxy".into()),
             t::ProcessId::Name("process_manager".into()),
-            t::ProcessId::Name("hi_lus_lus".into()),
-            t::ProcessId::Name("sequencer".into()),
             t::ProcessId::Name("file_transfer".into()),
             t::ProcessId::Name("file_transfer_one_off".into()),
-            t::ProcessId::Name("net_tester".into()),
         ];
 
         for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {

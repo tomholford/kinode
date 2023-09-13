@@ -1,6 +1,6 @@
+use blake3::Hasher;
 ///  append-only log file with commited changes, deletes, backups
 use serde::{Deserialize, Serialize};
-use blake3::Hasher;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,17 +79,18 @@ impl WAL {
 
     pub async fn _flush(&self, manifest: Manifest) -> io::Result<()> {
         {
-            let to_delete: tokio::sync::RwLockReadGuard<'_, Vec<ToDelete>> = self.to_delete.read().await;
+            let to_delete: tokio::sync::RwLockReadGuard<'_, Vec<ToDelete>> =
+                self.to_delete.read().await;
             if to_delete.is_empty() {
                 //  println!("empty delete log!");
                 return Ok(());
             }
-
         }
 
         let mut log_file = self.log_file.write().await;
         let mut wal = self.wal.write().await;
-        let mut to_delete: tokio::sync::RwLockWriteGuard<'_, Vec<ToDelete>> = self.to_delete.write().await;
+        let mut to_delete: tokio::sync::RwLockWriteGuard<'_, Vec<ToDelete>> =
+            self.to_delete.write().await;
         //  println!("deleting files: {:?}", to_delete);
 
         for del in to_delete.iter() {
@@ -126,15 +127,18 @@ impl WAL {
         let data_length = data.len() as u64;
 
         log_file.write_all(&entry_length.to_le_bytes()).await?; // write the metadata length prefix
-        log_file.write_all(&serialized_entry).await?;           // write the serialized metadata
-        log_file.write_all(&data_length.to_le_bytes()).await?;  // write the data length
-        log_file.write_all(data).await?;                        // write the data
+        log_file.write_all(&serialized_entry).await?; // write the serialized metadata
+        log_file.write_all(&data_length.to_le_bytes()).await?; // write the data length
+        log_file.write_all(data).await?; // write the data
 
         // return the location where the data starts in the WAL
         Ok(wal_position + (8 + serialized_entry.len() as u64))
     }
 
-    async fn _get_chunk_data(log_file: &mut fs::File, wal_position: u64) -> Result<Vec<u8>, io::Error> {
+    async fn _get_chunk_data(
+        log_file: &mut fs::File,
+        wal_position: u64,
+    ) -> Result<Vec<u8>, io::Error> {
         // Seek to the provided position in the WAL
         log_file.seek(SeekFrom::Start(wal_position)).await?;
 
@@ -152,9 +156,6 @@ impl WAL {
 
     // read, append
 }
-
-
-
 
 async fn load_wal(
     log_file: &mut fs::File,
@@ -189,7 +190,6 @@ async fn load_wal(
                 //      .entry(chunk_entry.file_uuid)
                 //      .or_insert(InMemoryFile::default());
 
-
                 let mut data_length_buffer = [0u8; 8];
                 log_file.read_exact(&mut data_length_buffer).await?;
                 let data_length = u64::from_le_bytes(data_length_buffer) as usize;
@@ -197,11 +197,9 @@ async fn load_wal(
                 // skip or read in entry data.
                 current_position += 8 + record_length as u64 + 8;
                 current_position += data_length as u64;
-
             }
             Ok(WALRecord::Delete(del)) => {
                 to_delete.push(del);
-
             }
             // backups etc
             Err(_) => {

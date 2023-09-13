@@ -1,5 +1,5 @@
-use crate::types as t;
 use crate::kernel::component::uq_process::types as wit;
+use crate::types as t;
 
 //
 // conversions between wit types and kernel types (annoying)
@@ -28,14 +28,10 @@ pub fn de_wit_address(wit: wit::Address) -> t::Address {
 pub fn en_wit_message(message: t::Message) -> wit::Message {
     match message {
         t::Message::Request(request) => wit::Message::Request(en_wit_request(request)),
-        t::Message::Response(response) => {
-            match response.0 {
-                Ok(r) => wit::Message::Response((Ok(en_wit_response(r)), response.1)),
-                Err(error) => {
-                    wit::Message::Response((Err(en_wit_uqbar_error(error)), response.1))
-                }
-            }
-        }
+        t::Message::Response(response) => match response.0 {
+            Ok(r) => wit::Message::Response((Ok(en_wit_response(r)), response.1)),
+            Err(error) => wit::Message::Response((Err(en_wit_uqbar_error(error)), response.1)),
+        },
     }
 }
 

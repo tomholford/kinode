@@ -3,17 +3,20 @@ use aes_gcm::{
     Aes256Gcm,
     Key, // Or `Aes128Gcm`
 };
+use hmac::Hmac;
+use jwt::SignWithKey;
 use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
+use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use warp::{Filter, Rejection, Reply, http::{header::{HeaderValue, SET_COOKIE}}};
-use jwt::SignWithKey;
-use hmac::Hmac;
-use sha2::Sha256;
+use warp::{
+    http::header::{HeaderValue, SET_COOKIE},
+    Filter, Rejection, Reply,
+};
 
 use crate::types::*;
 
@@ -110,51 +113,57 @@ pub async fn register(
         }
     });
 
-    let routes = warp::path("register").and(
-        // 1. serve register.html right here
-        warp::get()
-            .map(move || warp::reply::html(REGISTER_PAGE))
-            // 2. await a single POST
-            //    - username
-            //    - password
-            //    - address (wallet)
-            .or(warp::post()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
-                .map(move |info: Registration| {
-                    // Process the data from the POST request here and store it
-                    *registration_post.lock().unwrap() = Some(info);
+    let routes = warp::path("register")
+        .and(
+            // 1. serve register.html right here
+            warp::get()
+                .map(move || warp::reply::html(REGISTER_PAGE))
+                // 2. await a single POST
+                //    - username
+                //    - password
+                //    - address (wallet)
+                .or(warp::post()
+                    .and(warp::body::content_length_limit(1024 * 16))
+                    .and(warp::body::json())
+                    .map(move |info: Registration| {
+                        // Process the data from the POST request here and store it
+                        *registration_post.lock().unwrap() = Some(info);
 
-                    // this will be replaced with the key manager module
-                    let seed = SystemRandom::new();
-                    let serialized_keypair =
-                        signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
-                    let keypair =
-                        signature::Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref()).unwrap();
+                        // this will be replaced with the key manager module
+                        let seed = SystemRandom::new();
+                        let serialized_keypair =
+                            signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
+                        let keypair =
+                            signature::Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref())
+                                .unwrap();
 
-                    let public_key = hex::encode(keypair.public_key().as_ref());
-                    *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
+                        let public_key = hex::encode(keypair.public_key().as_ref());
+                        *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
 
-                    // Generate the jwt_secret
-                    let mut jwt_secret = [0u8; 32];
-                    ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
-                    *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
+                        // Generate the jwt_secret
+                        let mut jwt_secret = [0u8; 32];
+                        ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
+                        *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
 
-                    // Return a response to the POST request containing new networking key to be signed
-                    warp::reply::html(public_key)
-                }))
-            // 4. await a PUT
-            //    - signature string
-            .or(warp::put()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
-                .and(warp::any().map(move || tx.clone()))
-                .and(warp::any().map(move || registration.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || jwt_secret.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || redir_port))
-                .and_then(handle_put)),
-    ).or(check_address_route).or(check_username_route);
+                        // Return a response to the POST request containing new networking key to be signed
+                        warp::reply::html(public_key)
+                    }))
+                // 4. await a PUT
+                //    - signature string
+                .or(warp::put()
+                    .and(warp::body::content_length_limit(1024 * 16))
+                    .and(warp::body::json())
+                    .and(warp::any().map(move || tx.clone()))
+                    .and(warp::any().map(move || registration.lock().unwrap().take().unwrap()))
+                    .and(
+                        warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()),
+                    )
+                    .and(warp::any().map(move || jwt_secret.lock().unwrap().take().unwrap()))
+                    .and(warp::any().map(move || redir_port))
+                    .and_then(handle_put)),
+        )
+        .or(check_address_route)
+        .or(check_username_route);
 
     let _ = open::that(format!("http://localhost:{}/register", port));
     warp::serve(routes)
@@ -181,13 +190,18 @@ async fn handle_put(
     let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &registration.username, &token);
 
     let mut response = warp::reply::html("Success".to_string()).into_response();
-            
+
     let headers = response.headers_mut();
     headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
-        .send((registration, networking_keypair, jwt_secret_bytes.to_vec(), signature))
+        .send((
+            registration,
+            networking_keypair,
+            jwt_secret_bytes.to_vec(),
+            signature,
+        ))
         .await
         .unwrap();
     Ok(response)
@@ -205,22 +219,25 @@ pub async fn login(
     let username = username.to_string();
     let login_page_content = include_str!("login.html");
     let personalized_login_page = login_page_content.replace("${our}", username.as_str());
-    let redirect_to_login = warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
-    let routes = warp::path("login").and(
-        // 1. serve login.html right here
-        warp::get()
-            .map(move || warp::reply::html(personalized_login_page.clone()))
-            // 2. await a single POST
-            //    - password
-            .or(warp::post()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
-                .and(warp::any().map(move || keyfile.clone()))
-                .and(warp::any().map(move || jwt_secret_file.clone()))
-                .and(warp::any().map(move || username.clone()))
-                .and(warp::any().map(move || tx.clone()))
-                .and_then(handle_password)),
-    ).or(redirect_to_login);
+    let redirect_to_login =
+        warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
+    let routes = warp::path("login")
+        .and(
+            // 1. serve login.html right here
+            warp::get()
+                .map(move || warp::reply::html(personalized_login_page.clone()))
+                // 2. await a single POST
+                //    - password
+                .or(warp::post()
+                    .and(warp::body::content_length_limit(1024 * 16))
+                    .and(warp::body::json())
+                    .and(warp::any().map(move || keyfile.clone()))
+                    .and(warp::any().map(move || jwt_secret_file.clone()))
+                    .and(warp::any().map(move || username.clone()))
+                    .and(warp::any().map(move || tx.clone()))
+                    .and_then(handle_password)),
+        )
+        .or(redirect_to_login);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)
@@ -289,12 +306,14 @@ async fn handle_password(
     let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &username, &token);
 
     let mut response = warp::reply::html("Success".to_string()).into_response();
-            
+
     let headers = response.headers_mut();
     headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
-    
-    tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
+
+    tx.send((networking_keypair, jwt_secret_bytes))
+        .await
+        .unwrap();
     // TODO unhappy paths where key has changed / can't be decrypted
     Ok(response)
 }

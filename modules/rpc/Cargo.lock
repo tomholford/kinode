@@ -9,16 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4668cab20f66d8d020e1fbc0ebe47217433c1b6c8f2040faf858554e394ace6"
 
 [[package]]
-name = "apps_home"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "cargo-component-bindings",
- "serde",
- "serde_json",
- "wit-bindgen 0.9.0",
-]
+name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "bincode"
@@ -179,6 +173,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5267fca4496028628a95160fc423a33e8b2e6af8a5302579e322e4b520293cae"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bincode",
+ "cargo-component-bindings",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.9.0",
 ]
 
 [[package]]

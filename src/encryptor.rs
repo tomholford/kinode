@@ -1,20 +1,22 @@
-extern crate num_traits;
 extern crate generic_array;
+extern crate num_traits;
 extern crate rand;
 
-use anyhow::Result;
-use std::collections::HashMap;
-use serde_json;
-use rand::{Rng, thread_rng};
-use std::sync::Arc;
-use rsa::{RsaPublicKey, Oaep, BigUint};
+use crate::types::*;
 use aes_gcm::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce, Key, // Or `Aes128Gcm`
+    Aes256Gcm,
+    Key, // Or `Aes128Gcm`
+    Nonce,
 };
+use anyhow::Result;
 use generic_array::GenericArray;
-use ring::signature::{Ed25519KeyPair};
-use crate::types::*;
+use rand::{thread_rng, Rng};
+use ring::signature::Ed25519KeyPair;
+use rsa::{BigUint, Oaep, RsaPublicKey};
+use serde_json;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::encryptor::num_traits::Num;
 
@@ -26,7 +28,9 @@ fn encrypt_data(secret_key_bytes: [u8; 32], data: Vec<u8>) -> Vec<u8> {
     thread_rng().fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext = cipher.encrypt(nonce, data.as_ref()).expect("encryption failure!");
+    let ciphertext = cipher
+        .encrypt(nonce, data.as_ref())
+        .expect("encryption failure!");
     let mut data = ciphertext;
     data.extend(nonce_bytes);
 
@@ -39,7 +43,9 @@ fn decrypt_data(secret_key_bytes: [u8; 32], data: Vec<u8>) -> Vec<u8> {
     let key = Key::<Aes256Gcm>::from_slice(&secret_key_bytes);
     let cipher = Aes256Gcm::new(&key);
     let nonce = GenericArray::from_slice(&nonce_bytes);
-    let decrypted_bytes = cipher.decrypt(nonce, encrypted_bytes.as_ref()).expect("decryption failure!");
+    let decrypted_bytes = cipher
+        .decrypt(nonce, encrypted_bytes.as_ref())
+        .expect("decryption failure!");
 
     decrypted_bytes
 }
@@ -56,7 +62,12 @@ pub async fn encryptor(
     let mut secrets: HashMap<String, [u8; 32]> = HashMap::new(); // Store secrets as hex strings? Or as bytes?
 
     while let Some(kernel_message) = recv_in_encryptor.recv().await {
-        let _ = print_tx.send(Printout { verbosity: 1, content: "ENCRYPTOR MESSAGE".to_string(), }).await;
+        let _ = print_tx
+            .send(Printout {
+                verbosity: 1,
+                content: "ENCRYPTOR MESSAGE".to_string(),
+            })
+            .await;
         let KernelMessage {
             ref id,
             source,
@@ -70,33 +81,54 @@ pub async fn encryptor(
             ipc: Some(ipc),
             metadata, // we return this to Requester for kernel reasons
             ..
-        }) = message else {
-            let _ = print_tx.send(Printout { verbosity: 1, content: "encryptor: bad message".to_string(), }).await;
+        }) = message
+        else {
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 1,
+                    content: "encryptor: bad message".to_string(),
+                })
+                .await;
             continue;
         };
 
-        let _ = print_tx.send(Printout { verbosity: 1, content: format!("ENCRYPTOR IPC: {}", ipc.clone()), }).await;
+        let _ = print_tx
+            .send(Printout {
+                verbosity: 1,
+                content: format!("ENCRYPTOR IPC: {}", ipc.clone()),
+            })
+            .await;
 
         match serde_json::from_str::<EncryptorMessage>(&ipc) {
             Ok(message) => {
                 match message {
-                    EncryptorMessage::GetKeyAction(GetKeyAction { channel_id, public_key_hex }) => {
-                        let n = BigUint::from_str_radix(&public_key_hex.clone(), 16).expect("failed to parse hex string");
+                    EncryptorMessage::GetKeyAction(GetKeyAction {
+                        channel_id,
+                        public_key_hex,
+                    }) => {
+                        let n = BigUint::from_str_radix(&public_key_hex.clone(), 16)
+                            .expect("failed to parse hex string");
                         let e = BigUint::from(65537u32);
 
                         match RsaPublicKey::new(n, e) {
                             Ok(public_key) => {
                                 let padding = Oaep::new::<sha2::Sha256>();
                                 let mut rng = rand::rngs::OsRng;
-                                let public_key_bytes = hex::decode(public_key_hex).expect("failed to decode hex string");
+                                let public_key_bytes = hex::decode(public_key_hex)
+                                    .expect("failed to decode hex string");
 
-                                let signed_public_key = keypair.sign(&public_key_bytes).as_ref().to_vec();
+                                let signed_public_key =
+                                    keypair.sign(&public_key_bytes).as_ref().to_vec();
 
                                 let mut encrypted_secret: Vec<u8> = Vec::new();
-                                if let Some(secret) = secrets.get(&channel_id) { // Secret already exists
+                                if let Some(secret) = secrets.get(&channel_id) {
+                                    // Secret already exists
                                     // Encrypt the secret with the public key and return it
-                                    encrypted_secret = public_key.encrypt(&mut rng, padding, secret).expect("failed to encrypt message");
-                                } else { // Secret does not exist, must create
+                                    encrypted_secret = public_key
+                                        .encrypt(&mut rng, padding, secret)
+                                        .expect("failed to encrypt message");
+                                } else {
+                                    // Secret does not exist, must create
                                     // Create a new secret, store it, encrypt it with the public key, and return it
                                     let mut secret = [0u8; 32];
                                     thread_rng().fill(&mut secret);
@@ -104,11 +136,16 @@ pub async fn encryptor(
 
                                     // Create a new AES-GCM cipher with the given key
                                     // So do I encrypt the
-                                    encrypted_secret = public_key.encrypt(&mut rng, padding, &secret).expect("failed to encrypt message");
+                                    encrypted_secret = public_key
+                                        .encrypt(&mut rng, padding, &secret)
+                                        .expect("failed to encrypt message");
                                 }
 
                                 let mut headers = HashMap::new();
-                                headers.insert("Content-Type".to_string(), "application/json".to_string());
+                                headers.insert(
+                                    "Content-Type".to_string(),
+                                    "application/json".to_string(),
+                                );
 
                                 let target = match rsvp {
                                     Some(rsvp) => rsvp,
@@ -146,18 +183,40 @@ pub async fn encryptor(
                                 };
 
                                 message_tx.send(response).await.unwrap();
-                            },
+                            }
                             Err(e) => {
-                                let _ = print_tx.send(Printout { verbosity: 1, content: format!("Error: {}", e), }).await;
-                            },
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 1,
+                                        content: format!("Error: {}", e),
+                                    })
+                                    .await;
+                            }
                         }
                     }
-                    EncryptorMessage::DecryptAndForwardAction(DecryptAndForwardAction { channel_id, forward_to, json }) => {
-                        let _ = print_tx.send(Printout { verbosity: 1, content: format!("DECRYPTOR TO FORWARD: {}", json.clone().unwrap_or_default().to_string()), }).await;
+                    EncryptorMessage::DecryptAndForwardAction(DecryptAndForwardAction {
+                        channel_id,
+                        forward_to,
+                        json,
+                    }) => {
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!(
+                                    "DECRYPTOR TO FORWARD: {}",
+                                    json.clone().unwrap_or_default().to_string()
+                                ),
+                            })
+                            .await;
 
                         // The payload.bytes should be the encrypted data, with the last 12 bytes being the nonce
                         let Some(payload) = payload else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: "No payload".to_string(), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: "No payload".to_string(),
+                                })
+                                .await;
                             continue;
                         };
 
@@ -192,11 +251,25 @@ pub async fn encryptor(
                             panic!("No secret found");
                         }
                     }
-                    EncryptorMessage::EncryptAndForwardAction(EncryptAndForwardAction { channel_id, forward_to, json }) => {
-                        let _ = print_tx.send(Printout { verbosity: 1, content: format!("ENCRYPTOR TO FORWARD"), }).await;
+                    EncryptorMessage::EncryptAndForwardAction(EncryptAndForwardAction {
+                        channel_id,
+                        forward_to,
+                        json,
+                    }) => {
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!("ENCRYPTOR TO FORWARD"),
+                            })
+                            .await;
 
                         let Some(payload) = payload else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: "No payload".to_string(), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: "No payload".to_string(),
+                                })
+                                .await;
                             continue;
                         };
 
@@ -229,14 +302,29 @@ pub async fn encryptor(
 
                             message_tx.send(message).await.unwrap();
                         } else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: format!("ERROR: No secret found"), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("ERROR: No secret found"),
+                                })
+                                .await;
                         }
                     }
                     EncryptorMessage::DecryptAction(DecryptAction { channel_id }) => {
-                        let _ = print_tx.send(Printout { verbosity: 1, content: format!("ENCRYPTOR TO DECRYPT"), }).await;
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!("ENCRYPTOR TO DECRYPT"),
+                            })
+                            .await;
 
                         let Some(payload) = payload else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: "No payload".to_string(), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: "No payload".to_string(),
+                                })
+                                .await;
                             continue;
                         };
 
@@ -268,14 +356,29 @@ pub async fn encryptor(
 
                             message_tx.send(message).await.unwrap();
                         } else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: format!("ERROR: No secret found"), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("ERROR: No secret found"),
+                                })
+                                .await;
                         }
                     }
                     EncryptorMessage::EncryptAction(EncryptAction { channel_id }) => {
-                        let _ = print_tx.send(Printout { verbosity: 1, content: format!("ENCRYPTOR TO ENCRYPT"), }).await;
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 1,
+                                content: format!("ENCRYPTOR TO ENCRYPT"),
+                            })
+                            .await;
 
                         let Some(payload) = payload else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: "No payload".to_string(), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: "No payload".to_string(),
+                                })
+                                .await;
                             continue;
                         };
 
@@ -307,13 +410,23 @@ pub async fn encryptor(
 
                             message_tx.send(message).await.unwrap();
                         } else {
-                            let _ = print_tx.send(Printout { verbosity: 1, content: format!("ERROR: No secret found"), }).await;
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("ERROR: No secret found"),
+                                })
+                                .await;
                         }
                     }
                 }
             }
             Err(_) => {
-                let _ = print_tx.send(Printout { verbosity: 1, content: "Not a valid EncryptorMessage".to_string(), }).await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 1,
+                        content: "Not a valid EncryptorMessage".to_string(),
+                    })
+                    .await;
             }
         }
     }

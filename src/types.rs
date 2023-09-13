@@ -94,7 +94,7 @@ impl PartialEq<u64> for ProcessId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Address {
     pub node: String,
     pub process: ProcessId,
@@ -124,6 +124,21 @@ pub struct Response {
 pub enum Message {
     Request(Request),
     Response((Result<Response, UqbarError>, Option<Context>)),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct Capability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedCapability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+    pub signature: Vec<u8>, // signed by the kernel, so we can verify that the kernel issued it
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,18 +211,6 @@ pub struct Printout {
 pub type Rsvp = Option<Address>;
 
 //
-//  capabilities, managed by kernel
-//
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Capability {
-    pub issuer: Address,
-    pub name: String,
-    pub params: Option<String>, // JSON-string
-                                // pub signature: String, // signed by the kernel, so we can verify that the kernel issued it
-}
-
-//
 //  boot/startup specific types???
 //
 
@@ -243,6 +246,7 @@ pub enum KernelCommand {
         name: Option<String>,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
+
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
     RebootProcess {

@@ -53,6 +53,13 @@ interface types {
         response(tuple<result<response, uqbar-error>, option<context>>),
     }
 
+    record signed-capability {
+        issuer: address,
+        label: string,
+        params: option<json>,
+        signature: list<u8>,
+    }
+
     record uqbar-error {
         kind: string,
         message: option<json>,
@@ -97,6 +104,8 @@ world uq-process {
         response,
         message,
 
+        signed-capability,
+
         uqbar-error,
         network-error,
         network-error-kind,
@@ -118,6 +127,13 @@ world uq-process {
 
     // maybe have this?
     // import spawn: func(id: process-id, request: option<request>) -> result<process-id, uqbar-error>
+
+    // capabilities management
+
+    // gives us all our signed capabilities so we can send them to others
+    import get-capabilities: func() -> list<signed-capability>
+    import save-capabilities: func(capabilities: list<signed-capability>)
+    import get-capability: func(issuer: address, label: string, params: option<json>) -> option<signed-capability>
 
     // message I/O:
 

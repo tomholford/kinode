@@ -539,10 +539,14 @@ impl Process {
                 process: t::ProcessId::Name("kernel".into()),
             },
             label: "messaging".into(),
-            params: Some(serde_json::to_string(&de_wit_process_id(target.process.clone())).unwrap()),
+            params: Some(
+                serde_json::to_string(&de_wit_process_id(target.process.clone())).unwrap(),
+            ),
         };
         if !self.capabilities.contains(&cap) {
-            return Err(anyhow::anyhow!("process does not have capability to send to that target"));
+            return Err(anyhow::anyhow!(
+                "process does not have capability to send to that target"
+            ));
         }
         // enforce that if message is directed over the network, process has capability to do so
         if target.node != self.metadata.our.node {
@@ -554,7 +558,9 @@ impl Process {
                 label: "network".into(),
                 params: None,
             }) {
-                return Err(anyhow::anyhow!("process does not have capability to send to that target"));
+                return Err(anyhow::anyhow!(
+                    "process does not have capability to send to that target"
+                ));
             }
         }
         let source = self.metadata.our.clone();

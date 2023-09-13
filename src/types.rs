@@ -138,7 +138,7 @@ pub struct SignedCapability {
     pub issuer: Address,
     pub label: String,
     pub params: Option<String>, // JSON-string
-    pub signature: Vec<u8>, // signed by the kernel, so we can verify that the kernel issued it
+    pub signature: Vec<u8>,     // signed by the kernel, so we can verify that the kernel issued it
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -246,7 +246,6 @@ pub enum KernelCommand {
         name: Option<String>,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
-
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
     RebootProcess {

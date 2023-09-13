@@ -439,34 +439,78 @@ pub type FileHash = u128;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsRequest {
-    Add { full_path: String, entry_type: AddEntryType },
-    Rename { full_path: String, new_full_path: String },
-    Delete { full_path: String },
-    GetPath { hash: FileHash },
-    GetEntry { full_path: String },
-    GetFileChunk { full_path: String, offset: u64, length: u64 },
-    WriteChunk { full_path: String, offset: u64, length: u64 },
-    GetEntryLength { full_path: String },
+    Add {
+        full_path: String,
+        entry_type: AddEntryType,
+    },
+    Rename {
+        full_path: String,
+        new_full_path: String,
+    },
+    Delete {
+        full_path: String,
+    },
+    GetPath {
+        hash: FileHash,
+    },
+    GetEntry {
+        full_path: String,
+    },
+    GetFileChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        full_path: String,
+    },
     //  wasi
     // FdAdd { fd: u32, entry_type: AddEntryType },
     // FdRename { fd: u32, new_full_path: String },
-    FdDelete { fd: u32 },
-    FdGetPath { fd: u32 },
-    FdGetEntry { fd: u32 },
-    FdDirStreamNext { stream_id: u32 },
-    FdDirStreamDrop { stream_id: u32 },
-    FdGetFileChunk { fd: u32, offset: u64, length: u64 },
-    FdWriteChunk { fd: u32, offset: u64, length: u64 },
-    FdGetEntryLength { fd: u32 },
-    FdGetType { fd: u32 },
+    FdDelete {
+        fd: u32,
+    },
+    FdGetPath {
+        fd: u32,
+    },
+    FdGetEntry {
+        fd: u32,
+    },
+    FdDirStreamNext {
+        stream_id: u32,
+    },
+    FdDirStreamDrop {
+        stream_id: u32,
+    },
+    FdGetFileChunk {
+        fd: u32,
+        offset: u64,
+        length: u64,
+    },
+    FdWriteChunk {
+        fd: u32,
+        offset: u64,
+        length: u64,
+    },
+    FdGetEntryLength {
+        fd: u32,
+    },
+    FdGetType {
+        fd: u32,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AddEntryType {
     Dir,
-    NewFile,                          //  add a new file to lfs and add name in vfs
-    ExistingFile { hash: FileHash },  //  link an existing file in lfs to a new name in vfs
-    //  ...  //  symlinks?
+    NewFile, //  add a new file to lfs and add name in vfs
+    ExistingFile { hash: FileHash }, //  link an existing file in lfs to a new name in vfs
+             //  ...  //  symlinks?
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -477,23 +521,73 @@ pub enum GetEntryType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsResponse {
-    Add { full_path: String },
-    Rename { new_full_path: String },
-    Delete { full_path: String },
-    GetPath { hash: FileHash, full_path: Option<String> },
-    GetEntry { full_path: String, children: Vec<String> },
-    GetFileChunk { full_path: String, offset: u64, length: u64 },
-    WriteChunk { full_path: String, offset: u64, length: u64 },
-    GetEntryLength { full_path: String, length: u64 },
-    FdDelete { fd: u32 },
-    FdGetPath { fd: u32, full_path: Option<String> },
-    FdGetEntry { fd: u32, stream_id: Option<u32> },
-    FdDirStreamNext { stream_id: u32, child: Option<String> },
-    FdDirStreamDrop { stream_id: u32 },
-    FdGetFileChunk { fd: u32, offset: u64, length: u64 },
-    FdWriteChunk { fd: u32, offset: u64, length: u64 },
-    FdGetEntryLength { fd: u32, length: u64 },
-    FdGetType { fd: u32, entry_type: GetEntryType },
+    Add {
+        full_path: String,
+    },
+    Rename {
+        new_full_path: String,
+    },
+    Delete {
+        full_path: String,
+    },
+    GetPath {
+        hash: FileHash,
+        full_path: Option<String>,
+    },
+    GetEntry {
+        full_path: String,
+        children: Vec<String>,
+    },
+    GetFileChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        full_path: String,
+        length: u64,
+    },
+    FdDelete {
+        fd: u32,
+    },
+    FdGetPath {
+        fd: u32,
+        full_path: Option<String>,
+    },
+    FdGetEntry {
+        fd: u32,
+        stream_id: Option<u32>,
+    },
+    FdDirStreamNext {
+        stream_id: u32,
+        child: Option<String>,
+    },
+    FdDirStreamDrop {
+        stream_id: u32,
+    },
+    FdGetFileChunk {
+        fd: u32,
+        offset: u64,
+        length: u64,
+    },
+    FdWriteChunk {
+        fd: u32,
+        offset: u64,
+        length: u64,
+    },
+    FdGetEntryLength {
+        fd: u32,
+        length: u64,
+    },
+    FdGetType {
+        fd: u32,
+        entry_type: GetEntryType,
+    },
 }
 
 //

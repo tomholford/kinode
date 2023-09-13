@@ -116,12 +116,10 @@ async fn main() {
     let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
     // vfs maintains metadata about files in lfs for processes
-    let (vfs_message_sender, vfs_message_receiver): (
-        MessageSender,
-        MessageReceiver,
-    ) = mpsc::channel(VFS_CHANNEL_CAPACITY);
+    let (vfs_message_sender, vfs_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(VFS_CHANNEL_CAPACITY);
     // encryptor handles end-to-end encryption for client messages
-    let (encryptor_sender, encryptor_receiver): (MessageSender,MessageReceiver) =
+    let (encryptor_sender, encryptor_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(ENCRYPTOR_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =

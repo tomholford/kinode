@@ -8,7 +8,9 @@ use tokio::task::JoinHandle;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 
-use wasmtime_wasi::preview2::{bindings::io::streams, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::preview2::{
+    bindings::io::streams, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
+};
 
 use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
@@ -135,7 +137,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         Ok(Ok(()))
     }
 
-    async fn sync_data(&mut self, fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn sync_data(
+        &mut self,
+        fd: filesystem::Descriptor,
+    ) -> Result<Result<(), filesystem::ErrorCode>> {
         println!("kernel: got sync_data()");
         Ok(Ok(()))
     }
@@ -154,10 +159,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         match entry_type {
             t::GetEntryType::Dir => {
                 flags |= DescriptorFlags::MUTATE_DIRECTORY;
-            },
+            }
             t::GetEntryType::File => {
                 flags |= DescriptorFlags::WRITE;
-            },
+            }
         }
 
         Ok(Ok(flags))
@@ -214,25 +219,39 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetFileChunk {
-                    fd,
-                    offset,
-                    length: len,
-                }).unwrap()),
+                ipc: Some(
+                    serde_json::to_string(&t::VfsRequest::FdGetFileChunk {
+                        fd,
+                        offset,
+                        length: len,
+                    })
+                    .unwrap(),
+                ),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        )
+        .await?
+        .unwrap();
         //  TODO: check response fields
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetFileChunk { fd: _, offset: _, length: _ } = response else {
+        let t::VfsResponse::FdGetFileChunk {
+            fd: _,
+            offset: _,
+            length: _,
+        } = response
+        else {
             panic!("");
         };
 
@@ -242,7 +261,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let Some(ref payload) = prompting_message.payload else {
             panic!("");
         };
-        Ok(Ok((payload.bytes.clone(), false)))  //  TODO: this bool must be true when hit EOF
+        Ok(Ok((payload.bytes.clone(), false))) //  TODO: this bool must be true when hit EOF
     }
 
     async fn write(
@@ -274,12 +293,18 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             },
             None,
             None,
-        ).await?.unwrap();
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        )
+        .await?
+        .unwrap();
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
         let t::VfsResponse::FdGetEntry { fd: _, stream_id } = response else {
@@ -306,39 +331,49 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdDirStreamNext {
-                    stream_id: stream,
-                }).unwrap()),
+                ipc: Some(
+                    serde_json::to_string(&t::VfsRequest::FdDirStreamNext { stream_id: stream })
+                        .unwrap(),
+                ),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        )
+        .await?
+        .unwrap();
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdDirStreamNext { stream_id: _, child } = response else {
+        let t::VfsResponse::FdDirStreamNext {
+            stream_id: _,
+            child,
+        } = response
+        else {
             panic!("");
         };
         match child {
             None => Ok(Ok(None)),
             Some(child) => {
-                let entry_type =
-                    if child.chars().last() == Some('/') {
-                        filesystem::DescriptorType::Directory
-                    } else {
-                        filesystem::DescriptorType::RegularFile
-                    };
+                let entry_type = if child.chars().last() == Some('/') {
+                    filesystem::DescriptorType::Directory
+                } else {
+                    filesystem::DescriptorType::RegularFile
+                };
                 Ok(Ok(Some(filesystem::DirectoryEntry {
                     inode: None,
                     type_: entry_type,
                     name: child,
                 })))
-            },
+            }
         }
     }
 
@@ -356,18 +391,24 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdDirStreamDrop {
-                    stream_id: stream,
-                }).unwrap()),
+                ipc: Some(
+                    serde_json::to_string(&t::VfsRequest::FdDirStreamDrop { stream_id: stream })
+                        .unwrap(),
+                ),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        )
+        .await?
+        .unwrap();
         Ok(())
     }
 
-    async fn sync(&mut self, fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn sync(
+        &mut self,
+        fd: filesystem::Descriptor,
+    ) -> Result<Result<(), filesystem::ErrorCode>> {
         println!("kernel: got sync()");
         Ok(Ok(()))
     }
@@ -392,12 +433,18 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             },
             None,
             None,
-        ).await?.unwrap();
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        )
+        .await?
+        .unwrap();
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
         let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
@@ -422,15 +469,20 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             wit::Request {
                 inherit: false,
                 expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::Add {
-                    full_path,
-                    entry_type: t::AddEntryType::Dir,
-                }).unwrap()),
+                ipc: Some(
+                    serde_json::to_string(&t::VfsRequest::Add {
+                        full_path,
+                        entry_type: t::AddEntryType::Dir,
+                    })
+                    .unwrap(),
+                ),
                 metadata: None,
             },
             None,
             None,
-        ).await?.unwrap();
+        )
+        .await?
+        .unwrap();
 
         Ok(Ok(()))
     }
@@ -441,7 +493,8 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
         println!("kernel: got stat()");
         let now = {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap();
             filesystem::Datetime {
                 seconds: t.as_secs(),
@@ -471,12 +524,18 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             },
             None,
             None,
-        ).await?.unwrap();
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        )
+        .await?
+        .unwrap();
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
         let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
@@ -484,18 +543,16 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         };
 
         match entry_type {
-            t::GetEntryType::Dir => {
-                Ok(Ok(filesystem::DescriptorStat {
-                    device: 0,
-                    inode: 0,
-                    type_: filesystem::DescriptorType::Directory,
-                    link_count: 1,
-                    size: 0,
-                    data_access_timestamp: now.clone(),
-                    data_modification_timestamp: now.clone(),
-                    status_change_timestamp: now.clone(),
-                }))
-            },
+            t::GetEntryType::Dir => Ok(Ok(filesystem::DescriptorStat {
+                device: 0,
+                inode: 0,
+                type_: filesystem::DescriptorType::Directory,
+                link_count: 1,
+                size: 0,
+                data_access_timestamp: now.clone(),
+                data_modification_timestamp: now.clone(),
+                status_change_timestamp: now.clone(),
+            })),
             t::GetEntryType::File => {
                 //  get size
                 let (_, response) = send_and_await_response(
@@ -507,19 +564,25 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                     wit::Request {
                         inherit: false,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntryLength {
-                            fd,
-                        }).unwrap()),
+                        ipc: Some(
+                            serde_json::to_string(&t::VfsRequest::FdGetEntryLength { fd }).unwrap(),
+                        ),
                         metadata: None,
                     },
                     None,
                     None,
-                ).await?.unwrap();
-                let wit::Message::Response((Ok(wit::Response {
-                    ipc: Some(ipc),
-                    metadata: _,
-                }), _)) = response else {
-                    panic!("");  //  TODO: error handle
+                )
+                .await?
+                .unwrap();
+                let wit::Message::Response((
+                    Ok(wit::Response {
+                        ipc: Some(ipc),
+                        metadata: _,
+                    }),
+                    _,
+                )) = response
+                else {
+                    panic!(""); //  TODO: error handle
                 };
                 let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
                 let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
@@ -536,7 +599,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
                 }))
-            },
+            }
         }
     }
 
@@ -548,7 +611,8 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
         println!("kernel: got stat_at()");
         let now = {
-            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap();
             filesystem::Datetime {
                 seconds: t.as_secs(),
@@ -578,12 +642,18 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
             },
             None,
             None,
-        ).await?.unwrap();
-        let wit::Message::Response((Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }), _)) = response else {
-            panic!("");  //  TODO: error handle
+        )
+        .await?
+        .unwrap();
+        let wit::Message::Response((
+            Ok(wit::Response {
+                ipc: Some(ipc),
+                metadata: _,
+            }),
+            _,
+        )) = response
+        else {
+            panic!(""); //  TODO: error handle
         };
         let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
         let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
@@ -603,26 +673,23 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         //  TODO: do we need to handle non-`/`-ending directories?
         //         if so, probably need to query without and then with `/` if without
         //         doesnt return anything
-        let entry_type =
-            if full_path.chars().last() == Some('/') {
-                filesystem::DescriptorType::Directory
-            } else {
-                filesystem::DescriptorType::RegularFile
-            };
+        let entry_type = if full_path.chars().last() == Some('/') {
+            filesystem::DescriptorType::Directory
+        } else {
+            filesystem::DescriptorType::RegularFile
+        };
 
         match entry_type {
-            filesystem::DescriptorType::Directory => {
-                Ok(Ok(filesystem::DescriptorStat {
-                    device: 0,
-                    inode: 0,
-                    type_: filesystem::DescriptorType::Directory,
-                    link_count: 1,
-                    size: 0,
-                    data_access_timestamp: now.clone(),
-                    data_modification_timestamp: now.clone(),
-                    status_change_timestamp: now.clone(),
-                }))
-            },
+            filesystem::DescriptorType::Directory => Ok(Ok(filesystem::DescriptorStat {
+                device: 0,
+                inode: 0,
+                type_: filesystem::DescriptorType::Directory,
+                link_count: 1,
+                size: 0,
+                data_access_timestamp: now.clone(),
+                data_modification_timestamp: now.clone(),
+                status_change_timestamp: now.clone(),
+            })),
             filesystem::DescriptorType::RegularFile => {
                 //  get size
                 let (_, response) = send_and_await_response(
@@ -634,19 +701,25 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                     wit::Request {
                         inherit: false,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntryLength {
-                            fd,
-                        }).unwrap()),
+                        ipc: Some(
+                            serde_json::to_string(&t::VfsRequest::FdGetEntryLength { fd }).unwrap(),
+                        ),
                         metadata: None,
                     },
                     None,
                     None,
-                ).await?.unwrap();
-                let wit::Message::Response((Ok(wit::Response {
-                    ipc: Some(ipc),
-                    metadata: _,
-                }), _)) = response else {
-                    panic!("");  //  TODO: error handle
+                )
+                .await?
+                .unwrap();
+                let wit::Message::Response((
+                    Ok(wit::Response {
+                        ipc: Some(ipc),
+                        metadata: _,
+                    }),
+                    _,
+                )) = response
+                else {
+                    panic!(""); //  TODO: error handle
                 };
                 let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
                 let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
@@ -663,10 +736,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                     data_modification_timestamp: now.clone(),
                     status_change_timestamp: now.clone(),
                 }))
-            },
+            }
             _ => {
                 panic!("");
-            },
+            }
         }
     }
 
@@ -921,7 +994,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         todo!("filesystem change_directory_permissions_at is not implemented")
     }
 
-    async fn lock_shared(&mut self, _fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn lock_shared(
+        &mut self,
+        _fd: filesystem::Descriptor,
+    ) -> Result<Result<(), filesystem::ErrorCode>> {
         todo!("filesystem lock_shared is not implemented")
     }
 
@@ -946,7 +1022,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         todo!("filesystem try_lock_exclusive is not implemented")
     }
 
-    async fn unlock(&mut self, _fd: filesystem::Descriptor) -> Result<Result<(), filesystem::ErrorCode>> {
+    async fn unlock(
+        &mut self,
+        _fd: filesystem::Descriptor,
+    ) -> Result<Result<(), filesystem::ErrorCode>> {
         todo!("filesystem unlock is not implemented")
     }
 
@@ -1236,14 +1315,7 @@ impl UqProcessImports for ProcessWasi {
         payload: Option<wit::Payload>,
     ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
     {
-        send_and_await_response(
-            self,
-            target,
-            request,
-            context,
-            payload,
-        )
-            .await
+        send_and_await_response(self, target, request, context, payload).await
         // let id = self
         //     .process
         //     .handle_request(target, request, context, payload)
@@ -1561,10 +1633,7 @@ async fn persist_state(
                 ipc: Some(serde_json::to_string(&t::FsAction::SetState).unwrap()),
                 metadata: None,
             }),
-            payload: Some(t::Payload {
-                mime: None,
-                bytes,
-            }),
+            payload: Some(t::Payload { mime: None, bytes }),
         })
         .await?;
     Ok(())
@@ -1617,12 +1686,17 @@ async fn get_vfs_fd_entry_type(
         None,
         None,
     )
-        .await?.unwrap();  //  TODO
-    let wit::Message::Response((Ok(wit::Response {
-        ipc: Some(ipc),
-        metadata: _,
-    }), _)) = response else {
-        panic!("");  //  TODO: error handle
+    .await?
+    .unwrap(); //  TODO
+    let wit::Message::Response((
+        Ok(wit::Response {
+            ipc: Some(ipc),
+            metadata: _,
+        }),
+        _,
+    )) = response
+    else {
+        panic!(""); //  TODO: error handle
     };
     let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
     let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {

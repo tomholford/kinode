@@ -36,6 +36,7 @@ struct Process {
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
+    last_payload: Option<t::Payload>,
     contexts: HashMap<u64, ProcessContext>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
 }
@@ -213,10 +214,7 @@ impl UqProcessImports for ProcessWasi {
     /// if the prompting message did not have a payload, will return None.
     /// will also return None if there is no prompting message.
     async fn get_payload(&mut self) -> Result<Option<wit::Payload>> {
-        match self.process.prompting_message.clone() {
-            Some(km) => Ok(en_wit_payload(km.payload)),
-            None => Ok(None),
-        }
+        Ok(en_wit_payload(self.process.last_payload.clone()))
     }
 
     async fn send_request(
@@ -304,21 +302,12 @@ impl UqProcessImports for ProcessWasi {
 
 impl Process {
     /// save a context for a given request.
-    async fn save_context(
-        &mut self,
-        request_id: u64,
-        request: t::Request,
-        context: Option<t::Context>,
-    ) {
+    async fn save_context(&mut self, request_id: u64, context: Option<t::Context>) {
         self.contexts.insert(
             request_id,
             ProcessContext {
                 prompting_message: if self.prompting_message.is_some() {
-                    if request.inherit {
-                        self.prompting_message.clone()
-                    } else {
-                        None
-                    }
+                    self.prompting_message.clone()
                 } else {
                     None
                 },
@@ -340,10 +329,12 @@ impl Process {
         match res {
             Ok(km) => match self.contexts.remove(&km.id) {
                 None => {
+                    self.last_payload = km.payload.clone();
                     self.prompting_message = Some(km.clone());
                     Ok(self.kernel_message_to_process_receive(None, km))
                 }
                 Some(context) => {
+                    self.last_payload = km.payload.clone();
                     self.prompting_message = match context.prompting_message {
                         None => Some(km.clone()),
                         Some(prompting_message) => Some(prompting_message),
@@ -376,10 +367,12 @@ impl Process {
                     if km.id == awaited_message_id {
                         match self.contexts.remove(&km.id) {
                             None => {
+                                self.last_payload = km.payload.clone();
                                 self.prompting_message = Some(km.clone());
                                 return Ok(self.kernel_message_to_process_receive(None, km));
                             }
                             Some(context) => {
+                                self.last_payload = km.payload.clone();
                                 self.prompting_message = match context.prompting_message {
                                     None => Some(km.clone()),
                                     Some(prompting_message) => Some(prompting_message),
@@ -511,8 +504,7 @@ impl Process {
         // modify the process' context map as needed.
         // if there is a prompting message, we need to store the ultimate
         // even if there is no new context string.
-        self.save_context(kernel_message.id, de_wit_request(request), new_context)
-            .await;
+        self.save_context(kernel_message.id, new_context).await;
 
         self.send_to_loop
             .send(kernel_message)
@@ -670,6 +662,7 @@ async fn make_process_loop(
                 send_to_loop: send_to_loop.clone(),
                 send_to_terminal: send_to_terminal.clone(),
                 prompting_message: None,
+                last_payload: None,
                 contexts: HashMap::new(),
                 message_queue: VecDeque::new(),
             },

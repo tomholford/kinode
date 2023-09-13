@@ -76,4 +76,25 @@ Examples of capabilities:
     TODO does a process need a cap granted to it at launch to "do networking"?
 
 - access to other processes:
-    if you have the handle (AKA identity) for a process, you can message it. how do you get that handle? someone has to give it to you, via a message. if a process wants to be accessible by anyone, it should pick a *name* that can be shared out-of-band.
+
+    ```rust
+    pub struct Address {
+        pub node: String,
+        pub process: ProcessId,
+    }
+    ```
+
+    Instead of `target` being a mere `Address` struct, a process must have a `Capability` in order to create a message directed at another process. Since this is such a common capability, we can have special affordances to make it as ergonomic as using an `Address`. Literally, the process can be written as though it simply uses Address structs in its messaging, and the kernel can interpolate them with matching CapAddress structs that it stores next to the running process.
+
+    ```rust
+    pub struct CapAddress {
+        pub node: String,
+        pub process: ProcessId,
+        issuer: Address,
+        signature: String,
+    }
+    ```
+
+    When a process starts, we need some kind of way for it to "request" certain capabilities that it requires for operation. This bubbles up all the way to top-level user-facing UX: it's similar to installing an iOS app and seeing it request camera and microphone access.
+
+    "This app wants to send messages to apps X, Y, and Z, and access your wallet...etc"

@@ -127,55 +127,56 @@ async fn main() {
     ) = if keyfile.is_ok() {
         // LOGIN flow
         // get username, keyfile, and jwt_secret from disk
-        let (username, key, jwt_secret) =
-            bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+        // let (username, key, jwt_secret) =
+        //     bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
 
-        println!(
-            "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/login", http_server_port),
-            format!(
-                "Welcome back, {}. Click here to log in to your node.",
-                username
-            ),
-        );
-        println!("(http://localhost:{}/login)", http_server_port);
-        if our_ip != "localhost" {
-            println!(
-                "(if on a remote machine: http://{}:{}/login)",
-                our_ip, http_server_port
-            );
-        }
+        // println!(
+        //     "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
+        //     format!("http://localhost:{}/login", http_server_port),
+        //     format!(
+        //         "Welcome back, {}. Click here to log in to your node.",
+        //         username
+        //     ),
+        // );
+        // println!("(http://localhost:{}/login)", http_server_port);
+        // if our_ip != "localhost" {
+        //     println!(
+        //         "(if on a remote machine: http://{}:{}/login)",
+        //         our_ip, http_server_port
+        //     );
+        // }
 
-        let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
-        let (networking_keypair, jwt_secret_bytes) = tokio::select! {
-            _ = register::login(
-                tx,
-                kill_rx,
-                key,
-                jwt_secret,
-                http_server_port,
-                &username
-            ) => panic!("login failed"),
-            (networking_keypair, jwt_secret_bytes) = async {
-                while let Some(fin) = rx.recv().await {
-                    return fin
-                }
-                panic!("login failed")
-            } => (networking_keypair, jwt_secret_bytes),
-        };
+        // let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
+        // let (networking_keypair, jwt_secret_bytes) = tokio::select! {
+        //     _ = register::login(
+        //         tx,
+        //         kill_rx,
+        //         key,
+        //         jwt_secret,
+        //         http_server_port,
+        //         &username
+        //     ) => panic!("login failed"),
+        //     (networking_keypair, jwt_secret_bytes) = async {
+        //         while let Some(fin) = rx.recv().await {
+        //             return fin
+        //         }
+        //         panic!("login failed")
+        //     } => (networking_keypair, jwt_secret_bytes),
+        // };
 
-        // check if Identity for this username has correct networking keys,
-        // if not, prompt user to reset them.
-        // TODO this should be decrypted from disk
-        let our_identity = Identity {
-            name: username.clone(),
-            address: "0x0".into(),
-            networking_key: hex::encode(networking_keypair.public_key().as_ref()),
-            ws_routing: None,
-            allowed_routers: vec![],
-        };
+        // // check if Identity for this username has correct networking keys,
+        // // if not, prompt user to reset them.
+        // // TODO this should be decrypted from disk
+        // let our_identity = Identity {
+        //     name: username.clone(),
+        //     address: "0x0".into(),
+        //     networking_key: hex::encode(networking_keypair.public_key().as_ref()),
+        //     ws_routing: None,
+        //     allowed_routers: vec![],
+        // };
 
-        (our_identity.clone(), networking_keypair, jwt_secret_bytes)
+        // (our_identity.clone(), networking_keypair, jwt_secret_bytes)
+        panic!("TODO LOGIN NOT IMPLEMENTED YET")
     } else {
         // REGISTER flow
         println!(
@@ -191,38 +192,16 @@ async fn main() {
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>)>(1);
-        let (registration, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
-            _ = register::register(tx, kill_rx, http_server_port, http_server_port)
+        let (tx, mut rx) = mpsc::channel::<(Identity, String, Document, Vec<u8>)>(1);
+        let (our, password, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
+            _ = register::register(tx, kill_rx, our_ip, http_server_port, http_server_port)
                 => panic!("registration failed"),
-            (registration, serialized_networking_keypair, jwt_secret_bytes) = async {
+            (our, password, serialized_networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("registration failed")
-            } => (registration, serialized_networking_keypair, jwt_secret_bytes),
-        };
-
-        // TODO move all this logic into register::register
-        // TODO: if IP is localhost, assign a router...
-        let networking_keypair =
-            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
-        let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
-        let ws_port = http_server::find_open_port(9000).await.unwrap();
-        let our = Identity {
-            name: registration.username.clone(),
-            address: registration.address.clone(),
-            networking_key: hex_pubkey.clone(),
-            ws_routing: if our_ip == "localhost" || !registration.direct {
-                None
-            } else {
-                Some((our_ip.clone(), ws_port))
-            },
-            allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
-            } else {
-                vec![]
-            },
+            } => (our, password, serialized_networking_keypair, jwt_secret_bytes),
         };
 
         println!("generating disk encryption keys...");
@@ -231,7 +210,7 @@ async fn main() {
             PBKDF2_ALG,
             NonZeroU32::new(ITERATIONS).unwrap(),
             DISK_KEY_SALT,
-            registration.password.as_bytes(),
+            password.as_bytes(),
             &mut disk_key,
         );
         println!(
@@ -250,7 +229,7 @@ async fn main() {
         fs::write(
             format!("{}/.network.keys", home_directory_path),
             bincode::serialize(&(
-                registration.username.clone(),
+                our.name.clone(),
                 [nonce.deref().to_vec(), ciphertext].concat(),
                 [nonce.deref().to_vec(), jwtciphertext].concat(),
             ))
@@ -258,9 +237,12 @@ async fn main() {
         )
         .await
         .unwrap();
+        
+        let networking_keypair =
+            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
         println!("registration complete!");
-        (our, networking_keypair, jwt_secret_bytes)
+        (our, networking_keypair, jwt_secret_bytes.to_vec())
     };
 
     //  bootstrap FS.

@@ -1,6 +1,6 @@
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -246,6 +246,7 @@ pub enum KernelCommand {
         name: Option<String>,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
+        initial_capabilities: HashSet<Capability>,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
     RebootProcess {
@@ -253,6 +254,7 @@ pub enum KernelCommand {
         process_id: ProcessId,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
+        initial_capabilities: HashSet<Capability>,
     },
     Shutdown,
 }

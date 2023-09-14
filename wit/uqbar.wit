@@ -53,6 +53,12 @@ interface types {
         response(tuple<result<response, uqbar-error>, option<context>>),
     }
 
+    variant capabilities {
+        none,
+        all,
+        some(list<signed-capability>),
+    }
+
     record signed-capability {
         issuer: address,
         label: string,
@@ -104,6 +110,7 @@ world uq-process {
         response,
         message,
 
+        capabilities,
         signed-capability,
 
         uqbar-error,
@@ -125,8 +132,9 @@ world uq-process {
 
     import set-on-panic: func(on-panic: on-panic)
 
-    // maybe have this?
-    // import spawn: func(id: process-id, request: option<request>) -> result<process-id, uqbar-error>
+    // what should bytes_uri be?? need vfs?
+    import spawn: func(id: process-id, bytes-uri: string, capabilities: capabilities) ->
+        result<process-id, uqbar-error>
 
     // capabilities management
 

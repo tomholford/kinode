@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ring::signature::{self, KeyPair};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ struct Process {
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
     contexts: HashMap<u64, ProcessContext>,
-    capabilities: std::collections::HashSet<t::Capability>,
+    capabilities: HashSet<t::Capability>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
 }
 
@@ -64,6 +64,7 @@ struct StartProcessMetadata {
     process_id: Option<t::ProcessId>,
     wasm_bytes_handle: u128,
     on_panic: t::OnPanic,
+    initial_capabilities: HashSet<t::Capability>,
     reboot: bool,
 }
 
@@ -71,7 +72,7 @@ struct StartProcessMetadata {
 type Senders = HashMap<t::ProcessId, ProcessSender>;
 //  handles are for managing liveness, map is for persistence and metadata.
 type ProcessHandles = HashMap<t::ProcessId, JoinHandle<Result<()>>>;
-type ProcessMap = HashMap<t::ProcessId, (u128, t::OnPanic)>;
+type ProcessMap = HashMap<t::ProcessId, (u128, t::OnPanic, HashSet<t::Capability>)>;
 
 enum ProcessSender {
     Runtime(t::MessageSender),
@@ -198,6 +199,15 @@ impl UqProcessImports for ProcessWasi {
 
         //     self.process.metadata.on_panic = on_panic;
         //     Ok(())
+    }
+
+    async fn spawn(
+        &mut self,
+        id: wit::ProcessId,
+        bytes_uri: String,
+        capabilities: wit::Capabilities,
+    ) -> Result<Result<wit::ProcessId, wit::UqbarError>> {
+        unimplemented!()
     }
 
     //
@@ -722,6 +732,7 @@ async fn make_process_loop(
     send_to_terminal: t::PrintSender,
     recv_in_process: ProcessMessageReceiver,
     wasm_bytes: &Vec<u8>,
+    initial_capabilities: HashSet<t::Capability>,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our = metadata.our.clone();
@@ -774,7 +785,7 @@ async fn make_process_loop(
                 send_to_terminal: send_to_terminal.clone(),
                 prompting_message: None,
                 contexts: HashMap::new(),
-                capabilities: std::collections::HashSet::new(),
+                capabilities: initial_capabilities.clone(),
                 message_queue: VecDeque::new(),
             },
             table,
@@ -831,7 +842,7 @@ async fn make_process_loop(
             // fulfill the designated OnPanic behavior
             match on_panic {
                 t::OnPanic::None => {}
-                // if restart, tell ourselves to init the app again
+                // if restart, tell ourselves to init the app again, with same capabilities
                 t::OnPanic::Restart => {
                     send_to_loop
                         .send(t::KernelMessage {
@@ -850,6 +861,7 @@ async fn make_process_loop(
                                         },
                                         wasm_bytes_handle,
                                         on_panic,
+                                        initial_capabilities: initial_capabilities,
                                     })
                                     .unwrap(),
                                 ),
@@ -945,6 +957,7 @@ async fn handle_kernel_request(
             name,
             wasm_bytes_handle,
             on_panic,
+            initial_capabilities,
         } => send_to_loop
             .send(t::KernelMessage {
                 id: km.id,
@@ -973,6 +986,7 @@ async fn handle_kernel_request(
                             process_id: name.map(|n| t::ProcessId::Name(n)),
                             wasm_bytes_handle,
                             on_panic,
+                            initial_capabilities,
                             reboot: false,
                         })
                         .unwrap(),
@@ -987,6 +1001,7 @@ async fn handle_kernel_request(
             process_id,
             wasm_bytes_handle,
             on_panic,
+            initial_capabilities,
         } => send_to_loop
             .send(t::KernelMessage {
                 id: km.id,
@@ -1011,6 +1026,7 @@ async fn handle_kernel_request(
                             process_id: Some(process_id),
                             wasm_bytes_handle,
                             on_panic,
+                            initial_capabilities,
                             reboot: true,
                         })
                         .unwrap(),
@@ -1238,6 +1254,7 @@ async fn start_process(
                 send_to_terminal.clone(),
                 recv_in_process,
                 &km_payload_bytes,
+                process_metadata.initial_capabilities.clone(),
                 engine,
             )
             .await,
@@ -1249,6 +1266,7 @@ async fn start_process(
         (
             process_metadata.wasm_bytes_handle,
             process_metadata.on_panic,
+            process_metadata.initial_capabilities,
         ),
     );
 
@@ -1346,7 +1364,8 @@ async fn make_event_loop(
             t::ProcessId::Name("file_transfer_one_off".into()),
         ];
 
-        for (process_id, (wasm_bytes_handle, on_panic)) in process_map.clone() {
+        for (process_id, (wasm_bytes_handle, on_panic, initial_capabilities)) in process_map.clone()
+        {
             if !exclude_list.contains(&process_id) {
                 send_to_loop
                     .send(t::KernelMessage {
@@ -1368,6 +1387,7 @@ async fn make_event_loop(
                                     process_id,
                                     wasm_bytes_handle,
                                     on_panic,
+                                    initial_capabilities,
                                 })
                                 .unwrap(),
                             ),

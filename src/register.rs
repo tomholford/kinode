@@ -19,7 +19,7 @@ use std::collections::HashMap; // TODO delete
 
 use crate::types::*;
 
-type RegistrationSender = mpsc::Sender<(Registration, Document, Vec<u8>, String)>;
+type RegistrationSender = mpsc::Sender<(Registration, Document, Vec<u8>)>;
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 pub const ITERATIONS: u32 = 1_000_000;
@@ -63,11 +63,12 @@ pub async fn register(
         .and(warp::get())
         .and(warp::fs::file("./src/register_app/index.html"));
 
-    let api = warp::path("set-networking").and( // TODO this path might change
+    let api = warp::path("get-ws-info").and( // TODO this path might change
         warp::post()
             .and(warp::body::content_length_limit(1024 * 16))
             .and(warp::body::json())
             .map(move |info: Registration| {
+                // TODO this is super fucked up
                 // Process the data from the POST request here and store it
                 *registration_post.lock().unwrap() = Some(info);
 
@@ -93,7 +94,6 @@ pub async fn register(
             //    - signature string
             .or(warp::put()
                 .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
                 .and(warp::any().map(move || tx.clone()))
                 .and(warp::any().map(move || registration.lock().unwrap().take().unwrap()))
                 .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
@@ -114,7 +114,6 @@ pub async fn register(
 }
 
 async fn handle_put(
-    signature: String,
     sender: RegistrationSender,
     registration: Registration,
     networking_keypair: Document,
@@ -135,7 +134,7 @@ async fn handle_put(
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
-        .send((registration, networking_keypair, jwt_secret_bytes.to_vec(), signature))
+        .send((registration, networking_keypair, jwt_secret_bytes.to_vec()))
         .await
         .unwrap();
     Ok(response)
@@ -167,7 +166,7 @@ pub async fn login(
                 .and(warp::any().map(move || jwt_secret_file.clone()))
                 .and(warp::any().map(move || username.clone()))
                 .and(warp::any().map(move || tx.clone()))
-                .and_then(handle_password)),
+                .and_then(handle_login)),
     ).or(redirect_to_login);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
@@ -179,7 +178,7 @@ pub async fn login(
         .await;
 }
 
-async fn handle_password(
+async fn handle_login(
     password: serde_json::Value,
     keyfile: Vec<u8>,
     jwt_secret_file: Vec<u8>,

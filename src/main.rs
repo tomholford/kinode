@@ -191,16 +191,38 @@ async fn main() {
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>, String)>(1);
-        let (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = tokio::select! {
+        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>)>(1);
+        let (registration, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
             _ = register::register(tx, kill_rx, http_server_port, http_server_port)
                 => panic!("registration failed"),
-            (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = async {
+            (registration, serialized_networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("registration failed")
-            } => (registration, serialized_networking_keypair, jwt_secret_bytes, signature),
+            } => (registration, serialized_networking_keypair, jwt_secret_bytes),
+        };
+
+        // TODO move all this logic into register::register
+        // TODO: if IP is localhost, assign a router...
+        let networking_keypair =
+            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+        let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
+        let ws_port = http_server::find_open_port(9000).await.unwrap();
+        let our = Identity {
+            name: registration.username.clone(),
+            address: registration.address.clone(),
+            networking_key: hex_pubkey.clone(),
+            ws_routing: if our_ip == "localhost" || !registration.direct {
+                None
+            } else {
+                Some((our_ip.clone(), ws_port))
+            },
+            allowed_routers: if our_ip == "localhost" || !registration.direct {
+                vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
+            } else {
+                vec![]
+            },
         };
 
         println!("generating disk encryption keys...");
@@ -222,52 +244,9 @@ async fn main() {
         let ciphertext: Vec<u8> = cipher
             .encrypt(&nonce, serialized_networking_keypair.as_ref())
             .unwrap();
-        let networking_keypair =
-            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
         let jwtciphertext: Vec<u8> = cipher.encrypt(&nonce, jwt_secret_bytes.as_ref()).unwrap();
 
-        // TODO: if IP is localhost, assign a router...
-        let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
-        let ws_port = http_server::find_open_port(9000).await.unwrap();
-        let our = Identity {
-            name: registration.username.clone(),
-            address: registration.address.clone(),
-            networking_key: hex_pubkey.clone(),
-            ws_routing: if our_ip == "localhost" || !registration.direct {
-                None
-            } else {
-                Some((our_ip.clone(), ws_port))
-            },
-            allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
-            } else {
-                vec![]
-            },
-        };
-
-        let id_transaction = IdentityTransaction {
-            from: registration.address.clone(),
-            signature: Some(signature),
-            to: "0x0".into(),
-            town_id: 0,
-            calldata: our.clone(),
-            nonce: "0".into(),
-        };
-
-        // make POST
-        // TODO send transaction to actual RPC endpoint
-        // let response = reqwest::Client::new()
-        //     .post(rpc_url)
-        //     .body(bincode::serialize(&id_transaction).unwrap())
-        //     .send()
-        //     .await
-        //     .unwrap();
-
-        // assert!(response.status().is_success());
-
-        println!("\"posting\" \"transaction\" to \"blockchain\"...");
-        std::thread::sleep(std::time::Duration::from_secs(5));
         fs::write(
             format!("{}/.network.keys", home_directory_path),
             bincode::serialize(&(
@@ -279,11 +258,6 @@ async fn main() {
         )
         .await
         .unwrap();
-
-        let kernel_address = Address {
-            node: our.name.clone(),
-            process: ProcessId::Name("kernel".into()),
-        };
 
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)

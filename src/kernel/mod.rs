@@ -205,9 +205,52 @@ impl UqProcessImports for ProcessWasi {
         &mut self,
         id: wit::ProcessId,
         bytes_uri: String,
+        on_panic: wit::OnPanic,
         capabilities: wit::Capabilities,
     ) -> Result<Result<wit::ProcessId, wit::UqbarError>> {
-        unimplemented!()
+        self.process
+            .send_to_loop
+            .send(t::KernelMessage {
+                id: 0,
+                source: self.process.metadata.our.clone(),
+                target: t::Address {
+                    node: self.process.metadata.our.node.clone(),
+                    process: t::ProcessId::Name("kernel".into()),
+                },
+                rsvp: Some(self.process.metadata.our.clone()),
+                message: t::Message::Request(t::Request {
+                    inherit: false,
+                    expects_response: true,
+                    ipc: Some(
+                        serde_json::to_string(&t::KernelCommand::StartProcess {
+                            name: match id {
+                                wit::ProcessId::Name(name) => Some(name),
+                                wit::ProcessId::Id(_id) => None,
+                            },
+                            wasm_bytes_handle: 0, // ???????
+                            on_panic: de_wit_on_panic(on_panic),
+                            initial_capabilities: match capabilities {
+                                wit::Capabilities::None => HashSet::new(),
+                                wit::Capabilities::All => self.process.capabilities.clone(),
+                                wit::Capabilities::Some(caps) => caps
+                                    .into_iter()
+                                    .map(|cap| t::Capability {
+                                        issuer: de_wit_address(cap.issuer),
+                                        label: cap.label,
+                                        params: cap.params,
+                                    })
+                                    .collect(),
+                            },
+                        })
+                        .unwrap(),
+                    ),
+                    metadata: None,
+                }),
+                payload: None,
+            })
+            .await?;
+
+        Ok(Ok(wit::ProcessId::Name("".into())))
     }
 
     //

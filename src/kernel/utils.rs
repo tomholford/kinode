@@ -147,3 +147,21 @@ pub fn en_wit_signed_capability(cap: t::SignedCapability) -> wit::SignedCapabili
         signature: cap.signature,
     }
 }
+
+pub fn de_wit_on_panic(wit: wit::OnPanic) -> t::OnPanic {
+    match wit {
+        wit::OnPanic::None => t::OnPanic::None,
+        wit::OnPanic::Restart => t::OnPanic::Restart,
+        wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
+            reqs.into_iter()
+                .map(|(address, request, payload)| {
+                    (
+                        de_wit_address(address),
+                        de_wit_request(request),
+                        de_wit_payload(payload),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}

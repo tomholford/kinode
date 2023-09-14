@@ -49,8 +49,6 @@ pub async fn register(
     port: u16,
     redir_port: u16,
 ) {
-    const REGISTER_PAGE: &str = include_str!("register.html");
-
     let registration = Arc::new(Mutex::new(None));
     let networking_keypair = Arc::new(Mutex::new(None));
     let jwt_secret = Arc::new(Mutex::new(None));
@@ -59,93 +57,38 @@ pub async fn register(
     let networking_keypair_post = networking_keypair.clone();
     let jwt_secret_post = jwt_secret.clone();
 
-    let check_address_route = warp::path!("check-address" / String).and_then({
-        // TODO need to get rid of this
-        let pki: OnchainPKI = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-        move |address: String| {
-            let pki = pki.clone();
-            async move {
-                let pki_read = pki.read().await;
+    let static_files = warp::path("static")
+        .and(warp::fs::dir("./src/register_app/static/"));
+    let react_app = warp::path("register")
+        .and(warp::get())
+        .and(warp::fs::file("./src/register_app/index.html"));
 
-                let mut usernames: Vec<String> = Vec::new();
+    let api = warp::path("set-networking").and( // TODO this path might change
+        warp::post()
+            .and(warp::body::content_length_limit(1024 * 16))
+            .and(warp::body::json())
+            .map(move |info: Registration| {
+                // Process the data from the POST request here and store it
+                *registration_post.lock().unwrap() = Some(info);
 
-                for (username, identity) in pki_read.iter() {
-                    if identity.address == address {
-                        usernames.push(username.to_string());
-                    }
-                }
+                // this will be replaced with the key manager module
+                let seed = SystemRandom::new();
+                let serialized_keypair =
+                    signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
+                let keypair =
+                    signature::Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref()).unwrap();
 
-                if !usernames.is_empty() {
-                    Ok::<_, Rejection>(warp::reply::with_status(
-                        usernames.join(","),
-                        warp::http::StatusCode::OK,
-                    ))
-                } else {
-                    Ok::<_, Rejection>(warp::reply::with_status(
-                        "Not taken".to_string(),
-                        warp::http::StatusCode::NO_CONTENT,
-                    ))
-                }
-            }
-        }
-    });
+                let public_key = hex::encode(keypair.public_key().as_ref());
+                *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
 
-    let check_username_route = warp::path!("check-username" / String).and_then({
-        // TODO need to get rid of this
-        let pki: OnchainPKI = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-        move |username: String| {
-            let pki = pki.clone();
-            async move {
-                let pki_read = pki.read().await;
+                // Generate the jwt_secret
+                let mut jwt_secret = [0u8; 32];
+                ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
+                *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
 
-                let reply = match pki_read.get(&username) {
-                    Some(_) => warp::reply::with_status(
-                        "Conflict".to_string(),
-                        warp::http::StatusCode::CONFLICT,
-                    ),
-                    None => warp::reply::with_status(
-                        "Not taken".to_string(),
-                        warp::http::StatusCode::NO_CONTENT,
-                    ),
-                };
-                Ok::<_, Rejection>(reply)
-            }
-        }
-    });
-
-    let routes = warp::path("register").and(
-        // 1. serve register.html right here
-        warp::get()
-            .map(move || warp::reply::html(REGISTER_PAGE))
-            // 2. await a single POST
-            //    - username
-            //    - password
-            //    - address (wallet)
-            .or(warp::post()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
-                .map(move |info: Registration| {
-                    // Process the data from the POST request here and store it
-                    *registration_post.lock().unwrap() = Some(info);
-
-                    // this will be replaced with the key manager module
-                    let seed = SystemRandom::new();
-                    let serialized_keypair =
-                        signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
-                    let keypair =
-                        signature::Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref()).unwrap();
-
-                    let public_key = hex::encode(keypair.public_key().as_ref());
-                    *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
-
-                    // Generate the jwt_secret
-                    let mut jwt_secret = [0u8; 32];
-                    ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
-                    *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
-
-                    // Return a response to the POST request containing new networking key to be signed
-                    warp::reply::html(public_key)
-                }))
+                // Return a response to the POST request containing new networking key to be signed
+                warp::reply::html(public_key)
+            })
             // 4. await a PUT
             //    - signature string
             .or(warp::put()
@@ -157,7 +100,9 @@ pub async fn register(
                 .and(warp::any().map(move || jwt_secret.lock().unwrap().take().unwrap()))
                 .and(warp::any().map(move || redir_port))
                 .and_then(handle_put)),
-    ).or(check_address_route).or(check_username_route);
+    );
+
+    let routes = static_files.or(react_app).or(api);
 
     let _ = open::that(format!("http://localhost:{}/register", port));
     warp::serve(routes)

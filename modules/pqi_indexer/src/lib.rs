@@ -59,7 +59,12 @@ impl UqProcess for Component {
                         // TODO new deployments
                         // QnsRegistry
                         "SubscribeEvents": {
-                            "addresses": null, // TODO fill this in with test deployments ["0xBc56878166877a687a9Ba077D098aea3270f7E1c"],
+                            "addresses": [
+                                // QNSRegistry on goerli opt
+                                "0xdFbC22778887649378f2DEcB24956144E5247c0b",
+                                // PublicResolver on goerli opt
+                                "0x82edbff907b5B8693abC6e5bA4bAc1d03C0f0b22"
+                            ],
                             "from_block": 0,
                             "to_block": null,
                             "events": [

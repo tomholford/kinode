@@ -22,18 +22,15 @@ pub async fn build_routed_connection(
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkErrorKind> {
     // println!("build_routed_connection\r");
-    let peers_write = peers.write().await;
-    if let Some(router_peer) = peers_write.get(&router) {
+    let peers_read = peers.read().await;
+    if let Some(router_peer) = peers_read.get(&router) {
         //
         // if we have one of their routers as a peer already, try
         // and use that connection to first send a handshake,
         // then receive one, then create a peer-task and send the message
         //
-        // println!("a\r");
         let target = initial_message.0.target.node.clone();
         let router_socket_tx = router_peer.sender.clone();
-        drop(peers_write);
-        // println!("s\r");
         // 1. generate a handshake
         let (ephemeral_secret, our_handshake) =
             make_secret_and_handshake(&our, keypair.clone(), &target);
@@ -47,25 +44,22 @@ pub async fn build_routed_connection(
             },
             Some(result_tx),
         ));
-        // println!("d\r");
+        drop(peers_read);
         // 3. receive the target's handshake and validate it
         let their_handshake = match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
             Ok(Some(NetworkMessage::HandshakeAck { handshake, .. })) => handshake,
             Err(e) => return Err(e),
             _ => return Err(NetworkErrorKind::Offline),
         };
-        // println!("f\r");
         let their_id = match pki.read().await.get(&target) {
             Some(id) => id.clone(),
             None => return Err(NetworkErrorKind::Offline),
         };
-        // println!("g\r");
         let (their_ephemeral_pk, nonce) =
             match validate_handshake(&their_handshake, &their_id, nonce) {
                 Ok(v) => v,
                 Err(_) => return Err(NetworkErrorKind::Offline),
             };
-        // println!("h\r");
         let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
         let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
         // 4. create Peer object and senders/handlers
@@ -73,14 +67,12 @@ pub async fn build_routed_connection(
         let (sender_tx, sender_rx) = unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
         let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
         let (kill_tx, kill_rx) = unbounded_channel::<()>();
-        // println!("j\r");
         let peer = Peer {
             networking_address: their_id.networking_key,
             sender: sender_tx.clone(),
             handler: handler_tx.clone(),
             destructor: kill_tx,
         };
-        // println!("k\r");
         // 5. spawn peer handler
         let peer_handler = tokio::spawn(peer_handler(
             our.clone(),
@@ -93,7 +85,6 @@ pub async fn build_routed_connection(
             router_socket_tx,
             kernel_message_tx.clone(),
         ));
-        // println!("l\r");
         // connection is now ready to write to
         tokio::spawn(active_routed_peer(
             their_id.name.clone(),
@@ -104,7 +95,7 @@ pub async fn build_routed_connection(
         let _ = sender_tx.send((NetworkMessage::Raw(initial_message.0), initial_message.1));
         return Ok(());
     } else if let Some(router_id) = pki.read().await.get(&router) {
-        drop(peers_write);
+        drop(peers_read);
         if let Some((ip, port)) = &router_id.ws_routing {
             if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                 if let Ok(Ok((websocket, _response))) =
@@ -134,7 +125,7 @@ pub async fn build_routed_connection(
                             router,
                             initial_message,
                             pki.clone(),
-                            peers,
+                            peers.clone(),
                             kernel_message_tx,
                         )
                         .await;
@@ -359,7 +350,7 @@ async fn maintain_connection(
             Some((message, result_tx)) = message_rx.recv() => {
                 // can use a buffer here but doesn't seem to affect performance
                 let bytes = bincode::serialize(&message).unwrap();
-                // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
+                println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
                 if bytes.len() > message_max_size {
                     // println!("message too large\r");
                     let _ = match result_tx {
@@ -410,6 +401,7 @@ async fn maintain_connection(
                     NetworkMessage::Ack(_)
                     | NetworkMessage::HandshakeAck { .. }
                     | NetworkMessage::Nack(_) => {
+                        println!("got ack\r");
                         if let Some(sender) = outstanding_acks.pop_back() {
                             let _ = sender.send(msg);
                         }
@@ -516,9 +508,9 @@ async fn maintain_connection(
                         id,
                         contents,
                     } if to == our.name => {
-                        // println!("got message for us\r");
+                        println!("got message for us\r");
                         if let Some(peer) = peers.write().await.get(&from) {
-                            if let Ok(()) = peer.handler.send(contents.to_vec()) {
+                            if let Ok(()) = peer.handler.send(contents) {
                                 // println!("message handled and acked\r");
                                 let _ = self_tx.send((NetworkMessage::Ack(id), None));
                                 continue;
@@ -546,34 +538,37 @@ async fn maintain_connection(
                         id,
                         contents,
                     } => {
-                        // println!("got message for {to}\r");
+                        println!("got message for {to}\r");
                         // this message needs to be routed to someone else!
                         // TODO: be selective here!
                         // forward the ACK if we get it from target.
-                        let self_tx = self_tx.clone();
-                        let peers = peers.clone();
-                        tokio::spawn(async move {
-                            if let Some(peer) = peers.write().await.get(&to) {
-                                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                                if let Ok(()) = peer.sender.send((
-                                    NetworkMessage::Msg {
-                                        from,
-                                        to,
-                                        id,
-                                        contents,
-                                    },
-                                    Some(result_tx),
-                                )) {
+                        if let Some(peer) = peers.read().await.get(&to) {
+                            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                            if let Ok(()) = peer.sender.send((
+                                NetworkMessage::Msg {
+                                    from,
+                                    to,
+                                    id,
+                                    contents,
+                                },
+                                Some(result_tx),
+                            )) {
+                                let self_tx = self_tx.clone();
+                                tokio::spawn(async move {
                                     if let Ok(Ok(Some(NetworkMessage::Ack(id)))) = result_rx.await {
-                                        let _ = self_tx.send((NetworkMessage::Ack(id), None));
-                                        return;
+                                        return self_tx.send((NetworkMessage::Ack(id), None));
+                                    } else {
+                                        return self_tx.send((NetworkMessage::Nack(id), None));
                                     }
-                                }
-                                // we cannot send a message to that target
-                                let _ = self_tx.send((NetworkMessage::Nack(id), None));
-                                let _ = peer.destructor.send(());
+                                });
+                                continue;
                             }
-                        });
+                            // we cannot send a message to that target
+                            let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                            let _ = peer.destructor.send(());
+                        } else {
+                            let _ = self_tx.send((NetworkMessage::Nack(id), None));
+                        }
                     }
                 }
             }
@@ -611,6 +606,9 @@ async fn peer_handler(
             // otherwise, simply send
             match message {
                 NetworkMessage::Raw(message) => {
+                    if let Message::Request(ref r) = message.message {
+                        println!("#{}\r", r.ipc.clone().unwrap_or_default());
+                    }
                     if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                         if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
                             if socket_tx.is_closed() {
@@ -654,7 +652,10 @@ async fn peer_handler(
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
                     if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
-                        let _ = kernel_message_tx.send(message).await;
+                        if let Message::Request(ref r) = message.message {
+                            println!("#{}\r", r.ipc.clone().unwrap_or_default());
+                        }
+                        // let _ = kernel_message_tx.send(message).await;
                         continue;
                     }
                 }

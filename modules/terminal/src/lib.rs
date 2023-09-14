@@ -88,8 +88,8 @@ impl Guest for Component {
                     }
                     message
                 }
-                Err(error) => {
-                    print_to_terminal(0, &format!("net error: {:?}!", error));
+                Err((error, _context)) => {
+                    print_to_terminal(0, &format!("net error: {:?}!", error.kind));
                     continue;
                 }
             };

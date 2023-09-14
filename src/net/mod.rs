@@ -77,6 +77,7 @@ pub async fn networking(
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
+    self_tx: MessageSender,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
@@ -85,113 +86,233 @@ pub async fn networking(
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = keypair.clone();
 
+    let listener = match &our.ws_routing {
+        None => {
+            // connect to router(s)
+            tokio::spawn(connect_to_routers(
+                our.clone(),
+                keypair.clone(),
+                our_ip.clone(),
+                pki.clone(),
+                peers.clone(),
+                kernel_message_tx.clone(),
+                print_tx.clone(),
+            ))
+        }
+        Some((_ip, port)) => {
+            // spawn the listener
+            tokio::spawn(receive_incoming_connections(
+                our.clone(),
+                keypair.clone(),
+                *port,
+                pki.clone(),
+                peers.clone(),
+                kernel_message_tx.clone(),
+            ))
+        }
+    };
+
     tokio::select! {
-        _listener = async {
-            // if listener dies, attempt to rebuild it
-            loop {
-                match &our.ws_routing {
-                    None => {
-                        // connect to router(s)
-                        connect_to_routers(
-                            our.clone(),
-                            keypair.clone(),
-                            our_ip.clone(),
-                            pki.clone(),
-                            peers.clone(),
-                            kernel_message_tx.clone(),
-                            print_tx.clone(),
-                        ).await;
-                    }
-                    Some((_ip, port)) => {
-                        // spawn the listener
-                        receive_incoming_connections(
-                            our.clone(),
-                            keypair.clone(),
-                            *port,
-                            pki.clone(),
-                            peers.clone(),
-                            kernel_message_tx.clone(),
-                        ).await;
-                    }
-                }
-                let _ = print_tx.send(Printout {
-                    verbosity: 0,
-                    content: "network connection died, attempting to regain...".into()
-                }).await;
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-        } => Err(anyhow::anyhow!("listener died")),
+        _listener = listener => Err(anyhow::anyhow!("listener died")),
         _sender = async {
             while let Some(km) = message_rx.recv().await {
-                tokio::spawn(sender(
-                    our.clone(),
-                    our_ip.clone(),
-                    keypair.clone(),
-                    pki.clone(),
-                    peers.clone(),
-                    kernel_message_tx.clone(),
-                    network_error_tx.clone(),
-                    print_tx.clone(),
-                    km,
-                ));
+                let target = &km.target.node;
+                if target == &our.name {
+                    handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
+                    continue;
+                }
+                let peers_read = peers.read().await;
+                if let Some(peer) = peers_read.get(target) {
+                    // println!("sending message to known peer\r");
+                    // if we have the peer, simply send the message to their sender
+                    let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                    let _ = peer
+                        .sender
+                        .send((NetworkMessage::Raw(km.clone()), Some(result_tx)));
+                    drop(peers_read);
+                    let peers = peers.clone();
+                    let target = target.clone();
+                    let network_error_tx = network_error_tx.clone();
+                    tokio::spawn(async move {
+                        match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
+                            Ok(_) => return,
+                            Err(e) => {
+                                peers.write().await.remove(&target);
+                                let _ = network_error_tx
+                                    .send(WrappedNetworkError {
+                                        id: km.id,
+                                        source: km.source,
+                                        error: NetworkError {
+                                            kind: e,
+                                            target: km.target,
+                                            message: km.message,
+                                            payload: km.payload,
+                                        },
+                                    })
+                                    .await;
+                                return
+                            }
+                        }
+                    });
+                } else {
+                    drop(peers_read);
+                    message_to_new_peer(
+                        our.clone(),
+                        our_ip.clone(),
+                        keypair.clone(),
+                        pki.clone(),
+                        peers.clone(),
+                        self_tx.clone(),
+                        kernel_message_tx.clone(),
+                        network_error_tx.clone(),
+                        km,
+                    ).await;
+                }
             }
         } => Err(anyhow::anyhow!("sender died")),
     }
 }
 
-async fn sender(
+async fn message_to_new_peer(
     our: Identity,
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
+    self_tx: MessageSender,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
-    print_tx: PrintSender,
     km: KernelMessage,
 ) {
-    if km.target.node == our.name {
-        handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
-        return;
-    }
-    let start = std::time::Instant::now();
-    let result = message_to_peer(
-        our.clone(),
-        our_ip.clone(),
-        keypair.clone(),
-        pki.clone(),
-        peers.clone(),
-        km.clone(),
-        kernel_message_tx.clone(),
-    )
-    .await;
-    let end = std::time::Instant::now();
-    let elapsed = end.duration_since(start);
-    let _ = print_tx
-        .send(Printout {
-            verbosity: 0,
-            content: format!(
-                "message to {} took {:?} (result: {:?})",
-                km.target.node, elapsed, result
-            ),
-        })
-        .await;
-
-    match result {
-        Ok(()) => return,
-        Err(e) => {
+    let target = &km.target.node;
+    // println!("sending message to unknown peer\r");
+    // search PKI for peer and attempt to create a connection, then resend
+    let pki_read = pki.read().await;
+    match pki_read.get(target) {
+        // peer does not exist in PKI!
+        None => {
             let _ = network_error_tx
                 .send(WrappedNetworkError {
                     id: km.id,
                     source: km.source,
                     error: NetworkError {
-                        kind: e,
+                        kind: NetworkErrorKind::Offline,
                         target: km.target,
                         message: km.message,
                         payload: km.payload,
                     },
                 })
                 .await;
+            return;
+        }
+        // peer exists in PKI
+        Some(peer_id) => {
+            let peer_id = peer_id.clone();
+            drop(pki_read);
+            match &peer_id.ws_routing {
+                //
+                //  can connect directly to peer
+                //
+                Some((ip, port)) => {
+                    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
+                        // if we can't connect in 5s, peer is offline
+                        if let Ok(Ok((websocket, _response))) =
+                            timeout(TIMEOUT, connect_async(ws_url)).await
+                        {
+                            let conn = connections::build_connection(
+                                our.clone(),
+                                keypair.clone(),
+                                Some(peer_id.clone()),
+                                None,
+                                pki.clone(),
+                                peers.clone(),
+                                websocket,
+                                kernel_message_tx.clone(),
+                            )
+                            .await;
+                            if conn.is_err() {
+                                let _ = network_error_tx
+                                    .send(WrappedNetworkError {
+                                        id: km.id,
+                                        source: km.source,
+                                        error: NetworkError {
+                                            kind: NetworkErrorKind::Offline,
+                                            target: km.target,
+                                            message: km.message,
+                                            payload: km.payload,
+                                        },
+                                    })
+                                    .await;
+                                return;
+                            }
+                            // try to resend
+                            let _ = self_tx.send(km).await;
+                            return;
+                        }
+                    }
+                    let _ = network_error_tx
+                        .send(WrappedNetworkError {
+                            id: km.id,
+                            source: km.source,
+                            error: NetworkError {
+                                kind: NetworkErrorKind::Offline,
+                                target: km.target,
+                                message: km.message,
+                                payload: km.payload,
+                            },
+                        })
+                        .await;
+                    return;
+                }
+                //
+                //  peer does not have direct routing info, need to use router
+                //
+                None => {
+                    let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
+                    while let Some(router) = routers_to_try.pop_front() {
+                        if router == our.name {
+                            continue;
+                        }
+                        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                        let res = connections::build_routed_connection(
+                            our.clone(),
+                            our_ip.clone(),
+                            keypair.clone(),
+                            router.clone(),
+                            (km.clone(), Some(result_tx)),
+                            pki.clone(),
+                            peers.clone(),
+                            kernel_message_tx.clone(),
+                        )
+                        .await;
+                        if let Ok(()) = res {
+                            if result_rx
+                                .await
+                                .unwrap_or(Err(NetworkErrorKind::Timeout))
+                                .is_ok()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    //
+                    // we tried all available routers and none of them worked!
+                    //
+                    let _ = network_error_tx
+                        .send(WrappedNetworkError {
+                            id: km.id,
+                            source: km.source,
+                            error: NetworkError {
+                                kind: NetworkErrorKind::Offline,
+                                target: km.target,
+                                message: km.message,
+                                payload: km.payload,
+                            },
+                        })
+                        .await;
+                    return;
+                }
+            }
         }
     }
 }
@@ -295,134 +416,6 @@ async fn receive_incoming_connections(
             }
             // ignore connections we failed to accept
             Err(_) => {}
-        }
-    }
-}
-
-#[async_recursion]
-async fn message_to_peer(
-    our: Identity,
-    our_ip: String,
-    keypair: Arc<Ed25519KeyPair>,
-    pki: OnchainPKI,
-    peers: Peers,
-    km: KernelMessage,
-    kernel_message_tx: MessageSender,
-) -> Result<(), NetworkErrorKind> {
-    let target = &km.target.node;
-    let mut peers_write = peers.write().await;
-    if let Some(peer) = peers_write.get_mut(target) {
-        // println!("sending message to known peer\r");
-        // if we have the peer, simply send the message to their sender
-        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-        let _ = peer
-            .sender
-            .send((NetworkMessage::Raw(km.clone()), Some(result_tx)));
-        drop(peers_write);
-
-        match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                // if a message to a "known peer" fails, before throwing error,
-                // try to reconnect to them, possibly with different routing.
-                // unless known peer is a router, in which case reconnect
-                // will happen automatically.
-                if our.allowed_routers.contains(target) {
-                    return Err(e);
-                }
-                peers.write().await.remove(target);
-            }
-        }
-    } else {
-        drop(peers_write);
-    }
-    // println!("sending message to unknown peer\r");
-    // search PKI for peer and attempt to create a connection, then resend
-    let pki_read = pki.read().await;
-    match pki_read.get(target) {
-        // peer does not exist in PKI!
-        None => {
-            return Err(NetworkErrorKind::Offline);
-        }
-        // peer exists in PKI
-        Some(peer_id) => {
-            let peer_id = peer_id.clone();
-            drop(pki_read);
-            match &peer_id.ws_routing {
-                //
-                //  can connect directly to peer
-                //
-                Some((ip, port)) => {
-                    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        // if we can't connect in 5s, peer is offline
-                        if let Ok(Ok((websocket, _response))) =
-                            timeout(TIMEOUT, connect_async(ws_url)).await
-                        {
-                            let conn = connections::build_connection(
-                                our.clone(),
-                                keypair.clone(),
-                                Some(peer_id.clone()),
-                                None,
-                                pki.clone(),
-                                peers.clone(),
-                                websocket,
-                                kernel_message_tx.clone(),
-                            )
-                            .await;
-                            if conn.is_err() {
-                                return Err(NetworkErrorKind::Offline);
-                            }
-                            return message_to_peer(
-                                our,
-                                our_ip,
-                                keypair.clone(),
-                                pki.clone(),
-                                peers,
-                                km,
-                                kernel_message_tx,
-                            )
-                            .await;
-                        }
-                    }
-                    return Err(NetworkErrorKind::Offline);
-                }
-                //
-                //  peer does not have direct routing info, need to use router
-                //
-                None => {
-                    let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
-                    while let Some(router) = routers_to_try.pop_front() {
-                        if router == our.name {
-                            continue;
-                        }
-                        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                        let res = connections::build_routed_connection(
-                            our.clone(),
-                            our_ip.clone(),
-                            keypair.clone(),
-                            router.clone(),
-                            (km.clone(), Some(result_tx)),
-                            pki.clone(),
-                            peers.clone(),
-                            kernel_message_tx.clone(),
-                        )
-                        .await;
-                        if let Ok(()) = res {
-                            if result_rx
-                                .await
-                                .unwrap_or(Err(NetworkErrorKind::Timeout))
-                                .is_ok()
-                            {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    //
-                    // we tried all available routers and none of them worked!
-                    //
-                    return Err(NetworkErrorKind::Offline);
-                }
-            }
         }
     }
 }

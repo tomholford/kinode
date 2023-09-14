@@ -290,7 +290,8 @@ async fn main() {
                 Some((our_ip.clone(), ws_port))
             },
             allowed_routers: if our_ip == "localhost" || !registration.direct {
-                vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
+                // vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
+                vec!["tester4".into()]
             } else {
                 vec![]
             },
@@ -399,6 +400,7 @@ async fn main() {
         our_ip,
         networking_keypair_arc.clone(),
         pki.clone(),
+        net_message_sender.clone(),
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),

@@ -1,6 +1,9 @@
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 

@@ -18,7 +18,15 @@ mod wal;
 
 pub async fn bootstrap(
     home_directory_path: String,
-) -> Result<(HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>, Manifest, WAL, PathBuf), FileSystemError> {
+) -> Result<
+    (
+        HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
+        Manifest,
+        WAL,
+        PathBuf,
+    ),
+    FileSystemError,
+> {
     // fs bootstrapping, create home_directory, fs directory inside it, manifest + log if none.
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
@@ -97,7 +105,10 @@ pub async fn bootstrap(
             .unwrap_or(&OnPanic::None);
 
         if let Some((_file, handle)) = manifest.get_by_hash(&hash).await {
-            state_map.insert(ProcessId::Name(process_name), (handle, on_panic.clone(), HashSet::new()));
+            state_map.insert(
+                ProcessId::Name(process_name),
+                (handle, on_panic.clone(), HashSet::new()),
+            );
         } else {
             //  FsAction::Write
             let file_uuid = uuid::Uuid::new_v4().as_u128();
@@ -114,7 +125,10 @@ pub async fn bootstrap(
                 local: true,
             };
             let _ = manifest.add_local(&backup).await;
-            state_map.insert(ProcessId::Name(process_name), (file_uuid, on_panic.clone(), HashSet::new()));
+            state_map.insert(
+                ProcessId::Name(process_name),
+                (file_uuid, on_panic.clone(), HashSet::new()),
+            );
         }
     }
 

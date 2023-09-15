@@ -579,19 +579,18 @@ impl Process {
     ) -> Result<u64> {
         // enforce capabilities by matching from our set based on fixed format
         // enforce that process has capability to message a target process of this name
+        let target_process = de_wit_process_id(target.process.clone());
         let cap = t::Capability {
             issuer: t::Address {
                 node: self.metadata.our.node.clone(),
-                process: t::ProcessId::Name("kernel".into()),
+                process: target_process.clone(),
             },
             label: "messaging".into(),
-            params: Some(
-                serde_json::to_string(&de_wit_process_id(target.process.clone())).unwrap(),
-            ),
+            params: Some(serde_json::to_string(&target_process).unwrap()),
         };
         if !self.capabilities.contains(&cap) {
             return Err(anyhow::anyhow!(
-                "process does not have capability to send to that target"
+                "process does not have capability to send to that processID"
             ));
         }
         // enforce that if message is directed over the network, process has capability to do so
@@ -605,7 +604,7 @@ impl Process {
                 params: None,
             }) {
                 return Err(anyhow::anyhow!(
-                    "process does not have capability to send to that target"
+                    "process does not have capability to send to that node"
                 ));
             }
         }
@@ -860,7 +859,7 @@ async fn make_process_loop(
                         content: format!("mk: process {:?} ended with error:", our.process,),
                     })
                     .await;
-                for line in e.to_string().lines() {
+                for line in format!("{:?}", e).lines() {
                     let _ = send_to_terminal
                         .send(t::Printout {
                             verbosity: 0,

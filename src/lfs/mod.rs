@@ -98,17 +98,15 @@ pub async fn bootstrap(
     // at the moment, all bootstrapped processes are given the capability to message all others.
     // this can be easily changed in the future.
     // they are also given access to all runtime modules by name
-    let kernel_address: Address = Address {
-        node: our_name,
-        process: kernel_process_id,
-    };
-
     let names_and_bytes = get_processes_from_directories().await;
 
     let mut special_capabilities: HashSet<Capability> = HashSet::new();
     for (process_name, _) in &names_and_bytes {
         special_capabilities.insert(Capability {
-            issuer: kernel_address.clone(),
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name(process_name.into()),
+            },
             label: "messaging".into(),
             params: Some(serde_json::to_string(&ProcessId::Name(process_name.into())).unwrap()),
         });
@@ -119,16 +117,23 @@ pub async fn bootstrap(
         "http_client",
         "encryptor",
         "lfs",
+        "net",
     ] {
         special_capabilities.insert(Capability {
-            issuer: kernel_address.clone(),
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name(runtime_module.into()),
+            },
             label: "messaging".into(),
             params: Some(serde_json::to_string(&ProcessId::Name(runtime_module.into())).unwrap()),
         });
     }
     // give all distro processes the ability to send messages across the network
     special_capabilities.insert(Capability {
-        issuer: kernel_address.clone(),
+        issuer: Address {
+            node: our_name,
+            process: ProcessId::Name("kernel".into()),
+        },
         label: "network".into(),
         params: None,
     });

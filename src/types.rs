@@ -290,6 +290,19 @@ pub enum FsResponse {
     SetState, //  use FileSystemError
 }
 
+impl VfsError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            VfsError::BadDescriptor => "BadDescriptor",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsError {
+    BadDescriptor,
+}
+
 impl FileSystemError {
     pub fn kind(&self) -> &str {
         match *self {

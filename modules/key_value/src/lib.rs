@@ -18,8 +18,8 @@ const TABLE: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("p
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum KeyValueRequest {
-    // Initialize,
-    Write { key: Vec<u8> },
+    // Write { key: Vec<u8> },
+    Write { key: Vec<u8>, val: Vec<u8> },
     Read { key: Vec<u8> },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,24 +35,7 @@ fn process_id_to_string(process_id: &kt::ProcessId) -> String {
     }
 }
 
-//  TODO: have persistence
-// fn persist_state(
-//     our_name: &str,
-//     dbs: &HashMap<ProcessIdentifier, redb::Database>,
-// ) -> anyhow::Result<Result<types::InboundMessage, types::UqbarError>> {
-//     print_to_terminal(1, "kev_value: persist pm state");
-//     process_lib::send_and_await_receive(
-//         our_name.into(),
-//         types::ProcessIdentifier::Name("process_manager".into()),
-//         Some(ProcessManagerCommand::PersistState),
-//         types::OutboundPayloadBytes::Circumvent(bincode::serialize(
-//             &dbs.keys().cloned().collect::<Vec<ProcessIdentifier>>()
-//         )?),
-//     )
-// }
-
 fn get_or_make_db<'a>(
-    our_name: &'a str,
     process_id: kt::ProcessId,
     dbs: &'a mut HashMap<kt::ProcessId, redb::Database>,
 ) -> anyhow::Result<&'a mut redb::Database> {
@@ -63,12 +46,13 @@ fn get_or_make_db<'a>(
         return Ok(db);
     }
     let process_id_string = process_id_to_string(&process_id);
+    print_to_terminal(0, "key_value: before create()");
     let db =  redb::Database::create(format!(
-         "{}.redb",
+         "/{}.redb",
          process_id_string,
      ))?;
+    print_to_terminal(0, "key_value: after create()");
     dbs.insert(process_id.clone(), db);
-    // persist_state(our_name, &dbs)??;  // TODO
     Ok(dbs.get_mut(&process_id).unwrap())
 }
 
@@ -90,40 +74,11 @@ fn handle_message (
         Message::Response(_) => { panic!() },
         Message::Request(Request { inherit: _ , expects_response: _, ipc, metadata: _ }) => {
             match process_lib::parse_message_ipc(ipc)? {
-                // KeyValueRequest::Initialize => {
-                //     match bytes {
-                //         types::InboundPayloadBytes::Some(bytes) => {
-                //             let process_identifiers: Vec<ProcessIdentifier> =
-                //                 bincode::deserialize(&bytes[..])?;
-                //             for process_identifier in process_identifiers.iter() {
-                //                 let process_identifier_string = process_identifier_to_string(
-                //                     process_identifier,
-                //                 );
-                //                 dbs.insert(
-                //                     process_identifier.clone(),
-                //                     redb::Database::create(format!(
-                //                         "{}.redb",
-                //                         process_identifier_string,
-                //                     ))?,
-                //                 );
-                //             }
-                //         },
-                //         _ => {},
-                //     }
-                //     let _ = process_lib::send_response(
-                //         None::<KeyValueResponse>,  //  TODO
-                //         types::OutboundPayloadBytes::None,
-                //         None::<String>,  //  TODO
-                //     )?;
-                // },
-                KeyValueRequest::Write { key } => {
-                    // let types::InboundPayloadBytes::Some(bytes) = bytes else {
-                    //     panic!("key_value: no bytes to write");
-                    // };
-                    let Payload { mime: _, bytes } = get_payload().ok_or(anyhow::anyhow!(""))?;
+                // KeyValueRequest::Write { key } => {
+                KeyValueRequest::Write { key, val } => {
+                    // let Payload { mime: _, bytes } = get_payload().ok_or(anyhow::anyhow!(""))?;
 
                     let db = get_or_make_db(
-                        &our.node,
                         kt::de_wit_process_id(source.process),
                         dbs,
                     )?;
@@ -131,7 +86,8 @@ fn handle_message (
                     let write_txn = db.begin_write()?;
                     {
                         let mut table = write_txn.open_table(TABLE)?;
-                        table.insert(&key[..], &bytes[..])?;
+                        // table.insert(&key[..], &bytes[..])?;
+                        table.insert(&key[..], &val[..])?;
                     }
                     write_txn.commit()?;
 
@@ -145,7 +101,6 @@ fn handle_message (
                 },
                 KeyValueRequest::Read { key } => {
                     let db = get_or_make_db(
-                        &our.node,
                         kt::de_wit_process_id(source.process),
                         dbs,
                     )?;

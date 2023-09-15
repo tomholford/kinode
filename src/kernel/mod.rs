@@ -154,15 +154,21 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         let mut flags = DescriptorFlags::empty();
         flags |= DescriptorFlags::READ;
 
-        let entry_type = get_vfs_fd_entry_type(self, fd).await?;
-
-        match entry_type {
-            t::GetEntryType::Dir => {
+        match get_vfs_fd_entry_type(self, fd).await {
+            Ok(t::GetEntryType::Dir) => {
                 flags |= DescriptorFlags::MUTATE_DIRECTORY;
-            }
-            t::GetEntryType::File => {
+            },
+            Ok(t::GetEntryType::File) => {
                 flags |= DescriptorFlags::WRITE;
-            }
+            },
+            Err(e) => {
+                println!("{:?}", e);
+                if "BadDescriptor" == e.kind {
+                    return Ok(Err(filesystem::ErrorCode::BadDescriptor));
+                } else {
+                    panic!("");
+                }
+            },
         }
 
         Ok(Ok(flags))
@@ -174,12 +180,30 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     ) -> Result<Result<filesystem::DescriptorType, filesystem::ErrorCode>> {
         println!("kernel: got get_type()");
 
-        let entry_type = get_vfs_fd_entry_type(self, fd).await?;
-
-        match entry_type {
-            t::GetEntryType::Dir => Ok(Ok(filesystem::DescriptorType::Directory)),
-            t::GetEntryType::File => Ok(Ok(filesystem::DescriptorType::RegularFile)),
+        match get_vfs_fd_entry_type(self, fd).await {
+            Ok(t::GetEntryType::Dir) => Ok(Ok(filesystem::DescriptorType::Directory)),
+            Ok(t::GetEntryType::File) => Ok(Ok(filesystem::DescriptorType::RegularFile)),
+            Err(e) => {
+                println!("{:?}", e);
+                if "BadDescriptor" == e.kind {
+                    Ok(Err(filesystem::ErrorCode::BadDescriptor))
+                } else {
+                    panic!("");
+                }
+                // Ok(Err(filesystem::ErrorCode::BadDescriptor))
+                // match e.downcast_ref::<UqbarError>() {
+                //     None => panic!(""),
+                //     Some(e) => {
+                //         if "BadDescriptor" == e.kind {
+                //             Ok(Err(filesystem::ErrorCode::BadDescriptor))
+                //         } else {
+                //             panic!("");
+                //         }
+                //     },
+                // }
+            },
         }
+
     }
 
     async fn set_size(
@@ -271,6 +295,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         offset: filesystem::Filesize,
     ) -> Result<Result<filesystem::Filesize, filesystem::ErrorCode>> {
         //  TODO: use mutable
+        println!("kernel: got write()");
         unimplemented!();
     }
 
@@ -1554,7 +1579,7 @@ async fn send_and_await_response(
 async fn get_vfs_fd_entry_type(
     process: &mut ProcessWasi,
     fd: filesystem::Descriptor,
-) -> Result<t::GetEntryType> {
+) -> Result<t::GetEntryType, UqbarError> {
     let (_, response) = send_and_await_response(
         process,
         wit::Address {
@@ -1570,24 +1595,31 @@ async fn get_vfs_fd_entry_type(
         None,
         None,
     )
-    .await?
+    .await
+    .unwrap()
     .unwrap(); //  TODO
-    let wit::Message::Response((
-        Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }),
-        _,
-    )) = response
-    else {
-        panic!(""); //  TODO: error handle
-    };
-    let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-    let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
+
+    let Message::Response((response, _context)) = response else {
         panic!("");
     };
 
-    Ok(entry_type)
+    match response {
+        Err(e) => {
+            Err(e)
+        },
+        Ok(wit::Response {
+            ipc: Some(ipc),
+            metadata: _,
+        }) => {
+            let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
+            let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
+                panic!("");
+            };
+
+            Ok(entry_type)
+        },
+        _ => panic!(""),
+    }
 }
 
 async fn get_vfs_full_path(

@@ -25,6 +25,8 @@ type PathToKey = HashMap<String, Key>;
 type FdToKey = HashMap<u32, Key>;
 type DirStreams = HashMap<u32, VecDeque<String>>;
 // type RwStreams = HashMap<u32, { offset: u64,  }>;  //  TODO
+
+#[derive(Debug)]
 struct Vfs {
     key_to_entry: KeyToEntry,
     path_to_key: PathToKey,
@@ -110,15 +112,15 @@ fn make_error_message(
     our_name: String,
     id: u64,
     source: Address,
-    error: FileSystemError,
+    error: VfsError,
 ) -> KernelMessage {
     KernelMessage {
         id,
-        source,
-        target: Address {
+        source: Address {
             node: our_name,
             process: ProcessId::Name("vfs".into()),
         },
+        target: source,
         rsvp: None,
         message: Message::Response((
             Err(UqbarError {
@@ -240,6 +242,7 @@ pub async fn vfs(
                         process_to_vfs.get(&km.source.process).unwrap()
                     }
                 });
+                println!("{:?}", vfs);
                 let our_node = our_node.clone();
                 let source = km.source.clone();
                 let id = km.id;
@@ -294,7 +297,7 @@ async fn handle_request(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     recv_response: MessageReceiver,
-) -> Result<(), FileSystemError> {
+) -> Result<(), VfsError> {
     let KernelMessage {
         ref id,
         source,
@@ -310,19 +313,21 @@ async fn handle_request(
         ..
     }) = message
     else {
-        return Err(FileSystemError::BadJson {
-            json: "".into(),
-            error: "not a Request with payload".into(),
-        });
+        panic!("");
+        // return Err(FileSystemError::BadJson {
+        //     json: "".into(),
+        //     error: "not a Request with payload".into(),
+        // });
     };
 
     let request: VfsRequest = match serde_json::from_str(&ipc) {
         Ok(r) => r,
         Err(e) => {
-            return Err(FileSystemError::BadJson {
-                json: ipc.into(),
-                error: format!("parse failed: {:?}", e),
-            })
+            panic!("");
+            // return Err(FileSystemError::BadJson {
+            //     json: ipc.into(),
+            //     error: format!("parse failed: {:?}", e),
+            // })
         }
     };
 
@@ -377,7 +382,7 @@ async fn match_request(
     send_to_loop: &MessageSender,
     send_to_terminal: &PrintSender,
     mut recv_response: MessageReceiver,
-) -> Result<(Option<String>, Option<Vec<u8>>), FileSystemError> {
+) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
     Ok(match request {
         VfsRequest::Add {
             full_path,
@@ -1330,10 +1335,10 @@ async fn match_request(
             let entry_type = {
                 let mut vfs = vfs.lock().await;
                 let Some(key) = vfs.fd_to_key.remove(&fd) else {
-                    panic!("");
+                    return Err(VfsError::BadDescriptor);
                 };
                 let Some(entry) = vfs.key_to_entry.remove(&key) else {
-                    panic!("");
+                    return Err(VfsError::BadDescriptor);
                 };
                 vfs.fd_to_key.insert(fd, key.clone());
                 vfs.key_to_entry.insert(key, entry.clone());

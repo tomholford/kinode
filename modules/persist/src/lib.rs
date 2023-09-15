@@ -61,8 +61,6 @@ impl Guest for Component {
         let mut state = State {
             val: None
         };
-        //  can't await yet, match on FsResponse.
-        //  refactor to await when available!
         match process_lib::get_state(our.node.clone()) {
             None => {
                 print_to_terminal(

@@ -95,6 +95,21 @@ impl Guest for Component {
                                 .to_vec(),
                         }),
                     );
+                } else if message_json["hello"] == "world" {
+                    send_response(
+                        &Response {
+                            ipc: Some(serde_json::json!({
+                                "hello": "to you too"
+                            }).to_string()),
+                            metadata: None,
+                        },
+                        Some(&Payload {
+                            mime: Some("application/json".to_string()),
+                            bytes: serde_json::json!({
+                                "hello": "to you too"
+                            }).to_string().as_bytes().to_vec(),
+                        }),
+                    );
                 } else {
                     if let Some(payload) = get_payload() {
                         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&payload.bytes) {

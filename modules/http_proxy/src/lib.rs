@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use serde_json::json;
 use serde::{Serialize, Deserialize};
 
-use bindings::{print_to_terminal, receive, send_requests, send_request, send_response, send_and_await_response, get_payload, Guest};
+use bindings::{print_to_terminal, receive, send_requests, send_request, send_response, get_payload, Guest};
 use bindings::component::uq_process::types::*;
 
 mod process_lib;
@@ -142,7 +142,7 @@ impl Guest for Component {
         send_requests(&http_endpoint_binding_requests);
 
         loop {
-            let Ok((source, message)) = receive() else {
+            let Ok((_source, message)) = receive() else {
                 print_to_terminal(0, "http_proxy: got network error");
                 let mut headers = HashMap::new();
                 headers.insert("Content-Type".to_string(), "text/html".to_string());
@@ -344,80 +344,6 @@ impl Guest for Component {
                         None,
                         payload.as_ref(),
                     );
-
-                    // if let Ok((_, response_message)) = send_and_await_response(
-                    //     &Address {
-                    //         node: username.into(),
-                    //         process: ProcessId::Name("http_bindings".to_string()),
-                    //     },
-                    //     &Request {
-                    //         inherit: true,
-                    //         expects_response: true,
-                    //         ipc: Some(json!({
-                    //             "action": "request",
-                    //             "method": message_json["method"],
-                    //             "path": proxied_path,
-                    //             "headers": message_json["headers"],
-                    //             "proxy_path": raw_path,
-                    //             "query_params": message_json["query_params"],
-                    //         }).to_string()),
-                    //         metadata: None,
-                    //     },
-                    //     None,
-                    //     payload.as_ref(),
-                    // ) {
-                    //     print_to_terminal(1, "FINISHED YIELD AND AWAIT");
-                    //     match response_message {
-                    //         Message::Response((response_wrapper, _)) => {
-                    //             if let Ok(response) = response_wrapper {
-                    //                 if let Some(response_json) = response.ipc {
-                    //                     if response_json.contains("Offline") {
-                    //                         send_response(
-                    //                             &Response {
-                    //                                 ipc: Some(json!({
-                    //                                     "action": "response",
-                    //                                     "status": 404,
-                    //                                     "headers": {
-                    //                                         "Content-Type": "text/html",
-                    //                                     },
-                    //                                 }).to_string()),
-                    //                                 metadata: None,
-                    //                             },
-                    //                             Some(&Payload {
-                    //                                 mime: Some("text/html".to_string()),
-                    //                                 bytes: "Node is offline"
-                    //                                     .to_string()
-                    //                                     .as_bytes()
-                    //                                     .to_vec(),
-                    //                             }),
-                    //                         );
-                    //                         continue;
-                    //                     } else {
-                    //                         let payload = get_payload();
-
-                    //                         send_response(
-                    //                             &Response {
-                    //                                 ipc: Some(response_json),
-                    //                                 metadata: None,
-                    //                             },
-                    //                             payload.as_ref(),
-                    //                         );
-                    //                         continue;
-                    //                     }
-                    //                 } else {
-                    //                     send_not_found();
-                    //                 }
-                    //             } else {
-                    //                 send_not_found();
-                    //             }
-                    //         }
-                    //         _ => {
-                    //             send_not_found();
-                    //         }
-                    //     }
-                    // } else {
-                    //     send_not_found();
-                    // }
                 }
             } else {
                 send_not_found();

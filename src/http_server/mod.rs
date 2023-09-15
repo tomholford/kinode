@@ -8,6 +8,7 @@ use futures::StreamExt;
 use serde_urlencoded;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -614,6 +615,7 @@ async fn http_serve(
 
     let print_tx_move = print_tx.clone();
     let filter = warp::filters::method::method()
+        .and(warp::addr::remote())
         .and(warp::path::full())
         .and(warp::filters::header::headers_cloned())
         .and(
@@ -653,6 +655,7 @@ async fn http_serve(
 
 async fn handler(
     method: warp::http::Method,
+    address: Option<SocketAddr>,
     path: warp::path::FullPath,
     headers: warp::http::HeaderMap,
     query_params: HashMap<String, String>,
@@ -660,8 +663,13 @@ async fn handler(
     our: String,
     http_response_senders: HttpResponseSenders,
     send_to_loop: MessageSender,
-    _print_tx: PrintSender,
+    print_tx: PrintSender,
 ) -> Result<impl warp::Reply, warp::Rejection> {
+    let address = match address {
+        Some(a) => a.to_string(),
+        None => "".to_string(),
+    };
+
     let path_str = path.as_str().to_string();
     let id: u64 = rand::random();
     let message = KernelMessage {
@@ -684,6 +692,7 @@ async fn handler(
             ipc: Some(
                 serde_json::json!({
                     "action": "request".to_string(),
+                    "address": address,
                     "method": method.to_string(),
                     "path": path_str.clone(),
                     "headers": serialize_headers(&headers),

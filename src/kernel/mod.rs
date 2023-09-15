@@ -157,10 +157,10 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         match get_vfs_fd_entry_type(self, fd).await {
             Ok(t::GetEntryType::Dir) => {
                 flags |= DescriptorFlags::MUTATE_DIRECTORY;
-            },
+            }
             Ok(t::GetEntryType::File) => {
                 flags |= DescriptorFlags::WRITE;
-            },
+            }
             Err(e) => {
                 println!("{:?}", e);
                 if "BadDescriptor" == e.kind {
@@ -168,7 +168,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                 } else {
                     panic!("");
                 }
-            },
+            }
         }
 
         Ok(Ok(flags))
@@ -201,9 +201,8 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
                 //         }
                 //     },
                 // }
-            },
+            }
         }
-
     }
 
     async fn set_size(
@@ -1242,7 +1241,8 @@ impl UqProcessImports for ProcessWasi {
         request: wit::Request,
         context: Option<wit::Context>,
         payload: Option<wit::Payload>,
-    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>> {
+    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
+    {
         send_and_await_response(self, target, request, context, payload).await
     }
 }
@@ -1604,9 +1604,7 @@ async fn get_vfs_fd_entry_type(
     };
 
     match response {
-        Err(e) => {
-            Err(e)
-        },
+        Err(e) => Err(e),
         Ok(wit::Response {
             ipc: Some(ipc),
             metadata: _,
@@ -1617,7 +1615,7 @@ async fn get_vfs_fd_entry_type(
             };
 
             Ok(entry_type)
-        },
+        }
         _ => panic!(""),
     }
 }
@@ -1641,12 +1639,18 @@ async fn get_vfs_full_path(
         },
         None,
         None,
-    ).await?.unwrap();  //  TODO
-    let wit::Message::Response((Ok(wit::Response {
-        ipc: Some(ipc),
-        metadata: _,
-    }), _)) = response else {
-        panic!("");  //  TODO: error handle
+    )
+    .await?
+    .unwrap(); //  TODO
+    let wit::Message::Response((
+        Ok(wit::Response {
+            ipc: Some(ipc),
+            metadata: _,
+        }),
+        _,
+    )) = response
+    else {
+        panic!(""); //  TODO: error handle
     };
     let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
     let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {

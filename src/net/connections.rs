@@ -652,10 +652,10 @@ async fn peer_handler(
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
                     if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
-                        if let Message::Request(ref r) = message.message {
-                            println!("#{}\r", r.ipc.clone().unwrap_or_default());
-                        }
-                        // let _ = kernel_message_tx.send(message).await;
+                        // if let Message::Request(ref r) = message.message {
+                        //     println!("#{}\r", r.ipc.clone().unwrap_or_default());
+                        // }
+                        let _ = kernel_message_tx.send(message).await;
                         continue;
                     }
                 }

@@ -854,16 +854,20 @@ async fn make_process_loop(
         {
             Ok(()) => false,
             Err(e) => {
-                let _ =
-                    send_to_terminal
+                let _ = send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 0,
+                        content: format!("mk: process {:?} ended with error:", our.process,),
+                    })
+                    .await;
+                for line in e.to_string().lines() {
+                    let _ = send_to_terminal
                         .send(t::Printout {
                             verbosity: 0,
-                            content: format!(
-                                "mk: process {:?} ended with error: {:?}",
-                                our.process, e,
-                            ),
+                            content: line.into(),
                         })
                         .await;
+                }
                 true
             }
         };

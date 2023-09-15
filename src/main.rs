@@ -351,7 +351,7 @@ async fn main() {
         .await;
 
     let (kernel_process_map, manifest, wal, fs_directory) =
-        lfs::bootstrap(home_directory_path.clone())
+        lfs::bootstrap(our.name.clone(), home_directory_path.clone())
             .await
             .expect("fs bootstrap failed!");
 

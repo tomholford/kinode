@@ -17,6 +17,7 @@ mod manifest;
 mod wal;
 
 pub async fn bootstrap(
+    our_name: String,
     home_directory_path: String,
 ) -> Result<
     (
@@ -93,11 +94,50 @@ pub async fn bootstrap(
     // wasm bytes initial source of truth is the compiled .wasm file on-disk, but onPanic needs to come from somewhere to.
     // for apps in /modules, special cases can be defined here.
 
+    // we also add special-case capabilities spawned "out of thin air" here, for distro processes.
+    // at the moment, all bootstrapped processes are given the capability to message all others.
+    // this can be easily changed in the future.
+    // they are also given access to all runtime modules by name
+    let kernel_address: Address = Address {
+        node: our_name,
+        process: kernel_process_id,
+    };
+
+    let names_and_bytes = get_processes_from_directories().await;
+
+    let mut special_capabilities: HashSet<Capability> = HashSet::new();
+    for (process_name, _) in &names_and_bytes {
+        special_capabilities.insert(Capability {
+            issuer: kernel_address.clone(),
+            label: "messaging".into(),
+            params: Some(serde_json::to_string(&ProcessId::Name(process_name.into())).unwrap()),
+        });
+    }
+    for runtime_module in vec![
+        "filesystem",
+        "http_server",
+        "http_client",
+        "encryptor",
+        "lfs",
+    ] {
+        special_capabilities.insert(Capability {
+            issuer: kernel_address.clone(),
+            label: "messaging".into(),
+            params: Some(serde_json::to_string(&ProcessId::Name(runtime_module.into())).unwrap()),
+        });
+    }
+    // give all distro processes the ability to send messages across the network
+    special_capabilities.insert(Capability {
+        issuer: kernel_address.clone(),
+        label: "network".into(),
+        params: None,
+    });
+
     let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
     special_on_panics.insert("terminal".into(), OnPanic::Restart);
 
     // for a module in /modules, put it's bytes into filesystem, add to state_map
-    for (process_name, wasm_bytes) in get_processes_from_directories().await {
+    for (process_name, wasm_bytes) in names_and_bytes {
         let hash: [u8; 32] = blake3::hash(&wasm_bytes).into();
 
         let on_panic = special_on_panics
@@ -107,7 +147,7 @@ pub async fn bootstrap(
         if let Some((_file, handle)) = manifest.get_by_hash(&hash).await {
             state_map.insert(
                 ProcessId::Name(process_name),
-                (handle, on_panic.clone(), HashSet::new()),
+                (handle, on_panic.clone(), special_capabilities.clone()),
             );
         } else {
             //  FsAction::Write
@@ -127,7 +167,7 @@ pub async fn bootstrap(
             let _ = manifest.add_local(&backup).await;
             state_map.insert(
                 ProcessId::Name(process_name),
-                (file_uuid, on_panic.clone(), HashSet::new()),
+                (file_uuid, on_panic.clone(), special_capabilities.clone()),
             );
         }
     }

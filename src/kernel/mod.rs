@@ -1217,8 +1217,7 @@ impl UqProcessImports for ProcessWasi {
         request: wit::Request,
         context: Option<wit::Context>,
         payload: Option<wit::Payload>,
-    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
-    {
+    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>> {
         send_and_await_response(self, target, request, context, payload).await
     }
 }

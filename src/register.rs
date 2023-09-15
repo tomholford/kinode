@@ -55,6 +55,11 @@ pub async fn register(
     let networking_keypair = Arc::new(Mutex::new(None));
     let seed = SystemRandom::new();
 
+    let our_post = our.clone();
+    let pw_post = pw.clone();
+    let networking_keypair_post = networking_keypair.clone();
+    let seed_post = seed.clone();
+
     let static_files = warp::path("static")
         .and(warp::fs::dir("./src/register_app/static/"));
     let react_app = warp::path("register")
@@ -67,21 +72,21 @@ pub async fn register(
             .and(warp::body::content_length_limit(1024 * 16))
             .and(warp::body::json())
             .and(warp::any().map(move || ip.clone()))
-            .and(warp::any().map(move || our.clone()))
-            .and(warp::any().map(move || pw.clone()))
-            .and(warp::any().map(move || seed.clone()))
-            .and(warp::any().map(move || networking_keypair.clone()))
+            .and(warp::any().map(move || our_post.clone()))
+            .and(warp::any().map(move || pw_post.clone()))
+            .and(warp::any().map(move || seed_post.clone()))
+            .and(warp::any().map(move || networking_keypair_post.clone()))
             .and_then(handle_post)
             // 2. trigger for finalizing registration once on-chain actions are done
-            .or(warp::put()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::any().map(move || tx.clone()))
-                .and(warp::any().map(move || our.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || pw.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || seed.clone()))
-                .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
-                .and(warp::any().map(move || redir_port))
-                .and_then(handle_put)),
+        .or(warp::put()
+            .and(warp::body::content_length_limit(1024 * 16))
+            .and(warp::any().map(move || tx.clone()))
+            .and(warp::any().map(move || our.lock().unwrap().take().unwrap()))
+            .and(warp::any().map(move || pw.lock().unwrap().take().unwrap()))
+            .and(warp::any().map(move || seed.clone()))
+            .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
+            .and(warp::any().map(move || redir_port))
+            .and_then(handle_put)),
     );
 
     let routes = static_files.or(react_app).or(api);

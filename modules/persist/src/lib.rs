@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{print_to_terminal, receive, get_payload, Guest, Address, Response, Context, Payload};
+use bindings::{Address, Guest, print_to_terminal, receive};
 use serde::{Deserialize, Serialize};
 
 mod process_lib;
@@ -63,10 +63,28 @@ impl Guest for Component {
         };
         //  can't await yet, match on FsResponse.
         //  refactor to await when available!
-        let _ = process_lib::get_state(our.node.clone());
+        match process_lib::get_state(our.node.clone()) {
+            None => {
+                print_to_terminal(
+                    0,
+                    "persist: error loading in previous boot state",
+                );
+            },
+            Some(p) => {
+                match bincode::deserialize(&p.bytes) {
+                    Err(e) => print_to_terminal(
+                        0,
+                        &format!("persist: failed to deserialize payload from fs: {}", e),
+                    ),
+                    Ok(s) => {
+                        state = s;
+                    },
+                }
+            },
+        }
 
         loop {
-            let Ok((source, message)) = receive() else {
+            let Ok((_source, message)) = receive() else {
                 print_to_terminal(0, "persist: got network error");
                 continue;
             };
@@ -74,49 +92,26 @@ impl Guest for Component {
             match message {
                 Message::Request(request) => {
                     let persist_msg = serde_json::from_str::<PersistRequest>(&request.clone().ipc.unwrap_or_default());
-                    if let Ok(msg) = persist_msg {
-                        match msg {
-                            PersistRequest::Get => {
-                                print_to_terminal(0, &format!("persist: Get state: {:?}", state));
-                                continue;
-                            },
-                            PersistRequest::Set { new } => {
-                                print_to_terminal(0, "persist: got Set request");
-                                state.val = Some(new);
-                                let _ = process_lib::set_state(our.node.clone(), bincode::serialize(&state).unwrap());
-                                continue;
-                            },
-                        }
-                    } else {
+                    let Ok(msg) = persist_msg else {
                         print_to_terminal(0, &format!("persist: got invalid request {:?}", request.clone()));
                         continue;
-                    }
-                },
-                Message::Response((Ok(response), _)) => {
-                    let fs_msg = serde_json::from_str::<FsResponse>(&response.clone().ipc.unwrap_or_default());
-                    if let Ok(fs_msg) = fs_msg {
-                        match fs_msg {
-                            FsResponse::GetState => {
-                                if let Some(payload) = get_payload() {
-                                    if !payload.bytes.is_empty() {
-                                        match bincode::deserialize(&payload.bytes) {
-                                            Ok(deserialized_state) => state = deserialized_state,
-                                            Err(e) => {
-                                                print_to_terminal(0, &format!("persist: deserialization error: {:?}", e));
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                                print_to_terminal(0, &format!("persist: Get state: {:?}", state));
-
-                                continue;
-                            },
-                            _ => { print_to_terminal(0, "other!"); }
-                        }
-                    } else {
-                        print_to_terminal(0, &format!("persist: got invalid response {:?}", response.clone()));
-                        continue;
+                    };
+                    match msg {
+                        PersistRequest::Get => {
+                            print_to_terminal(0, &format!("persist: Get state: {:?}", state));
+                        },
+                        PersistRequest::Set { new } => {
+                            print_to_terminal(1, "persist: got Set request");
+                            state.val = Some(new);
+                            match process_lib::await_set_state(our.node.clone(), &state) {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    print_to_terminal(0, &format!("persist: failed to set state: {:?}", e))
+                                },
+                            }
+                            // let _ = process_lib::set_state(our.node.clone(), bincode::serialize(&state).unwrap());
+                            print_to_terminal(1, "persist: done Set request");
+                        },
                     }
                 },
                 _ => {

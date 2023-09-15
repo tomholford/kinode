@@ -419,46 +419,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         path: String,
     ) -> Result<Result<(), filesystem::ErrorCode>> {
         println!("kernel: got create_directory_at()");
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
-            panic!("");
-        };
-        let Some(full_path) = full_path else {
-            panic!("");
-        };
-
-        if full_path.chars().last() != Some('/') {
-            panic!("");
-        }
-
-        let full_path = format!("{}{}", full_path, path);
+        let full_path = get_vfs_full_path(self, fd, path).await?;
 
         let _ = send_and_await_response(
             self,
@@ -627,47 +588,7 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
         //     Err(e) => return Err(e.into()),
         // }?;
 
-        //  get full path
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
-            panic!("");
-        };
-        let Some(full_path) = full_path else {
-            panic!("");
-        };
-
-        if full_path.chars().last() != Some('/') {
-            panic!("");
-        }
-
-        let full_path = format!("{}{}", full_path, path);
+        let full_path = get_vfs_full_path(self, fd, path).await?;
 
         //  get entry type
         //  TODO: do we need to handle non-`/`-ending directories?
@@ -766,23 +687,6 @@ impl wasi::filesystem::filesystem::Host for ProcessWasi {
     ) -> Result<Result<(), filesystem::ErrorCode>> {
         println!("kernel: got link_at()");
         unimplemented!("");
-        // let table = self.table();
-        // let old_dir = table.get_dir(fd)?;
-        // if !old_dir.perms.contains(DirPerms::MUTATE) {
-        //     return Err(ErrorCode::NotPermitted.into());
-        // }
-        // let new_dir = table.get_dir(new_descriptor)?;
-        // if !new_dir.perms.contains(DirPerms::MUTATE) {
-        //     return Err(ErrorCode::NotPermitted.into());
-        // }
-        // if symlink_follow(old_path_flags) {
-        //     return Err(ErrorCode::Invalid.into());
-        // }
-        // let new_dir_handle = std::sync::Arc::clone(&new_dir.dir);
-        // old_dir
-        //     .spawn_blocking(move |d| d.hard_link(&old_path, &new_dir_handle, &new_path))
-        //     .await?;
-        // Ok(())
     }
 
     async fn open_at(
@@ -1316,25 +1220,6 @@ impl UqProcessImports for ProcessWasi {
     ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
     {
         send_and_await_response(self, target, request, context, payload).await
-        // let id = self
-        //     .process
-        //     .handle_request(target, request, context, payload)
-        //     .await;
-        // match id {
-        //     Ok(id) => match self.process.get_specific_message_for_process(id).await {
-        //         Ok((address, wit::Message::Response(response))) => {
-        //             Ok(Ok((address, wit::Message::Response(response))))
-        //         }
-        //         Ok((_address, wit::Message::Request(_))) => {
-        //             // this is an error
-        //             Err(anyhow::anyhow!(
-        //                 "fatal: received Request instead of Response"
-        //             ))
-        //         }
-        //         Err((net_err, context)) => Ok(Err((net_err, context))),
-        //     },
-        //     Err(e) => Err(e),
-        // }
     }
 }
 
@@ -1704,6 +1589,47 @@ async fn get_vfs_fd_entry_type(
     };
 
     Ok(entry_type)
+}
+
+async fn get_vfs_full_path(
+    process: &mut ProcessWasi,
+    fd: filesystem::Descriptor,
+    path: String,
+) -> Result<String> {
+    let (_, response) = send_and_await_response(
+        process,
+        wit::Address {
+            node: process.process.metadata.our.node.clone(),
+            process: wit::ProcessId::Name("vfs".into()),
+        },
+        wit::Request {
+            inherit: false,
+            expects_response: true,
+            ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
+            metadata: None,
+        },
+        None,
+        None,
+    ).await?.unwrap();  //  TODO
+    let wit::Message::Response((Ok(wit::Response {
+        ipc: Some(ipc),
+        metadata: _,
+    }), _)) = response else {
+        panic!("");  //  TODO: error handle
+    };
+    let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
+    let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
+        panic!("");
+    };
+    let Some(full_path) = full_path else {
+        panic!("");
+    };
+
+    if full_path.chars().last() != Some('/') {
+        panic!("");
+    }
+
+    Ok(format!("{}{}", full_path, path))
 }
 
 /// create a specific process, and generate a task that will run it.

@@ -66,7 +66,7 @@ pub async fn register(
         .and(warp::get())
         .and(warp::fs::file("./src/register_app/index.html"));
 
-    let api = warp::path("get-ws-info").and( // TODO this path might change
+    let api = warp::path("get-ws-info").and(
         // 1. Get uqname (already on chain) and return networking information
         warp::post()
             .and(warp::body::content_length_limit(1024 * 16))
@@ -132,7 +132,11 @@ async fn handle_post(
             Some((ip.clone(), ws_port))
         },
         allowed_routers: if ip == "localhost" || !info.direct {
-            vec!["rolr1".into(), "rolr2".into(), "rolr3".into()] // TODO fix these
+            vec![
+                "0xdaff2c4fc9d5e4c8d899e5e98cbdcdbebe7e0d0877fa9192fbd93683d4071820".into(), // "rolr1".into(),
+                "0xc9e0421b35a8fa2683b6e21a8f38cac49cbdbb24fd93ebb9ee2126161709db91".into(), // "rolr2".into(),
+                "0x5a8721920996c1e45762513dff2d2007749e7afe90b8fec679d36ec91e330352".into(), // "rolr3".into()
+            ] // TODO fix these
         } else {
             vec![]
         },

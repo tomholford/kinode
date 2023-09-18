@@ -233,17 +233,19 @@ pub async fn build_connection(
     let t_pki = pki.clone();
     let t_peers = peers.clone();
     let t_kernel_message_tx = kernel_message_tx.clone();
-    let connection_handler = std::thread::spawn(move || maintain_connection(
-        t_our,
-        t_name,
-        t_keypair,
-        t_pki,
-        t_peers,
-        socket_tx,
-        socket_rx,
-        websocket,
-        t_kernel_message_tx,
-    ));
+    let connection_handler = std::thread::spawn(move || {
+        maintain_connection(
+            t_our,
+            t_name,
+            t_keypair,
+            t_pki,
+            t_peers,
+            socket_tx,
+            socket_rx,
+            websocket,
+            t_kernel_message_tx,
+        )
+    });
     // connection is now ready to write to
     let active_peer = tokio::spawn(active_peer(
         their_id.name.clone(),
@@ -581,7 +583,13 @@ async fn maintain_connection(
         }
     }
     // connection died, need to kill peer it was with
-    let _ = peers.write().await.get_mut(&with).unwrap().destructor.send(());
+    let _ = peers
+        .write()
+        .await
+        .get_mut(&with)
+        .unwrap()
+        .destructor
+        .send(());
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel

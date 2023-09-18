@@ -147,7 +147,11 @@ pub async fn bootstrap(
             //  doublecheck.
             state_map.insert(
                 ProcessId::Name(process_name),
-                (file.to_uuid().unwrap(), on_panic.clone(), special_capabilities.clone()),
+                (
+                    file.to_uuid().unwrap(),
+                    on_panic.clone(),
+                    special_capabilities.clone(),
+                ),
             );
         }
     }

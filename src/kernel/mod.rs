@@ -8,16 +8,12 @@ use tokio::task::JoinHandle;
 use wasmtime::component::*;
 use wasmtime::{Config, Engine, Store, WasmBacktraceDetails};
 
-use wasmtime_wasi::preview2::{
-    bindings::io::streams, DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView,
-};
+use wasmtime_wasi::preview2::{DirPerms, FilePerms, Table, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::types as t;
 //  WIT errors when `use`ing interface unless we import this and implement Host for Process below
 use crate::kernel::component::uq_process::types as wit;
 use crate::kernel::component::uq_process::types::Host;
-
-use crate::kernel::wasi::filesystem::filesystem;
 
 mod utils;
 use crate::kernel::utils::*;
@@ -96,967 +92,6 @@ impl WasiView for ProcessWasi {
     }
 }
 
-// ///
-// /// intercept wasi clocks::wall-clock
-// ///
-//
-// #[async_trait::async_trait]
-// impl wasi::clocks::wall_clock::Host for ProcessWasi {
-// }
-//
-// ///
-// /// intercept wasi poll::poll
-// ///
-//
-// #[async_trait::async_trait]
-// impl wasi::poll::poll::Host for ProcessWasi {
-// }
-//
-// ///
-// /// intercept wasi io::streams
-// ///
-//
-// #[async_trait::async_trait]
-// impl wasi::io::streams::Host for ProcessWasi {
-// }
-
-///
-/// intercept wasi filesystem
-///
-
-#[async_trait::async_trait]
-impl wasi::filesystem::filesystem::Host for ProcessWasi {
-    async fn advise(
-        &mut self,
-        fd: filesystem::Descriptor,
-        offset: filesystem::Filesize,
-        len: filesystem::Filesize,
-        advice: filesystem::Advice,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got advise()");
-        Ok(Ok(()))
-    }
-
-    async fn sync_data(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got sync_data()");
-        Ok(Ok(()))
-    }
-
-    async fn get_flags(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorFlags, filesystem::ErrorCode>> {
-        println!("kernel: got get_flags()");
-        use filesystem::DescriptorFlags;
-        let mut flags = DescriptorFlags::empty();
-        flags |= DescriptorFlags::READ;
-
-        match get_vfs_fd_entry_type(self, fd).await {
-            Ok(t::GetEntryType::Dir) => {
-                flags |= DescriptorFlags::MUTATE_DIRECTORY;
-            }
-            Ok(t::GetEntryType::File) => {
-                flags |= DescriptorFlags::WRITE;
-            }
-            Err(e) => {
-                println!("{:?}", e);
-                if "BadDescriptor" == e.kind {
-                    return Ok(Err(filesystem::ErrorCode::BadDescriptor));
-                } else {
-                    panic!("");
-                }
-            }
-        }
-
-        Ok(Ok(flags))
-    }
-
-    async fn get_type(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorType, filesystem::ErrorCode>> {
-        println!("kernel: got get_type()");
-
-        match get_vfs_fd_entry_type(self, fd).await {
-            Ok(t::GetEntryType::Dir) => Ok(Ok(filesystem::DescriptorType::Directory)),
-            Ok(t::GetEntryType::File) => Ok(Ok(filesystem::DescriptorType::RegularFile)),
-            Err(e) => {
-                println!("{:?}", e);
-                if "BadDescriptor" == e.kind {
-                    Ok(Err(filesystem::ErrorCode::BadDescriptor))
-                } else {
-                    panic!("");
-                }
-                // Ok(Err(filesystem::ErrorCode::BadDescriptor))
-                // match e.downcast_ref::<UqbarError>() {
-                //     None => panic!(""),
-                //     Some(e) => {
-                //         if "BadDescriptor" == e.kind {
-                //             Ok(Err(filesystem::ErrorCode::BadDescriptor))
-                //         } else {
-                //             panic!("");
-                //         }
-                //     },
-                // }
-            }
-        }
-    }
-
-    async fn set_size(
-        &mut self,
-        fd: filesystem::Descriptor,
-        size: filesystem::Filesize,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got set_size()");
-        Ok(Ok(()))
-    }
-
-    async fn set_times(
-        &mut self,
-        fd: filesystem::Descriptor,
-        atim: filesystem::NewTimestamp,
-        mtim: filesystem::NewTimestamp,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got set_times()");
-        Ok(Ok(()))
-    }
-
-    async fn read(
-        &mut self,
-        fd: filesystem::Descriptor,
-        len: filesystem::Filesize,
-        offset: filesystem::Filesize,
-    ) -> Result<Result<(Vec<u8>, bool), filesystem::ErrorCode>> {
-        println!("kernel: got read()");
-
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(
-                    serde_json::to_string(&t::VfsRequest::FdGetFileChunk {
-                        fd,
-                        offset,
-                        length: len,
-                    })
-                    .unwrap(),
-                ),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        //  TODO: check response fields
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetFileChunk {
-            fd: _,
-            offset: _,
-            length: _,
-        } = response
-        else {
-            panic!("");
-        };
-
-        let Some(ref prompting_message) = self.process.prompting_message else {
-            panic!("");
-        };
-        let Some(ref payload) = prompting_message.payload else {
-            panic!("");
-        };
-        Ok(Ok((payload.bytes.clone(), false))) //  TODO: this bool must be true when hit EOF
-    }
-
-    async fn write(
-        &mut self,
-        fd: filesystem::Descriptor,
-        buf: Vec<u8>,
-        offset: filesystem::Filesize,
-    ) -> Result<Result<filesystem::Filesize, filesystem::ErrorCode>> {
-        //  TODO: use mutable
-        println!("kernel: got write()");
-        unimplemented!();
-    }
-
-    async fn read_directory(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DirectoryEntryStream, filesystem::ErrorCode>> {
-        println!("kernel: got read_directory()");
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetEntry { fd }).unwrap()),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetEntry { fd: _, stream_id } = response else {
-            panic!("");
-        };
-        let Some(stream_id) = stream_id else {
-            panic!("");
-        };
-
-        Ok(Ok(stream_id))
-    }
-
-    async fn read_directory_entry(
-        &mut self,
-        stream: filesystem::DirectoryEntryStream,
-    ) -> Result<Result<Option<filesystem::DirectoryEntry>, filesystem::ErrorCode>> {
-        println!("kernel: got read_directory_entry()");
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(
-                    serde_json::to_string(&t::VfsRequest::FdDirStreamNext { stream_id: stream })
-                        .unwrap(),
-                ),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdDirStreamNext {
-            stream_id: _,
-            child,
-        } = response
-        else {
-            panic!("");
-        };
-        match child {
-            None => Ok(Ok(None)),
-            Some(child) => {
-                let entry_type = if child.chars().last() == Some('/') {
-                    filesystem::DescriptorType::Directory
-                } else {
-                    filesystem::DescriptorType::RegularFile
-                };
-                Ok(Ok(Some(filesystem::DirectoryEntry {
-                    inode: None,
-                    type_: entry_type,
-                    name: child,
-                })))
-            }
-        }
-    }
-
-    async fn drop_directory_entry_stream(
-        &mut self,
-        stream: filesystem::DirectoryEntryStream,
-    ) -> anyhow::Result<()> {
-        println!("kernel: got drop_directory_entry_stream()");
-        let _ = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(
-                    serde_json::to_string(&t::VfsRequest::FdDirStreamDrop { stream_id: stream })
-                        .unwrap(),
-                ),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        Ok(())
-    }
-
-    async fn sync(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got sync()");
-        Ok(Ok(()))
-    }
-
-    async fn create_directory_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got create_directory_at()");
-        let full_path = get_vfs_full_path(self, fd, path).await?;
-
-        let _ = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(
-                    serde_json::to_string(&t::VfsRequest::Add {
-                        full_path,
-                        entry_type: t::AddEntryType::Dir,
-                    })
-                    .unwrap(),
-                ),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-
-        Ok(Ok(()))
-    }
-
-    async fn stat(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
-        println!("kernel: got stat()");
-        let now = {
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            filesystem::Datetime {
-                seconds: t.as_secs(),
-                nanoseconds: t.subsec_nanos(),
-            }
-        };
-        // let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        //     Ok(t) => Ok(filesystem::Datetime {
-        //         seconds: t.as_secs(),
-        //         nanoseconds: t.subsec_nanos(),
-        //     }),
-        //     Err(e) => return Err(e.into()),
-        // }?;
-
-        //  get entry type
-        let (_, response) = send_and_await_response(
-            self,
-            wit::Address {
-                node: self.process.metadata.our.node.clone(),
-                process: wit::ProcessId::Name("vfs".into()),
-            },
-            wit::Request {
-                inherit: false,
-                expects_response: true,
-                ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetType { fd }).unwrap()),
-                metadata: None,
-            },
-            None,
-            None,
-        )
-        .await?
-        .unwrap();
-        let wit::Message::Response((
-            Ok(wit::Response {
-                ipc: Some(ipc),
-                metadata: _,
-            }),
-            _,
-        )) = response
-        else {
-            panic!(""); //  TODO: error handle
-        };
-        let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-        let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
-            panic!("");
-        };
-
-        match entry_type {
-            t::GetEntryType::Dir => Ok(Ok(filesystem::DescriptorStat {
-                device: 0,
-                inode: 0,
-                type_: filesystem::DescriptorType::Directory,
-                link_count: 1,
-                size: 0,
-                data_access_timestamp: now.clone(),
-                data_modification_timestamp: now.clone(),
-                status_change_timestamp: now.clone(),
-            })),
-            t::GetEntryType::File => {
-                //  get size
-                let (_, response) = send_and_await_response(
-                    self,
-                    wit::Address {
-                        node: self.process.metadata.our.node.clone(),
-                        process: wit::ProcessId::Name("vfs".into()),
-                    },
-                    wit::Request {
-                        inherit: false,
-                        expects_response: true,
-                        ipc: Some(
-                            serde_json::to_string(&t::VfsRequest::FdGetEntryLength { fd }).unwrap(),
-                        ),
-                        metadata: None,
-                    },
-                    None,
-                    None,
-                )
-                .await?
-                .unwrap();
-                let wit::Message::Response((
-                    Ok(wit::Response {
-                        ipc: Some(ipc),
-                        metadata: _,
-                    }),
-                    _,
-                )) = response
-                else {
-                    panic!(""); //  TODO: error handle
-                };
-                let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-                let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
-                    panic!("");
-                };
-
-                Ok(Ok(filesystem::DescriptorStat {
-                    device: 0,
-                    inode: 0,
-                    type_: filesystem::DescriptorType::RegularFile,
-                    link_count: 1,
-                    size: length,
-                    data_access_timestamp: now.clone(),
-                    data_modification_timestamp: now.clone(),
-                    status_change_timestamp: now.clone(),
-                }))
-            }
-        }
-    }
-
-    async fn stat_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path_flags: filesystem::PathFlags,
-        path: String,
-    ) -> Result<Result<filesystem::DescriptorStat, filesystem::ErrorCode>> {
-        println!("kernel: got stat_at()");
-        let now = {
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap();
-            filesystem::Datetime {
-                seconds: t.as_secs(),
-                nanoseconds: t.subsec_nanos(),
-            }
-        };
-        // let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        //     Ok(t) => Ok(filesystem::Datetime {
-        //         seconds: t.as_secs(),
-        //         nanoseconds: t.subsec_nanos(),
-        //     }),
-        //     Err(e) => return Err(e.into()),
-        // }?;
-
-        let full_path = get_vfs_full_path(self, fd, path).await?;
-
-        //  get entry type
-        //  TODO: do we need to handle non-`/`-ending directories?
-        //         if so, probably need to query without and then with `/` if without
-        //         doesnt return anything
-        let entry_type = if full_path.chars().last() == Some('/') {
-            filesystem::DescriptorType::Directory
-        } else {
-            filesystem::DescriptorType::RegularFile
-        };
-
-        match entry_type {
-            filesystem::DescriptorType::Directory => Ok(Ok(filesystem::DescriptorStat {
-                device: 0,
-                inode: 0,
-                type_: filesystem::DescriptorType::Directory,
-                link_count: 1,
-                size: 0,
-                data_access_timestamp: now.clone(),
-                data_modification_timestamp: now.clone(),
-                status_change_timestamp: now.clone(),
-            })),
-            filesystem::DescriptorType::RegularFile => {
-                //  get size
-                let (_, response) = send_and_await_response(
-                    self,
-                    wit::Address {
-                        node: self.process.metadata.our.node.clone(),
-                        process: wit::ProcessId::Name("vfs".into()),
-                    },
-                    wit::Request {
-                        inherit: false,
-                        expects_response: true,
-                        ipc: Some(
-                            serde_json::to_string(&t::VfsRequest::FdGetEntryLength { fd }).unwrap(),
-                        ),
-                        metadata: None,
-                    },
-                    None,
-                    None,
-                )
-                .await?
-                .unwrap();
-                let wit::Message::Response((
-                    Ok(wit::Response {
-                        ipc: Some(ipc),
-                        metadata: _,
-                    }),
-                    _,
-                )) = response
-                else {
-                    panic!(""); //  TODO: error handle
-                };
-                let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-                let t::VfsResponse::FdGetEntryLength { fd: _, length } = response else {
-                    panic!("");
-                };
-
-                Ok(Ok(filesystem::DescriptorStat {
-                    device: 0,
-                    inode: 0,
-                    type_: filesystem::DescriptorType::RegularFile,
-                    link_count: 1,
-                    size: length,
-                    data_access_timestamp: now.clone(),
-                    data_modification_timestamp: now.clone(),
-                    status_change_timestamp: now.clone(),
-                }))
-            }
-            _ => {
-                panic!("");
-            }
-        }
-    }
-
-    async fn set_times_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path_flags: filesystem::PathFlags,
-        path: String,
-        atim: filesystem::NewTimestamp,
-        mtim: filesystem::NewTimestamp,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got set_times_at()");
-        Ok(Ok(()))
-    }
-
-    async fn link_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        // TODO delete the path flags from this function
-        old_path_flags: filesystem::PathFlags,
-        old_path: String,
-        new_descriptor: filesystem::Descriptor,
-        new_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        println!("kernel: got link_at()");
-        unimplemented!("");
-    }
-
-    async fn open_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path_flags: filesystem::PathFlags,
-        path: String,
-        oflags: filesystem::OpenFlags,
-        flags: filesystem::DescriptorFlags,
-        // TODO: These are the permissions to use when creating a new file.
-        // Not implemented yet.
-        _mode: filesystem::Modes,
-    ) -> Result<Result<filesystem::Descriptor, filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got open_at()");
-        unimplemented!();
-        // use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
-        // use filesystem::{DescriptorFlags, OpenFlags};
-        // use system_interface::fs::{FdFlags, GetSetFdFlags};
-
-        // let table = self.table_mut();
-        // if table.is_file(fd) {
-        //     Err(ErrorCode::NotDirectory)?;
-        // }
-        // let d = table.get_dir(fd)?;
-        // if !d.perms.contains(DirPerms::READ) {
-        //     Err(ErrorCode::NotPermitted)?;
-        // }
-
-        // if !d.perms.contains(DirPerms::MUTATE) {
-        //     if oflags.contains(OpenFlags::CREATE) || oflags.contains(OpenFlags::TRUNCATE) {
-        //         Err(ErrorCode::NotPermitted)?;
-        //     }
-        //     if flags.contains(DescriptorFlags::WRITE) {
-        //         Err(ErrorCode::NotPermitted)?;
-        //     }
-        // }
-
-        // let mut opts = cap_std::fs::OpenOptions::new();
-        // opts.maybe_dir(true);
-
-        // if oflags.contains(OpenFlags::CREATE | OpenFlags::EXCLUSIVE) {
-        //     opts.create_new(true);
-        //     opts.write(true);
-        // } else if oflags.contains(OpenFlags::CREATE) {
-        //     opts.create(true);
-        //     opts.write(true);
-        // }
-        // if oflags.contains(OpenFlags::TRUNCATE) {
-        //     opts.truncate(true);
-        // }
-        // if flags.contains(DescriptorFlags::READ) {
-        //     opts.read(true);
-        // }
-        // if flags.contains(DescriptorFlags::WRITE) {
-        //     opts.write(true);
-        // } else {
-        //     // If not opened write, open read. This way the OS lets us open
-        //     // the file, but we can use perms to reject use of the file later.
-        //     opts.read(true);
-        // }
-        // if symlink_follow(path_flags) {
-        //     opts.follow(FollowSymlinks::Yes);
-        // } else {
-        //     opts.follow(FollowSymlinks::No);
-        // }
-
-        // // These flags are not yet supported in cap-std:
-        // if flags.contains(DescriptorFlags::FILE_INTEGRITY_SYNC)
-        //     | flags.contains(DescriptorFlags::DATA_INTEGRITY_SYNC)
-        //     | flags.contains(DescriptorFlags::REQUESTED_WRITE_SYNC)
-        // {
-        //     Err(ErrorCode::Unsupported)?;
-        // }
-
-        // if oflags.contains(OpenFlags::DIRECTORY) {
-        //     if oflags.contains(OpenFlags::CREATE)
-        //         || oflags.contains(OpenFlags::EXCLUSIVE)
-        //         || oflags.contains(OpenFlags::TRUNCATE)
-        //     {
-        //         Err(ErrorCode::Invalid)?;
-        //     }
-        // }
-
-        // // Represents each possible outcome from the spawn_blocking operation.
-        // // This makes sure we don't have to give spawn_blocking any way to
-        // // manipulate the table.
-        // enum OpenResult {
-        //     Dir(cap_std::fs::Dir),
-        //     File(cap_std::fs::File),
-        //     NotDir,
-        // }
-
-        // let opened = d
-        //     .spawn_blocking::<_, std::io::Result<OpenResult>>(move |d| {
-        //         let mut opened = d.open_with(&path, &opts)?;
-        //         if opened.metadata()?.is_dir() {
-        //             Ok(OpenResult::Dir(cap_std::fs::Dir::from_std_file(
-        //                 opened.into_std(),
-        //             )))
-        //         } else if oflags.contains(OpenFlags::DIRECTORY) {
-        //             Ok(OpenResult::NotDir)
-        //         } else {
-        //             // FIXME cap-std needs a nonblocking open option so that files reads and writes
-        //             // are nonblocking. Instead we set it after opening here:
-        //             let set_fd_flags = opened.new_set_fd_flags(FdFlags::NONBLOCK)?;
-        //             opened.set_fd_flags(set_fd_flags)?;
-        //             Ok(OpenResult::File(opened))
-        //         }
-        //     })
-        //     .await?;
-
-        // match opened {
-        //     OpenResult::Dir(dir) => Ok(table.push_dir(Dir::new(dir, d.perms, d.file_perms))?),
-
-        //     OpenResult::File(file) => {
-        //         Ok(table.push_file(File::new(file, mask_file_perms(d.file_perms, flags)))?)
-        //     }
-
-        //     OpenResult::NotDir => Err(ErrorCode::NotDirectory.into()),
-        // }
-    }
-
-    async fn drop_descriptor(&mut self, fd: filesystem::Descriptor) -> anyhow::Result<()> {
-        //  TODO: do we need to actually implement?
-        println!("kernel: got drop_descriptor()");
-        Ok(())
-    }
-
-    async fn readlink_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path: String,
-    ) -> Result<Result<String, filesystem::ErrorCode>> {
-        println!("kernel: got readlink_at()");
-        unimplemented!();
-    }
-
-    async fn remove_directory_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        //  TODO: do we need to actually implement?
-        println!("kernel: got remove_directory_at()");
-        Ok(Ok(()))
-    }
-
-    async fn rename_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        old_path: String,
-        new_fd: filesystem::Descriptor,
-        new_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got rename_at()");
-        unimplemented!();
-    }
-
-    async fn symlink_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        src_path: String,
-        dest_path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got symlink_at()");
-        unimplemented!();
-    }
-
-    async fn unlink_file_at(
-        &mut self,
-        fd: filesystem::Descriptor,
-        path: String,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got unlink_file_at()");
-        unimplemented!();
-    }
-
-    async fn access_at(
-        &mut self,
-        _fd: filesystem::Descriptor,
-        _path_flags: filesystem::PathFlags,
-        _path: String,
-        _access: filesystem::AccessType,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem access_at is not implemented")
-    }
-
-    async fn change_file_permissions_at(
-        &mut self,
-        _fd: filesystem::Descriptor,
-        _path_flags: filesystem::PathFlags,
-        _path: String,
-        _mode: filesystem::Modes,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem change_file_permissions_at is not implemented")
-    }
-
-    async fn change_directory_permissions_at(
-        &mut self,
-        _fd: filesystem::Descriptor,
-        _path_flags: filesystem::PathFlags,
-        _path: String,
-        _mode: filesystem::Modes,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem change_directory_permissions_at is not implemented")
-    }
-
-    async fn lock_shared(
-        &mut self,
-        _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem lock_shared is not implemented")
-    }
-
-    async fn lock_exclusive(
-        &mut self,
-        _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem lock_exclusive is not implemented")
-    }
-
-    async fn try_lock_shared(
-        &mut self,
-        _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem try_lock_shared is not implemented")
-    }
-
-    async fn try_lock_exclusive(
-        &mut self,
-        _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem try_lock_exclusive is not implemented")
-    }
-
-    async fn unlock(
-        &mut self,
-        _fd: filesystem::Descriptor,
-    ) -> Result<Result<(), filesystem::ErrorCode>> {
-        todo!("filesystem unlock is not implemented")
-    }
-
-    async fn read_via_stream(
-        &mut self,
-        fd: filesystem::Descriptor,
-        offset: filesystem::Filesize,
-    ) -> Result<Result<streams::InputStream, filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got read_via_stream()");
-        unimplemented!();
-        // use crate::preview2::{
-        //     filesystem::FileInputStream,
-        //     stream::{InternalInputStream, InternalTableStreamExt},
-        // };
-
-        // // Trap if fd lookup fails:
-        // let f = self.table().get_file(fd)?;
-
-        // if !f.perms.contains(FilePerms::READ) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
-        // }
-        // // Duplicate the file descriptor so that we get an indepenent lifetime.
-        // let clone = std::sync::Arc::clone(&f.file);
-
-        // // Create a stream view for it.
-        // let reader = FileInputStream::new(clone, offset);
-
-        // // Insert the stream view into the table. Trap if the table is full.
-        // let index = self
-        //     .table_mut()
-        //     .push_internal_input_stream(InternalInputStream::File(reader))?;
-
-        // Ok(index)
-    }
-
-    async fn write_via_stream(
-        &mut self,
-        fd: filesystem::Descriptor,
-        offset: filesystem::Filesize,
-    ) -> Result<Result<streams::OutputStream, filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got write_via_stream()");
-        unimplemented!();
-        // use crate::preview2::{
-        //     filesystem::FileOutputStream,
-        //     stream::{InternalOutputStream, InternalTableStreamExt},
-        // };
-
-        // // Trap if fd lookup fails:
-        // let f = self.table().get_file(fd)?;
-
-        // if !f.perms.contains(FilePerms::WRITE) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
-        // }
-
-        // // Duplicate the file descriptor so that we get an indepenent lifetime.
-        // let clone = std::sync::Arc::clone(&f.file);
-
-        // // Create a stream view for it.
-        // let writer = FileOutputStream::write_at(clone, offset);
-
-        // // Insert the stream view into the table. Trap if the table is full.
-        // let index = self
-        //     .table_mut()
-        //     .push_internal_output_stream(InternalOutputStream::File(writer))?;
-
-        // Ok(index)
-    }
-
-    async fn append_via_stream(
-        &mut self,
-        fd: filesystem::Descriptor,
-    ) -> Result<Result<streams::OutputStream, filesystem::ErrorCode>> {
-        //  TODO
-        println!("kernel: got append_via_stream()");
-        unimplemented!();
-        // use crate::preview2::{
-        //     filesystem::FileOutputStream,
-        //     stream::{InternalOutputStream, InternalTableStreamExt},
-        // };
-
-        // // Trap if fd lookup fails:
-        // let f = self.table().get_file(fd)?;
-
-        // if !f.perms.contains(FilePerms::WRITE) {
-        //     Err(filesystem::ErrorCodeCode::BadDescriptor)?;
-        // }
-        // // Duplicate the file descriptor so that we get an indepenent lifetime.
-        // let clone = std::sync::Arc::clone(&f.file);
-
-        // // Create a stream view for it.
-        // let appender = FileOutputStream::append(clone);
-
-        // // Insert the stream view into the table. Trap if the table is full.
-        // let index = self
-        //     .table_mut()
-        //     .push_internal_output_stream(InternalOutputStream::File(appender))?;
-
-        // Ok(index)
-    }
-}
-
 ///
 /// intercept wasi random
 ///
@@ -1110,7 +145,7 @@ impl wasi::random::random::Host for ProcessWasi {
 impl UqProcessImports for ProcessWasi {
     //
     // system utils:
-    //
+    //f
     async fn print_to_terminal(&mut self, verbosity: u8, content: String) -> Result<()> {
         match self
             .process
@@ -1243,7 +278,25 @@ impl UqProcessImports for ProcessWasi {
         payload: Option<wit::Payload>,
     ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
     {
-        send_and_await_response(self, target, request, context, payload).await
+        let id = self
+            .process
+            .handle_request(target, request, context, payload)
+            .await;
+        match id {
+            Ok(id) => match self.process.get_specific_message_for_process(id).await {
+                Ok((address, wit::Message::Response(response))) => {
+                    Ok(Ok((address, wit::Message::Response(response))))
+                }
+                Ok((_address, wit::Message::Request(_))) => {
+                    // this is an error
+                    Err(anyhow::anyhow!(
+                        "fatal: received Request instead of Response"
+                    ))
+                }
+                Err((net_err, context)) => Ok(Err((net_err, context))),
+            },
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -1386,7 +439,13 @@ impl Process {
         };
         match &prompting_message.rsvp {
             None => {
-                println!("prompting_message has no rsvp, no bueno");
+                let _ = self
+                    .send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 1,
+                        content: "kernel: prompting_message has no rsvp".into(),
+                    })
+                    .await;
                 return None;
             }
             Some(address) => Some((prompting_message.id, address.clone())),
@@ -1433,12 +492,9 @@ impl Process {
                 &self.prompting_message,
             ) {
                 // this request inherits, but has no rsvp, so itself receives any response
-                (true, true, None) => Some(source),
-                // this request wants a response, which overrides any prompting message
-                (false, true, _) => Some(source),
-                // this request inherits, so regardless of whether it expects response,
-                // response will be routed to prompting message
-                (true, _, Some(ref prompt)) => prompt.rsvp.clone(),
+                (_, true, _) => Some(source),
+                // this request inherits, so response will be routed to prompting message
+                (true, false, Some(ref prompt)) => prompt.rsvp.clone(),
                 // this request doesn't inherit, and doesn't itself want a response
                 (false, false, _) => None,
                 // no rsvp because neither prompting message nor this request wants a response
@@ -1469,7 +525,7 @@ impl Process {
                 self.send_to_terminal
                     .send(t::Printout {
                         verbosity: 1,
-                        content: format!("dropping Response",),
+                        content: format!("kernel: dropping Response {:?}", response),
                     })
                     .await
                     .unwrap();
@@ -1542,129 +598,13 @@ async fn persist_state(
                 ipc: Some(serde_json::to_string(&t::FsAction::SetState).unwrap()),
                 metadata: None,
             }),
-            payload: Some(t::Payload { mime: None, bytes }),
+            payload: Some(t::Payload {
+                mime: None,
+                bytes: bytes,
+            }),
         })
         .await?;
     Ok(())
-}
-
-async fn send_and_await_response(
-    process: &mut ProcessWasi,
-    target: wit::Address,
-    request: wit::Request,
-    context: Option<wit::Context>,
-    payload: Option<wit::Payload>,
-) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>> {
-    let id = process
-        .process
-        .handle_request(target, request, context, payload)
-        .await;
-    match id {
-        Ok(id) => match process.process.get_specific_message_for_process(id).await {
-            Ok((address, wit::Message::Response(response))) => {
-                Ok(Ok((address, wit::Message::Response(response))))
-            }
-            Ok((_address, wit::Message::Request(_))) => {
-                // this is an error
-                Err(anyhow::anyhow!(
-                    "fatal: received Request instead of Response"
-                ))
-            }
-            Err((net_err, context)) => Ok(Err((net_err, context))),
-        },
-        Err(e) => Err(e),
-    }
-}
-
-async fn get_vfs_fd_entry_type(
-    process: &mut ProcessWasi,
-    fd: filesystem::Descriptor,
-) -> Result<t::GetEntryType, UqbarError> {
-    let (_, response) = send_and_await_response(
-        process,
-        wit::Address {
-            node: process.process.metadata.our.node.clone(),
-            process: wit::ProcessId::Name("vfs".into()),
-        },
-        wit::Request {
-            inherit: false,
-            expects_response: true,
-            ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetType { fd }).unwrap()),
-            metadata: None,
-        },
-        None,
-        None,
-    )
-    .await
-    .unwrap()
-    .unwrap(); //  TODO
-
-    let Message::Response((response, _context)) = response else {
-        panic!("");
-    };
-
-    match response {
-        Err(e) => Err(e),
-        Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }) => {
-            let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-            let t::VfsResponse::FdGetType { fd: _, entry_type } = response else {
-                panic!("");
-            };
-
-            Ok(entry_type)
-        }
-        _ => panic!(""),
-    }
-}
-
-async fn get_vfs_full_path(
-    process: &mut ProcessWasi,
-    fd: filesystem::Descriptor,
-    path: String,
-) -> Result<String> {
-    let (_, response) = send_and_await_response(
-        process,
-        wit::Address {
-            node: process.process.metadata.our.node.clone(),
-            process: wit::ProcessId::Name("vfs".into()),
-        },
-        wit::Request {
-            inherit: false,
-            expects_response: true,
-            ipc: Some(serde_json::to_string(&t::VfsRequest::FdGetPath { fd }).unwrap()),
-            metadata: None,
-        },
-        None,
-        None,
-    )
-    .await?
-    .unwrap(); //  TODO
-    let wit::Message::Response((
-        Ok(wit::Response {
-            ipc: Some(ipc),
-            metadata: _,
-        }),
-        _,
-    )) = response
-    else {
-        panic!(""); //  TODO: error handle
-    };
-    let response: t::VfsResponse = serde_json::from_str(&ipc).unwrap();
-    let t::VfsResponse::FdGetPath { fd: _, full_path } = response else {
-        panic!("");
-    };
-    let Some(full_path) = full_path else {
-        panic!("");
-    };
-
-    if full_path.chars().last() != Some('/') {
-        panic!("");
-    }
-
-    Ok(format!("{}{}", full_path, path))
 }
 
 /// create a specific process, and generate a task that will run it.
@@ -1698,13 +638,13 @@ async fn make_process_loop(
         .unwrap();
 
     // wasmtime_wasi::preview2::command::add_to_linker(&mut linker).unwrap();
-    // wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t)
-    //     .unwrap();
+    wasmtime_wasi::preview2::bindings::clocks::wall_clock::add_to_linker(&mut linker, |t| t)
+        .unwrap();
     wasmtime_wasi::preview2::bindings::clocks::monotonic_clock::add_to_linker(&mut linker, |t| t)
         .unwrap();
     wasmtime_wasi::preview2::bindings::clocks::timezone::add_to_linker(&mut linker, |t| t).unwrap();
-    // wasmtime_wasi::preview2::bindings::filesystem::filesystem::add_to_linker(&mut linker, |t| t)
-    //     .unwrap();
+    wasmtime_wasi::preview2::bindings::filesystem::filesystem::add_to_linker(&mut linker, |t| t)
+        .unwrap();
     wasmtime_wasi::preview2::bindings::poll::poll::add_to_linker(&mut linker, |t| t).unwrap();
     wasmtime_wasi::preview2::bindings::io::streams::add_to_linker(&mut linker, |t| t).unwrap();
     // wasmtime_wasi::preview2::bindings::random::random::add_to_linker(&mut linker, |t| t).unwrap();
@@ -2246,8 +1186,8 @@ async fn make_event_loop(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
-    send_to_vfs: t::MessageSender,
     send_to_encryptor: t::MessageSender,
+    send_to_vfs: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {

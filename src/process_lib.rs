@@ -56,7 +56,7 @@ pub fn get_state(
     let _ = send_and_await_response(
         &Address {
             node: our,
-            process: ProcessId::Name("lfs".to_string()),
+            process: ProcessId::Name("filesystem".to_string()),
         },
         false,
         Some(serde_json::to_string(&FsAction::GetState).unwrap()),
@@ -73,7 +73,7 @@ pub fn set_state(
     send_request(
         &Address {
             node: our,
-            process: ProcessId::Name("lfs".to_string()),
+            process: ProcessId::Name("filesystem".to_string()),
         },
         &Request {
             inherit: false,
@@ -101,7 +101,7 @@ where
     let (_, response) = send_and_await_response(
         &Address {
             node: our,
-            process: ProcessId::Name("lfs".to_string()),
+            process: ProcessId::Name("filesystem".to_string()),
         },
         false,
         Some(serde_json::to_string(&FsAction::SetState).unwrap()),

@@ -141,7 +141,6 @@ world uq-process {
             result<tuple<address, message>, tuple<network-error, option<context>>>
 
     //  wasi
-    import wasi:filesystem/filesystem
     import wasi:random/insecure
     import wasi:random/insecure-seed
     import wasi:random/random

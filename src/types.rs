@@ -482,47 +482,13 @@ pub enum VfsRequest {
     GetEntryLength {
         full_path: String,
     },
-    //  wasi
-    // FdAdd { fd: u32, entry_type: AddEntryType },
-    // FdRename { fd: u32, new_full_path: String },
-    FdDelete {
-        fd: u32,
-    },
-    FdGetPath {
-        fd: u32,
-    },
-    FdGetEntry {
-        fd: u32,
-    },
-    FdDirStreamNext {
-        stream_id: u32,
-    },
-    FdDirStreamDrop {
-        stream_id: u32,
-    },
-    FdGetFileChunk {
-        fd: u32,
-        offset: u64,
-        length: u64,
-    },
-    FdWriteChunk {
-        fd: u32,
-        offset: u64,
-        length: u64,
-    },
-    FdGetEntryLength {
-        fd: u32,
-    },
-    FdGetType {
-        fd: u32,
-    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AddEntryType {
     Dir,
-    NewFile, //  add a new file to lfs and add name in vfs
-    ExistingFile { hash: FileHash }, //  link an existing file in lfs to a new name in vfs
+    NewFile, //  add a new file to fs and add name in vfs
+    ExistingFile { hash: FileHash }, //  link an existing file in fs to a new name in vfs
              //  ...  //  symlinks?
 }
 
@@ -564,42 +530,6 @@ pub enum VfsResponse {
     GetEntryLength {
         full_path: String,
         length: u64,
-    },
-    FdDelete {
-        fd: u32,
-    },
-    FdGetPath {
-        fd: u32,
-        full_path: Option<String>,
-    },
-    FdGetEntry {
-        fd: u32,
-        stream_id: Option<u32>,
-    },
-    FdDirStreamNext {
-        stream_id: u32,
-        child: Option<String>,
-    },
-    FdDirStreamDrop {
-        stream_id: u32,
-    },
-    FdGetFileChunk {
-        fd: u32,
-        offset: u64,
-        length: u64,
-    },
-    FdWriteChunk {
-        fd: u32,
-        offset: u64,
-        length: u64,
-    },
-    FdGetEntryLength {
-        fd: u32,
-        length: u64,
-    },
-    FdGetType {
-        fd: u32,
-        entry_type: GetEntryType,
     },
 }
 

@@ -111,7 +111,7 @@ async fn main() {
     // http client performs http requests on behalf of processes
     let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
-    // vfs maintains metadata about files in lfs for processes
+    // vfs maintains metadata about files in fs for processes
     let (vfs_message_sender, vfs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(VFS_CHANNEL_CAPACITY);
     // encryptor handles end-to-end encryption for client messages

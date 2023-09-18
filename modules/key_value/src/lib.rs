@@ -18,8 +18,7 @@ const TABLE: redb::TableDefinition<&[u8], &[u8]> = redb::TableDefinition::new("p
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum KeyValueRequest {
-    // Write { key: Vec<u8> },
-    Write { key: Vec<u8>, val: Vec<u8> },
+    Write { key: Vec<u8> },
     Read { key: Vec<u8> },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,7 +47,7 @@ fn get_or_make_db<'a>(
     let process_id_string = process_id_to_string(&process_id);
     print_to_terminal(0, "key_value: before create()");
     let db =  redb::Database::create(format!(
-         "/{}.redb",
+         "{}.redb",
          process_id_string,
      ))?;
     print_to_terminal(0, "key_value: after create()");
@@ -74,9 +73,8 @@ fn handle_message (
         Message::Response(_) => { panic!() },
         Message::Request(Request { inherit: _ , expects_response: _, ipc, metadata: _ }) => {
             match process_lib::parse_message_ipc(ipc)? {
-                // KeyValueRequest::Write { key } => {
-                KeyValueRequest::Write { key, val } => {
-                    // let Payload { mime: _, bytes } = get_payload().ok_or(anyhow::anyhow!(""))?;
+                KeyValueRequest::Write { key } => {
+                    let Payload { mime: _, bytes } = get_payload().ok_or(anyhow::anyhow!(""))?;
 
                     let db = get_or_make_db(
                         kt::de_wit_process_id(source.process),
@@ -86,8 +84,7 @@ fn handle_message (
                     let write_txn = db.begin_write()?;
                     {
                         let mut table = write_txn.open_table(TABLE)?;
-                        // table.insert(&key[..], &bytes[..])?;
-                        table.insert(&key[..], &val[..])?;
+                        table.insert(&key[..], &bytes[..])?;
                     }
                     write_txn.commit()?;
 

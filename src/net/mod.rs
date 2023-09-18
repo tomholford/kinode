@@ -116,6 +116,10 @@ pub async fn networking(
         _listener = listener => Err(anyhow::anyhow!("listener died")),
         _sender = async {
             while let Some(km) = message_rx.recv().await {
+                if let Message::Request(ref r) = km.message {
+                    println!("A #{}\r", r.ipc.as_ref().unwrap_or(&"".to_string()));
+                }
+                let start = std::time::Instant::now();
                 let target = &km.target.node;
                 if target == &our.name {
                     handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
@@ -133,11 +137,27 @@ pub async fn networking(
                     let peers = peers.clone();
                     let target = target.clone();
                     let network_error_tx = network_error_tx.clone();
+                    let print_tx = print_tx.clone();
                     tokio::spawn(async move {
                         match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
-                            Ok(_) => return,
+                            Ok(_) => {
+                                let end = std::time::Instant::now();
+                                let elapsed = end.duration_since(start);
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 0,
+                                        content: format!(
+                                            "sent ~{:.2}mb message to {target} in {elapsed:?}",
+                                            bincode::serialize(&km).unwrap().len() as f64 / 1_048_576.0
+                                        ),
+                                    })
+                                    .await;
+                                return
+                            },
                             Err(e) => {
-                                peers.write().await.remove(&target);
+                                if let NetworkErrorKind::Offline = e {
+                                    let _ = peers.write().await.remove(&target);
+                                }
                                 let _ = network_error_tx
                                     .send(WrappedNetworkError {
                                         id: km.id,
@@ -154,6 +174,7 @@ pub async fn networking(
                             }
                         }
                     });
+                    //tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 } else {
                     drop(peers_read);
                     message_to_new_peer(

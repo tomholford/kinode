@@ -322,12 +322,16 @@ async fn active_routed_peer(
 }
 
 async fn ack_waiter(mut ack_rx: UnboundedReceiver<NetworkMessage>, shuttle: ErrorShuttle) {
+    if shuttle.is_none() { return }
     match timeout(TIMEOUT, ack_rx.recv()).await {
         Ok(Some(NetworkMessage::Nack(_))) => {
             let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Offline));
         }
         Ok(Some(msg)) => {
             let _ = shuttle.unwrap().send(Ok(Some(msg)));
+        }
+        Ok(None) => {
+            let _ = shuttle.unwrap().send(Ok(None));
         }
         _ => {
             let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Timeout));
@@ -356,9 +360,10 @@ async fn maintain_connection(
     loop {
         tokio::select! {
             Some((message, result_tx)) = message_rx.recv() => {
+                if result_tx.is_some() { println!("C\r"); }
                 // can use a buffer here but doesn't seem to affect performance
                 let bytes = bincode::serialize(&message).unwrap();
-                println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
+                // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
                 if bytes.len() > message_max_size {
                     // println!("message too large\r");
                     let _ = match result_tx {
@@ -409,7 +414,7 @@ async fn maintain_connection(
                     NetworkMessage::Ack(_)
                     | NetworkMessage::HandshakeAck { .. }
                     | NetworkMessage::Nack(_) => {
-                        println!("got ack\r");
+                        // println!("got ack\r");
                         if let Some(sender) = outstanding_acks.pop_back() {
                             let _ = sender.send(msg);
                         }
@@ -516,7 +521,7 @@ async fn maintain_connection(
                         id,
                         contents,
                     } if to == our.name => {
-                        println!("got message for us\r");
+                        // println!("got message for us\r");
                         if let Some(peer) = peers.write().await.get(&from) {
                             if let Ok(()) = peer.handler.send(contents) {
                                 // println!("message handled and acked\r");
@@ -546,7 +551,7 @@ async fn maintain_connection(
                         id,
                         contents,
                     } => {
-                        println!("got message for {to}\r");
+                        // println!("got message for {to}\r");
                         // this message needs to be routed to someone else!
                         // TODO: be selective here!
                         // forward the ACK if we get it from target.
@@ -609,8 +614,6 @@ async fn peer_handler(
 ) {
     // println!("peer_handler\r");
 
-    let mut outstanding_acks = VecDeque::<UnboundedSender<NetworkMessage>>::new();
-
     tokio::select! {
         _ = async {
             while let Some((message, result_tx)) = forwarder.recv().await {
@@ -619,7 +622,7 @@ async fn peer_handler(
                 match message {
                     NetworkMessage::Raw(message) => {
                         if let Message::Request(ref r) = message.message {
-                            println!("#{}\r", r.ipc.clone().unwrap_or_default());
+                            println!("B #{}\r", r.ipc.as_ref().unwrap_or(&"".to_string()));
                         }
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
@@ -635,7 +638,6 @@ async fn peer_handler(
                                         },
                                         result_tx,
                                     ));
-
                                 }
                             }
                         }
@@ -662,9 +664,6 @@ async fn peer_handler(
             while let Some(encrypted_bytes) = receiver.recv().await {
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
                     if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
-                        // if let Message::Request(ref r) = message.message {
-                        //     println!("#{}\r", r.ipc.clone().unwrap_or_default());
-                        // }
                         let _ = kernel_message_tx.send(message).await;
                         continue;
                     }

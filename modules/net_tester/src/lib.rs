@@ -42,10 +42,6 @@ impl Guest for Component {
                 }
                 let command: Value = from_str(&request.ipc.unwrap_or_default()).unwrap();
                 // read size of transfer to test and do it
-                bindings::print_to_terminal(
-                    0,
-                    format!("net_tester: got command {:?}", command).as_str(),
-                );
                 let chunks: u64 = command["chunks"].as_u64().unwrap();
                 let chunk: Vec<u8> = vec![0xfu8; command["size"].as_u64().unwrap() as usize];
                 let target = command["target"].as_str().unwrap();

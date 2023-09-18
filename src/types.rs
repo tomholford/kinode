@@ -260,34 +260,34 @@ pub enum KernelResponse {
 pub enum FsAction {
     Write,
     Replace(FileHash),
+    WriteOffset((FileHash, u64)),
     Append(Option<FileHash>),
     Read(FileHash),
     ReadChunk(ReadChunkRequest),
     Delete(FileHash),
     Length(FileHash),
-    //  process state management
+    SetLength((FileHash, u64)),
     GetState,
     SetState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file_uuid: FileHash,
+    pub file: FileHash,
     pub start: u64,
     pub length: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    //  bytes are in payload_bytes
+    Write(FileHash),
     Read(FileHash),
     ReadChunk(FileHash),
-    Write(FileHash),
     Append(FileHash),
     Delete(FileHash),
     Length(u64),
     GetState,
-    SetState, //  use FileSystemError
+    SetState,
 }
 
 impl VfsError {

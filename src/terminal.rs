@@ -200,8 +200,16 @@ pub async fn terminal(
                     execute!(
                         stdout,
                         cursor::MoveTo(0, win_rows - 1),
-                        terminal::Clear(ClearType::CurrentLine),
-                        Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", printout.content)),
+                        terminal::Clear(ClearType::CurrentLine)
+                    )?;
+                    for line in printout.content.lines() {
+                        execute!(
+                            stdout,
+                            Print(format!("\x1b[38;5;238m{}\x1b[0m\r\n", line)),
+                        )?;
+                    }
+                    execute!(
+                        stdout,
                         cursor::MoveTo(0, win_rows),
                         Print(truncate_in_place(&current_line, prompt_len, win_cols, (line_col, cursor_col))),
                         cursor::MoveTo(cursor_col, win_rows),

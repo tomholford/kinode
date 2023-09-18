@@ -23,7 +23,6 @@ mod filesystem;
 mod http_client;
 mod http_server;
 mod kernel;
-mod lfs;
 mod net;
 mod register;
 mod terminal;
@@ -104,9 +103,6 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY.clone());
-    // new FS channel: todo merge
-    let (lfs_message_sender, lfs_message_receiver): (MessageSender, MessageReceiver) =
-        mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
     // http server channel w/ websockets (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
@@ -342,7 +338,6 @@ async fn main() {
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes)
     };
-
     //  bootstrap FS.
     let _ = print_sender
         .send(Printout {
@@ -351,8 +346,8 @@ async fn main() {
         })
         .await;
 
-    let (kernel_process_map, manifest, wal, fs_directory) =
-        lfs::bootstrap(home_directory_path.clone())
+    let (kernel_process_map, manifest) =
+        filesystem::bootstrap(our.name.clone(), home_directory_path.clone())
             .await
             .expect("fs bootstrap failed!");
 
@@ -381,6 +376,7 @@ async fn main() {
     let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
     tasks.spawn(kernel::kernel(
         our.clone(),
+        networking_keypair_arc.clone(),
         home_directory_path.into(),
         kernel_process_map,
         kernel_message_sender.clone(),
@@ -390,7 +386,6 @@ async fn main() {
         kernel_debug_message_receiver,
         net_message_sender.clone(),
         fs_message_sender,
-        lfs_message_sender,
         http_server_sender,
         http_client_sender,
         encryptor_sender,
@@ -413,19 +408,10 @@ async fn main() {
     ));
     tasks.spawn(filesystem::fs_sender(
         our.name.clone(),
-        home_directory_path.into(),
+        manifest,
         kernel_message_sender.clone(),
         print_sender.clone(),
         fs_message_receiver,
-    ));
-    tasks.spawn(lfs::fs_sender(
-        our.name.clone(),
-        fs_directory,
-        manifest,
-        wal,
-        kernel_message_sender.clone(),
-        print_sender.clone(),
-        lfs_message_receiver,
     ));
     tasks.spawn(http_server::http_server(
         our.name.clone(),

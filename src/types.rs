@@ -517,9 +517,40 @@ impl std::fmt::Display for KernelMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "{{ id: {}, source: {:?}, target: {:?}, rsvp: {:?}, message: {:?} }}",
+            "{{\n    id: {},\n    source: {},\n    target: {},\n    rsvp: {:?},\n    message: {}\n}}",
             self.id, self.source, self.target, self.rsvp, self.message,
         )
+    }
+}
+
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Message::Request(request) => write!(
+                f,
+                "Request(\n    inherit: {},\n    expects_response: {},\n    ipc: {},\n    metadata: {}\n)",
+                request.inherit,
+                request.expects_response,
+                &request.ipc.as_ref().unwrap_or(&"None".into()),
+                &request.metadata.as_ref().unwrap_or(&"None".into()),
+            ),
+            Message::Response((response, context)) => match response {
+                Ok(response) => write!(
+                    f,
+                    "Response(\n    ipc: {},\n    metadata: {},\n    context: {}\n)",
+                    &response.ipc.as_ref().unwrap_or(&"None".into()),
+                    &response.metadata.as_ref().unwrap_or(&"None".into()),
+                    &context.as_ref().unwrap_or(&"None".into()),
+                ),
+                Err(error) => write!(
+                    f,
+                    "Response(\n    kind: {},\n    message: {},\n    context: {}\n)",
+                    error.kind,
+                    &error.message.as_ref().unwrap_or(&"None".into()),
+                    &context.as_ref().unwrap_or(&"None".into()),
+                ),
+            },
+        }
     }
 }
 

@@ -322,7 +322,9 @@ async fn active_routed_peer(
 }
 
 async fn ack_waiter(mut ack_rx: UnboundedReceiver<NetworkMessage>, shuttle: ErrorShuttle) {
-    if shuttle.is_none() { return }
+    if shuttle.is_none() {
+        return;
+    }
     match timeout(TIMEOUT, ack_rx.recv()).await {
         Ok(Some(NetworkMessage::Nack(_))) => {
             let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Offline));

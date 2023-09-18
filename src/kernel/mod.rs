@@ -578,21 +578,6 @@ impl Process {
         payload: Option<wit::Payload>,
     ) -> Result<u64> {
         // enforce capabilities by matching from our set based on fixed format
-        // enforce that process has capability to message a target process of this name
-        let target_process = de_wit_process_id(target.process.clone());
-        let cap = t::Capability {
-            issuer: t::Address {
-                node: self.metadata.our.node.clone(),
-                process: target_process.clone(),
-            },
-            label: "messaging".into(),
-            params: Some(serde_json::to_string(&target_process).unwrap()),
-        };
-        if !self.capabilities.contains(&cap) {
-            return Err(anyhow::anyhow!(
-                "process does not have capability to send to that processID"
-            ));
-        }
         // enforce that if message is directed over the network, process has capability to do so
         if target.node != self.metadata.our.node {
             if !self.capabilities.contains(&t::Capability {
@@ -605,6 +590,22 @@ impl Process {
             }) {
                 return Err(anyhow::anyhow!(
                     "process does not have capability to send to that node"
+                ));
+            }
+        } else {
+            // enforce that process has capability to message a target process of this name
+            let target_process = de_wit_process_id(target.process.clone());
+            let cap = t::Capability {
+                issuer: t::Address {
+                    node: self.metadata.our.node.clone(),
+                    process: target_process.clone(),
+                },
+                label: "messaging".into(),
+                params: Some(serde_json::to_string(&target_process).unwrap()),
+            };
+            if !self.capabilities.contains(&cap) {
+                return Err(anyhow::anyhow!(
+                    "process does not have capability to send to that processID"
                 ));
             }
         }

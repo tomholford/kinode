@@ -5,6 +5,20 @@ use crate::types as t;
 // conversions between wit types and kernel types (annoying)
 //
 
+pub fn en_wit_process_id(process_id: t::ProcessId) -> wit::ProcessId {
+    match process_id {
+        t::ProcessId::Id(id) => wit::ProcessId::Id(id),
+        t::ProcessId::Name(name) => wit::ProcessId::Name(name),
+    }
+}
+
+pub fn de_wit_process_id(process_id: wit::ProcessId) -> t::ProcessId {
+    match process_id {
+        wit::ProcessId::Id(id) => t::ProcessId::Id(id),
+        wit::ProcessId::Name(name) => t::ProcessId::Name(name),
+    }
+}
+
 pub fn en_wit_address(address: t::Address) -> wit::Address {
     wit::Address {
         node: address.node,
@@ -113,5 +127,41 @@ pub fn en_wit_payload(payload: Option<t::Payload>) -> Option<wit::Payload> {
             mime: payload.mime,
             bytes: payload.bytes,
         }),
+    }
+}
+
+pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> t::SignedCapability {
+    t::SignedCapability {
+        issuer: de_wit_address(wit.issuer),
+        label: wit.label,
+        params: wit.params,
+        signature: wit.signature,
+    }
+}
+
+pub fn en_wit_signed_capability(cap: t::SignedCapability) -> wit::SignedCapability {
+    wit::SignedCapability {
+        issuer: en_wit_address(cap.issuer),
+        label: cap.label,
+        params: cap.params,
+        signature: cap.signature,
+    }
+}
+
+pub fn de_wit_on_panic(wit: wit::OnPanic) -> t::OnPanic {
+    match wit {
+        wit::OnPanic::None => t::OnPanic::None,
+        wit::OnPanic::Restart => t::OnPanic::Restart,
+        wit::OnPanic::Requests(reqs) => t::OnPanic::Requests(
+            reqs.into_iter()
+                .map(|(address, request, payload)| {
+                    (
+                        de_wit_address(address),
+                        de_wit_request(request),
+                        de_wit_payload(payload),
+                    )
+                })
+                .collect(),
+        ),
     }
 }

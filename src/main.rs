@@ -345,9 +345,10 @@ async fn main() {
         })
         .await;
 
-    let (kernel_process_map, manifest) = filesystem::bootstrap(home_directory_path.clone())
-        .await
-        .expect("fs bootstrap failed!");
+    let (kernel_process_map, manifest) =
+        filesystem::bootstrap(our.name.clone(), home_directory_path.clone())
+            .await
+            .expect("fs bootstrap failed!");
 
     let _ = kill_tx.send(true);
     let _ = print_sender
@@ -374,6 +375,7 @@ async fn main() {
     let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
     tasks.spawn(kernel::kernel(
         our.clone(),
+        networking_keypair_arc.clone(),
         home_directory_path.into(),
         kernel_process_map,
         kernel_message_sender.clone(),

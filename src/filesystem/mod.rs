@@ -1,6 +1,6 @@
 /// log structured filesystem
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::fs;
 use tokio::time::{interval, Duration};
 
@@ -11,8 +11,15 @@ mod manifest;
 const CHUNK_SIZE: usize = 262144; // 256kb
 
 pub async fn bootstrap(
+    our_name: String,
     home_directory_path: String,
-) -> Result<(HashMap<ProcessId, (u128, OnPanic)>, Manifest), FileSystemError> {
+) -> Result<
+    (
+        HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
+        Manifest,
+    ),
+    FileSystemError,
+> {
     // fs bootstrapping, create home_directory, fs directory inside it, manifest + log if none.
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
@@ -55,7 +62,7 @@ pub async fn bootstrap(
     // serialize it to a ProcessHandles from process id to JoinHandle
 
     let kernel_process_id = FileIdentifier::Process(ProcessId::Name("kernel".into()));
-    let mut state_map: HashMap<ProcessId, (u128, OnPanic)> = HashMap::new();
+    let mut state_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)> = HashMap::new();
 
     // get current processes' wasm_bytes handles. GetState(kernel)
     match manifest.read(&kernel_process_id, None, None).await {
@@ -71,11 +78,55 @@ pub async fn bootstrap(
     // wasm bytes initial source of truth is the compiled .wasm file on-disk, but onPanic needs to come from somewhere to.
     // for apps in /modules, special cases can be defined here.
 
+    // we also add special-case capabilities spawned "out of thin air" here, for distro processes.
+    // at the moment, all bootstrapped processes are given the capability to message all others.
+    // this can be easily changed in the future.
+    // they are also given access to all runtime modules by name
+    let names_and_bytes = get_processes_from_directories().await;
+
+    let mut special_capabilities: HashSet<Capability> = HashSet::new();
+    for (process_name, _) in &names_and_bytes {
+        special_capabilities.insert(Capability {
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name(process_name.into()),
+            },
+            label: "messaging".into(),
+            params: Some(serde_json::to_string(&ProcessId::Name(process_name.into())).unwrap()),
+        });
+    }
+    for runtime_module in vec![
+        "filesystem",
+        "http_server",
+        "http_client",
+        "encryptor",
+        "lfs",
+        "net",
+    ] {
+        special_capabilities.insert(Capability {
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name(runtime_module.into()),
+            },
+            label: "messaging".into(),
+            params: Some(serde_json::to_string(&ProcessId::Name(runtime_module.into())).unwrap()),
+        });
+    }
+    // give all distro processes the ability to send messages across the network
+    special_capabilities.insert(Capability {
+        issuer: Address {
+            node: our_name,
+            process: ProcessId::Name("kernel".into()),
+        },
+        label: "network".into(),
+        params: None,
+    });
+
     let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
     special_on_panics.insert("terminal".into(), OnPanic::Restart);
 
     // for a module in /modules, put it's bytes into filesystem, add to state_map
-    for (process_name, wasm_bytes) in get_processes_from_directories().await {
+    for (process_name, wasm_bytes) in names_and_bytes {
         let hash: [u8; 32] = hash_bytes(&wasm_bytes);
 
         let on_panic = special_on_panics
@@ -83,7 +134,10 @@ pub async fn bootstrap(
             .unwrap_or(&OnPanic::None);
 
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
-            state_map.insert(ProcessId::Name(process_name), (id, on_panic.clone()));
+            state_map.insert(
+                ProcessId::Name(process_name),
+                (id, on_panic.clone(), special_capabilities.clone()),
+            );
         } else {
             //  FsAction::Write
             let file = FileIdentifier::new_uuid();
@@ -93,7 +147,11 @@ pub async fn bootstrap(
             //  doublecheck.
             state_map.insert(
                 ProcessId::Name(process_name),
-                (file.to_uuid().unwrap(), on_panic.clone()),
+                (
+                    file.to_uuid().unwrap(),
+                    on_panic.clone(),
+                    special_capabilities.clone(),
+                ),
             );
         }
     }

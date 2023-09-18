@@ -75,6 +75,21 @@ pub enum Message {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Capability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedCapability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+    pub signature: Vec<u8>, // signed by the kernel, so we can verify that the kernel issued it
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UqbarError {
     pub kind: String,
     pub message: Option<String>, // JSON-string
@@ -202,5 +217,23 @@ pub fn en_wit_payload(load: Option<Payload>) -> Option<wit::Payload> {
             mime: load.mime,
             bytes: load.bytes,
         }),
+    }
+}
+
+pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> SignedCapability {
+    SignedCapability {
+        issuer: de_wit_address(wit.issuer),
+        label: wit.label,
+        params: wit.params,
+        signature: wit.signature,
+    }
+}
+
+pub fn en_wit_signed_capability(cap: SignedCapability) -> wit::SignedCapability {
+    wit::SignedCapability {
+        issuer: en_wit_address(cap.issuer),
+        label: cap.label,
+        params: cap.params,
+        signature: cap.signature,
     }
 }

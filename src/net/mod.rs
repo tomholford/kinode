@@ -383,7 +383,12 @@ async fn connect_to_routers(
             peers.write().await.remove(&dead_router);
             continue;
         }
-        break;
+        let _ = print_tx
+            .send(Printout {
+                verbosity: 0,
+                content: format!("offline! couldn't connect to any routers. trying again..."),
+            })
+            .await;
     }
 }
 

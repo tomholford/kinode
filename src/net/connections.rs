@@ -227,16 +227,22 @@ pub async fn build_connection(
         socket_tx.clone(),
         kernel_message_tx.clone(),
     ));
-    let connection_handler = tokio::spawn(maintain_connection(
-        our.clone(),
-        their_id.name.clone(),
-        keypair.clone(),
-        pki.clone(),
-        peers.clone(),
+    let t_our = our.clone();
+    let t_name = their_id.name.clone();
+    let t_keypair = keypair.clone();
+    let t_pki = pki.clone();
+    let t_peers = peers.clone();
+    let t_kernel_message_tx = kernel_message_tx.clone();
+    let connection_handler = std::thread::spawn(move || maintain_connection(
+        t_our,
+        t_name,
+        t_keypair,
+        t_pki,
+        t_peers,
         socket_tx,
         socket_rx,
         websocket,
-        kernel_message_tx.clone(),
+        t_kernel_message_tx,
     ));
     // connection is now ready to write to
     let active_peer = tokio::spawn(active_peer(
@@ -262,7 +268,7 @@ async fn active_peer(
     who: String,
     sender: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
     peer_handler: JoinHandle<()>,
-    connection_handler: JoinHandle<()>,
+    connection_handler: std::thread::JoinHandle<impl futures::Future<Output = ()>>,
 ) -> String {
     // println!("active_peer\r");
     let keepalive = tokio::spawn(async move {
@@ -281,7 +287,7 @@ async fn active_peer(
     });
     tokio::select! {
         _ = peer_handler => {},
-        _ = connection_handler => {},
+        _ = connection_handler.join().unwrap() => {},
         _ = keepalive => {},
     }
     return who;
@@ -574,6 +580,8 @@ async fn maintain_connection(
             }
         }
     }
+    // connection died, need to kill peer it was with
+    let _ = peers.write().await.get_mut(&with).unwrap().destructor.send(());
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel
@@ -592,60 +600,54 @@ async fn peer_handler(
     kernel_message_tx: MessageSender,
 ) {
     // println!("peer_handler\r");
-    let kill = tokio::spawn(async move {
-        let _ = destructor.recv().await;
-        return;
-    });
 
-    let f_nonce = nonce.clone();
-    let f_cipher = cipher.clone();
-    let f_who = who.clone();
-    let forwarder = tokio::spawn(async move {
-        while let Some((message, result_tx)) = forwarder.recv().await {
-            // if message is raw, we should encrypt.
-            // otherwise, simply send
-            match message {
-                NetworkMessage::Raw(message) => {
-                    if let Message::Request(ref r) = message.message {
-                        println!("#{}\r", r.ipc.clone().unwrap_or_default());
-                    }
-                    if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
-                        if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
-                            if socket_tx.is_closed() {
-                                let _ = result_tx.unwrap().send(Err(NetworkErrorKind::Offline));
-                            } else {
-                                let _ = socket_tx.send((
-                                    NetworkMessage::Msg {
-                                        from: our.name.clone(),
-                                        to: f_who.clone(),
-                                        id: message.id,
-                                        contents: encrypted,
-                                    },
-                                    result_tx,
-                                ));
+    let mut outstanding_acks = VecDeque::<UnboundedSender<NetworkMessage>>::new();
+
+    tokio::select! {
+        _ = async {
+            while let Some((message, result_tx)) = forwarder.recv().await {
+                // if message is raw, we should encrypt.
+                // otherwise, simply send
+                match message {
+                    NetworkMessage::Raw(message) => {
+                        if let Message::Request(ref r) = message.message {
+                            println!("#{}\r", r.ipc.clone().unwrap_or_default());
+                        }
+                        if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
+                            if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
+                                if socket_tx.is_closed() {
+                                    let _ = result_tx.unwrap().send(Err(NetworkErrorKind::Offline));
+                                } else {
+                                    let _ = socket_tx.send((
+                                        NetworkMessage::Msg {
+                                            from: our.name.clone(),
+                                            to: who.clone(),
+                                            id: message.id,
+                                            contents: encrypted,
+                                        },
+                                        result_tx,
+                                    ));
+
+                                }
                             }
                         }
                     }
-                }
-                _ => {
-                    if socket_tx.is_closed() {
-                        result_tx
-                            .unwrap()
-                            .send(Err(NetworkErrorKind::Offline))
-                            .unwrap();
-                    } else {
-                        let _ = socket_tx.send((message, result_tx));
+                    _ => {
+                        if socket_tx.is_closed() {
+                            result_tx
+                                .unwrap()
+                                .send(Err(NetworkErrorKind::Offline))
+                                .unwrap();
+                        } else {
+                            let _ = socket_tx.send((message, result_tx));
+                        }
                     }
                 }
             }
-        }
-    });
-
-    tokio::select! {
-        _ = forwarder => {
+        } => {
             // println!("peer_handler: forwarder died!\r");
         },
-        _ = kill => {
+        _ = destructor.recv() => {
             // println!("peer_handler was killed!\r");
         },
         _ = async {

@@ -37,7 +37,7 @@ pub fn get_state(
     send_request(
         &Address {
             node: our,
-            process: ProcessId::Name("lfs".to_string()),
+            process: ProcessId::Name("filesystem".to_string()),
         },
         &Request {
             inherit: false,
@@ -58,7 +58,7 @@ pub fn set_state(
     send_request(
         &Address {
             node: our,
-            process: ProcessId::Name("lfs".to_string()),
+            process: ProcessId::Name("filesystem".to_string()),
         },
         &Request {
             inherit: false,

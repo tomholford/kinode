@@ -740,7 +740,7 @@ async fn persist_state(
             },
             target: t::Address {
                 node: our_name.clone(),
-                process: t::ProcessId::Name("lfs".into()),
+                process: t::ProcessId::Name("filesystem".into()),
             },
             rsvp: None,
             message: t::Message::Request(t::Request {
@@ -1007,7 +1007,7 @@ async fn handle_kernel_request(
                 },
                 target: t::Address {
                     node: our_name.clone(),
-                    process: t::ProcessId::Name("lfs".into()),
+                    process: t::ProcessId::Name("filesystem".into()),
                 },
                 rsvp: None,
                 message: t::Message::Request(t::Request {
@@ -1051,7 +1051,7 @@ async fn handle_kernel_request(
                 },
                 target: t::Address {
                     node: our_name.clone(),
-                    process: t::ProcessId::Name("lfs".into()),
+                    process: t::ProcessId::Name("filesystem".into()),
                 },
                 rsvp: None,
                 message: t::Message::Request(t::Request {
@@ -1158,7 +1158,7 @@ async fn handle_kernel_response(
     };
 
     // ignore responses that aren't filesystem responses
-    if km.source.process != t::ProcessId::Name("lfs".into()) {
+    if km.source.process != t::ProcessId::Name("filesystem".into()) {
         return;
     }
 
@@ -1353,7 +1353,6 @@ async fn make_event_loop(
     send_to_loop: t::MessageSender,
     send_to_net: t::MessageSender,
     send_to_fs: t::MessageSender,
-    send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_encryptor: t::MessageSender,
@@ -1377,10 +1376,6 @@ async fn make_event_loop(
         senders.insert(
             t::ProcessId::Name("encryptor".into()),
             ProcessSender::Runtime(send_to_encryptor),
-        );
-        senders.insert(
-            t::ProcessId::Name("lfs".into()),
-            ProcessSender::Runtime(send_to_lfs),
         );
         senders.insert(
             t::ProcessId::Name("net".into()),
@@ -1580,7 +1575,6 @@ pub async fn kernel(
     recv_debug_in_loop: t::DebugReceiver,
     send_to_wss: t::MessageSender,
     send_to_fs: t::MessageSender,
-    send_to_lfs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
     send_to_encryptor: t::MessageSender,
@@ -1604,7 +1598,6 @@ pub async fn kernel(
             send_to_loop,
             send_to_wss,
             send_to_fs,
-            send_to_lfs,
             send_to_http_server,
             send_to_http_client,
             send_to_encryptor,

@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::types::*;
 
+const VFS_PERSIST_STATE_CHANNEL_CAPACITY: usize = 5;
 const VFS_TASK_DONE_CHANNEL_CAPACITY: usize = 5;
 const VFS_RESPONSE_CHANNEL_CAPACITY: usize = 2;
 
@@ -133,6 +134,33 @@ fn bytes_to_state(bytes: &Vec<u8>, state: &mut ProcessToVfs) {
     for (process_id, vfs) in serializable.into_iter() {
         state.insert(process_id, Arc::new(Mutex::new(vfs)));
     }
+}
+
+async fn persist_state(our_node: String, send_to_loop: &MessageSender, state: &ProcessToVfs) {
+    let _ = send_to_loop
+        .send(KernelMessage {
+            id: rand::random(),
+            source: Address {
+                node: our_node.clone(),
+                process: ProcessId::Name("vfs".into()),
+            },
+            target: Address {
+                node: our_node,
+                process: ProcessId::Name("filesystem".into()),
+            },
+            rsvp: None,
+            message: Message::Request(Request {
+                inherit: true,
+                expects_response: true,
+                ipc: Some(serde_json::to_string(&FsAction::SetState).unwrap()),
+                metadata: None,
+            }),
+            payload: Some(Payload {
+                mime: None,
+                bytes: state_to_bytes(state).await,
+            }),
+        })
+        .await;
 }
 
 fn update_child_paths(
@@ -293,6 +321,10 @@ pub async fn vfs(
         tokio::sync::mpsc::Sender<u64>,
         tokio::sync::mpsc::Receiver<u64>,
     ) = tokio::sync::mpsc::channel(VFS_TASK_DONE_CHANNEL_CAPACITY);
+    let (send_persist_state, mut recv_persist_state): (
+        tokio::sync::mpsc::Sender<bool>,
+        tokio::sync::mpsc::Receiver<bool>,
+    ) = tokio::sync::mpsc::channel(VFS_PERSIST_STATE_CHANNEL_CAPACITY);
 
     let is_reboot = load_state_from_reboot(
         our_node.clone(),
@@ -303,6 +335,7 @@ pub async fn vfs(
     if !is_reboot {
         //  intial boot
         build_state_for_initial_boot(&process_map, &mut process_to_vfs);
+        send_persist_state.send(true).await.unwrap();
     }
 
     loop {
@@ -310,6 +343,10 @@ pub async fn vfs(
             id_done = recv_vfs_task_done.recv() => {
                 let Some(id_done) = id_done else { continue };
                 response_router.remove(&id_done);
+            },
+            _ = recv_persist_state.recv() => {
+                persist_state(our_node.clone(), &send_to_loop, &process_to_vfs).await;
+                continue;
             },
             km = recv_from_loop.recv() => {
                 let Some(km) = km else { continue };
@@ -352,6 +389,7 @@ pub async fn vfs(
                 ) = tokio::sync::mpsc::channel(VFS_RESPONSE_CHANNEL_CAPACITY);
                 response_router.insert(id.clone(), response_sender);
                 let send_to_loop = send_to_loop.clone();
+                let send_persist_state = send_persist_state.clone();
                 let send_to_terminal = send_to_terminal.clone();
                 let send_vfs_task_done = send_vfs_task_done.clone();
                 match &km.message {
@@ -363,6 +401,7 @@ pub async fn vfs(
                                 km,
                                 vfs,
                                 send_to_loop.clone(),
+                                send_persist_state,
                                 send_to_terminal,
                                 response_receiver,
                             ).await {
@@ -394,6 +433,7 @@ async fn handle_request(
     kernel_message: KernelMessage,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: MessageSender,
+    send_to_persist: tokio::sync::mpsc::Sender<bool>,
     send_to_terminal: PrintSender,
     recv_response: MessageReceiver,
 ) -> Result<(), VfsError> {
@@ -437,6 +477,7 @@ async fn handle_request(
         payload,
         vfs,
         &send_to_loop,
+        &send_to_persist,
         &send_to_terminal,
         recv_response,
     )
@@ -479,6 +520,7 @@ async fn match_request(
     payload: Option<Payload>,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: &MessageSender,
+    send_to_persist: &tokio::sync::mpsc::Sender<bool>,
     send_to_terminal: &PrintSender,
     mut recv_response: MessageReceiver,
 ) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
@@ -509,26 +551,6 @@ async fn match_request(
                     } else {
                         panic!("empty path");
                     };
-                    // let full_path =
-                    //     if let Some(last_char) = full_path.chars().last() {
-                    //         if last_char == '/' {
-                    //             full_path
-                    //         } else {
-                    //             //  TODO: panic or correct & notify?
-                    //             //  elsewhere we panic
-                    //             // format!("{}/", full_path)
-                    //             send_to_terminal
-                    //                 .send(Printout {
-                    //                     verbosity: 0,
-                    //                     content: format!("vfs: cannot add dir without trailing `/`: {}", full_path),
-                    //                 })
-                    //                 .await
-                    //                 .unwrap();
-                    //             panic!("");
-                    //         };
-                    //     } else {
-                    //         panic!("empty path");
-                    //     };
                     let mut vfs = vfs.lock().await;
                     if vfs.path_to_key.contains_key(&full_path) {
                         send_to_terminal
@@ -702,6 +724,7 @@ async fn match_request(
                     vfs.path_to_key.insert(full_path.clone(), key.clone());
                 }
             }
+            send_to_persist.send(true).await.unwrap();
             (
                 Some(
                     serde_json::to_string(&VfsResponse::Add {
@@ -778,6 +801,7 @@ async fn match_request(
                     vfs.key_to_entry.insert(key, entry);
                 }
             }
+            send_to_persist.send(true).await.unwrap();
             (
                 Some(serde_json::to_string(&VfsResponse::Rename { new_full_path }).unwrap()),
                 None,
@@ -854,6 +878,7 @@ async fn match_request(
                     }
                 }
             }
+            send_to_persist.send(true).await.unwrap();
             (
                 Some(serde_json::to_string(&VfsResponse::Delete { full_path }).unwrap()),
                 None,
@@ -1109,6 +1134,7 @@ async fn match_request(
             length,
         } => {
             //  TODO: use mutable
+            // send_to_persist.send(true).await.unwrap();
             unimplemented!();
         }
         VfsRequest::GetEntryLength { full_path } => {

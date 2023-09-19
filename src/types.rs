@@ -259,32 +259,32 @@ pub enum KernelResponse {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsAction {
     Write,
-    Replace(FileHash),
-    WriteOffset((FileHash, u64)),
-    Append(Option<FileHash>),
-    Read(FileHash),
+    Replace(u128),
+    WriteOffset((u128, u64)),
+    Append(Option<u128>),
+    Read(u128),
     ReadChunk(ReadChunkRequest),
-    Delete(FileHash),
-    Length(FileHash),
-    SetLength((FileHash, u64)),
+    Delete(u128),
+    Length(u128),
+    SetLength((u128, u64)),
     GetState,
     SetState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file: FileHash,
+    pub file: u128,
     pub start: u64,
     pub length: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    Write(FileHash),
-    Read(FileHash),
-    ReadChunk(FileHash),
-    Append(FileHash),
-    Delete(FileHash),
+    Write(u128),
+    Read(u128),
+    ReadChunk(u128),
+    Append(u128),
+    Delete(u128),
     Length(u64),
     GetState,
     SetState,
@@ -448,8 +448,6 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
-pub type FileHash = u128;
-
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsRequest {
     Add {
@@ -464,7 +462,7 @@ pub enum VfsRequest {
         full_path: String,
     },
     GetPath {
-        hash: FileHash,
+        hash: u128,
     },
     GetEntry {
         full_path: String,
@@ -488,7 +486,7 @@ pub enum VfsRequest {
 pub enum AddEntryType {
     Dir,
     NewFile, //  add a new file to fs and add name in vfs
-    ExistingFile { hash: FileHash }, //  link an existing file in fs to a new name in vfs
+    ExistingFile { hash: u128 }, //  link an existing file in fs to a new name in vfs
              //  ...  //  symlinks?
 }
 
@@ -510,7 +508,7 @@ pub enum VfsResponse {
         full_path: String,
     },
     GetPath {
-        hash: FileHash,
+        hash: u128,
         full_path: Option<String>,
     },
     GetEntry {

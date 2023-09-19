@@ -19,7 +19,7 @@ type ResponseRouter = HashMap<u64, MessageSender>;
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 enum Key {
     Dir { id: u64 },
-    File { id: FileHash },
+    File { id: u128 },
     // ...
 }
 type KeyToEntry = HashMap<Key, Entry>;

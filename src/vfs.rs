@@ -44,7 +44,7 @@ struct Entry {
 enum EntryType {
     Dir { parent: Key, children: HashSet<Key> },
     File { parent: Key }, //  hash could be generalized to `location` if we want to be able to point at, e.g., remote files
-    // ...  //  symlinks?
+                          // ...  //  symlinks?
 }
 
 impl Vfs {
@@ -291,7 +291,9 @@ fn build_state_for_initial_boot(
         let name = format!("{}.wasm", process_name);
         let full_path = format!("/{}", name);
         let key = Key::File { id: hash.clone() };
-        let entry_type = EntryType::File { parent: Key::Dir { id: 0 } };
+        let entry_type = EntryType::File {
+            parent: Key::Dir { id: 0 },
+        };
         let entry = Entry {
             name,
             full_path: full_path.clone(),
@@ -331,7 +333,8 @@ pub async fn vfs(
         &send_to_loop,
         &mut recv_from_loop,
         &mut process_to_vfs,
-    ).await;
+    )
+    .await;
     if !is_reboot {
         //  intial boot
         build_state_for_initial_boot(&process_map, &mut process_to_vfs);
@@ -481,7 +484,7 @@ async fn handle_request(
         &send_to_terminal,
         recv_response,
     )
-        .await?;
+    .await?;
 
     //  TODO: properly handle rsvp
     if expects_response {

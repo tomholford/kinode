@@ -489,7 +489,7 @@ pub enum AddEntryType {
     Dir,
     NewFile, //  add a new file to fs and add name in vfs
     ExistingFile { hash: FileHash }, //  link an existing file in fs to a new name in vfs
-    //  ...  //  symlinks?
+             //  ...  //  symlinks?
 }
 
 #[derive(Debug, Serialize, Deserialize)]

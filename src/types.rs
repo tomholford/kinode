@@ -492,10 +492,9 @@ pub enum VfsRequest {
         offset: u64,
         length: u64,
     },
-    WriteChunk {
+    WriteOffset {
         full_path: String,
         offset: u64,
-        length: u64,
     },
     GetEntryLength {
         full_path: String,
@@ -540,10 +539,9 @@ pub enum VfsResponse {
         offset: u64,
         length: u64,
     },
-    WriteChunk {
+    WriteOffset {
         full_path: String,
         offset: u64,
-        length: u64,
     },
     GetEntryLength {
         full_path: String,

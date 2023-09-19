@@ -277,12 +277,12 @@ async fn load_state_from_reboot(
 }
 
 fn build_state_for_initial_boot(
-    process_map: &HashMap<ProcessId, (u128, OnPanic)>,
+    process_map: &HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     process_to_vfs: &mut ProcessToVfs,
 ) {
     //  add wasm bytes to each process' vfs and to terminal's vfs
     let mut terminal_vfs = Vfs::new();
-    for (process_id, (hash, _)) in process_map.iter() {
+    for (process_id, (hash, _, _)) in process_map.iter() {
         let mut vfs = Vfs::new();
         let ProcessId::Name(process_name) = process_id else {
             process_to_vfs.insert(process_id.clone(), Arc::new(Mutex::new(vfs)));
@@ -312,7 +312,7 @@ fn build_state_for_initial_boot(
 
 pub async fn vfs(
     our_node: String,
-    process_map: HashMap<ProcessId, (u128, OnPanic)>,
+    process_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_from_loop: MessageReceiver,
@@ -378,7 +378,7 @@ pub async fn vfs(
                     }
                 });
                 //  TODO: remove after vfs is stable
-                send_to_terminal.send(Printout {
+                let _ = send_to_terminal.send(Printout {
                     verbosity: 1,
                     content: format!("{:?}", vfs)
                 }).await;
@@ -1131,14 +1131,54 @@ async fn match_request(
                 Some(payload.bytes),
             )
         }
-        VfsRequest::WriteChunk {
+        VfsRequest::WriteOffset {
             full_path,
             offset,
-            length,
         } => {
-            //  TODO: use mutable
-            // send_to_persist.send(true).await.unwrap();
-            unimplemented!();
+            let file_hash = {
+                let mut vfs = vfs.lock().await;
+                let Some(key) = vfs.path_to_key.remove(&full_path) else {
+                    panic!("");
+                };
+                let key2 = key.clone();
+                let Key::File { id: file_hash } = key2 else {
+                    panic!(""); //  TODO
+                };
+                vfs.path_to_key.insert(full_path.clone(), key);
+                file_hash
+            };
+            let _ = send_to_loop
+                .send(KernelMessage {
+                    id,
+                    source: Address {
+                        node: our_name.clone(),
+                        process: ProcessId::Name("vfs".into()),
+                    },
+                    target: Address {
+                        node: our_name.clone(),
+                        process: ProcessId::Name("filesystem".into()),
+                    },
+                    rsvp: None,
+                    message: Message::Request(Request {
+                        inherit: true,
+                        expects_response: true,
+                        ipc: Some(serde_json::to_string(&FsAction::WriteOffset((
+                            file_hash,
+                            offset,
+                        ))).unwrap()),
+                        metadata: None,
+                    }),
+                    payload,
+                })
+                .await;
+
+            (
+                Some(
+                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset })
+                        .unwrap(),
+                ),
+                None,
+            )
         }
         VfsRequest::GetEntryLength { full_path } => {
             if full_path.chars().last() == Some('/') {

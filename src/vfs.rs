@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use http::Uri;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -14,7 +15,7 @@ const VFS_TASK_DONE_CHANNEL_CAPACITY: usize = 5;
 const VFS_RESPONSE_CHANNEL_CAPACITY: usize = 2;
 
 type ResponseRouter = HashMap<u64, MessageSender>;
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 enum Key {
     Dir { id: u64 },
     File { id: FileHash },
@@ -23,26 +24,26 @@ enum Key {
 type KeyToEntry = HashMap<Key, Entry>;
 type PathToKey = HashMap<String, Key>;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Vfs {
     key_to_entry: KeyToEntry,
     path_to_key: PathToKey,
 }
 type ProcessToVfs = HashMap<ProcessId, Arc<Mutex<Vfs>>>;
+type ProcessToVfsSerializable = HashMap<ProcessId, Vfs>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Entry {
     name: String,
     full_path: String, //  full_path, ending with `/` for dir
     entry_type: EntryType,
     // ...  //  general metadata?
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 enum EntryType {
     Dir { parent: Key, children: HashSet<Key> },
     File { parent: Key }, //  hash could be generalized to `location` if we want to be able to point at, e.g., remote files
-                          // File { parent: String, hash: FileHash },  //  hash could be generalized to `location` if we want to be able to point at, e.g., remote files
-                          // ...  //  symlinks?
+    // ...  //  symlinks?
 }
 
 impl Vfs {
@@ -118,6 +119,22 @@ fn make_error_message(
     }
 }
 
+async fn state_to_bytes(state: &ProcessToVfs) -> Vec<u8> {
+    let mut serializable: ProcessToVfsSerializable = HashMap::new();
+    for (process_id, vfs) in state.iter() {
+        let vfs = vfs.lock().await;
+        serializable.insert(process_id.clone(), (*vfs).clone());
+    }
+    bincode::serialize(&serializable).unwrap()
+}
+
+fn bytes_to_state(bytes: &Vec<u8>, state: &mut ProcessToVfs) {
+    let serializable: ProcessToVfsSerializable = bincode::deserialize(&bytes).unwrap();
+    for (process_id, vfs) in serializable.into_iter() {
+        state.insert(process_id, Arc::new(Mutex::new(vfs)));
+    }
+}
+
 fn update_child_paths(
     parent_full_path: String,
     parent_new_full_path: String,
@@ -174,8 +191,98 @@ fn update_child_paths(
     path_to_key.insert(parent_new_full_path, parent_key);
 }
 
+async fn load_state_from_reboot(
+    our_node: String,
+    send_to_loop: &MessageSender,
+    mut recv_from_loop: &mut MessageReceiver,
+    process_to_vfs: &mut ProcessToVfs,
+) -> bool {
+    let _ = send_to_loop
+        .send(KernelMessage {
+            id: rand::random(),
+            source: Address {
+                node: our_node.clone(),
+                process: ProcessId::Name("vfs".into()),
+            },
+            target: Address {
+                node: our_node.clone(),
+                process: ProcessId::Name("filesystem".into()),
+            },
+            rsvp: None,
+            message: Message::Request(Request {
+                inherit: true,
+                expects_response: true,
+                ipc: Some(serde_json::to_string(&FsAction::GetState).unwrap()),
+                metadata: None,
+            }),
+            payload: None,
+        })
+        .await;
+    let km = recv_from_loop.recv().await;
+    let Some(km) = km else {
+        return false;
+    };
+
+    let KernelMessage {
+        id: _,
+        source: _,
+        target: _,
+        rsvp: _,
+        message,
+        payload,
+    } = km;
+    let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
+        return false;
+    };
+    let Some(ipc) = ipc else {
+        panic!("");
+    };
+    let FsResponse::GetState = serde_json::from_str(&ipc).unwrap() else {
+        panic!("");
+    };
+    let Some(payload) = payload else {
+        panic!("");
+    };
+    bytes_to_state(&payload.bytes, process_to_vfs);
+
+    return true;
+}
+
+fn build_state_for_initial_boot(
+    process_map: &HashMap<ProcessId, (u128, OnPanic)>,
+    process_to_vfs: &mut ProcessToVfs,
+) {
+    //  add wasm bytes to each process' vfs and to terminal's vfs
+    let mut terminal_vfs = Vfs::new();
+    for (process_id, (hash, _)) in process_map.iter() {
+        let mut vfs = Vfs::new();
+        let ProcessId::Name(process_name) = process_id else {
+            process_to_vfs.insert(process_id.clone(), Arc::new(Mutex::new(vfs)));
+            continue;
+        };
+        let name = format!("{}.wasm", process_name);
+        let full_path = format!("/{}", name);
+        let key = Key::File { id: hash.clone() };
+        let entry_type = EntryType::File { parent: Key::Dir { id: 0 } };
+        let entry = Entry {
+            name,
+            full_path: full_path.clone(),
+            entry_type,
+        };
+        vfs.key_to_entry.insert(key.clone(), entry.clone());
+        vfs.path_to_key.insert(full_path.clone(), key.clone());
+        process_to_vfs.insert(process_id.clone(), Arc::new(Mutex::new(vfs)));
+
+        terminal_vfs.key_to_entry.insert(key.clone(), entry);
+        terminal_vfs.path_to_key.insert(full_path.clone(), key);
+    }
+    let terminal_process_id = ProcessId::Name("terminal".into());
+    process_to_vfs.insert(terminal_process_id, Arc::new(Mutex::new(terminal_vfs)));
+}
+
 pub async fn vfs(
     our_node: String,
+    process_map: HashMap<ProcessId, (u128, OnPanic)>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_from_loop: MessageReceiver,
@@ -186,6 +293,17 @@ pub async fn vfs(
         tokio::sync::mpsc::Sender<u64>,
         tokio::sync::mpsc::Receiver<u64>,
     ) = tokio::sync::mpsc::channel(VFS_TASK_DONE_CHANNEL_CAPACITY);
+
+    let is_reboot = load_state_from_reboot(
+        our_node.clone(),
+        &send_to_loop,
+        &mut recv_from_loop,
+        &mut process_to_vfs,
+    ).await;
+    if !is_reboot {
+        //  intial boot
+        build_state_for_initial_boot(&process_map, &mut process_to_vfs);
+    }
 
     loop {
         tokio::select! {
@@ -200,14 +318,6 @@ pub async fn vfs(
                     continue;
                 }
 
-                // let ProcessId::Name(source_process) = &km.source.process else {
-                //     panic!("filesystem: require source identifier contain process name")
-                //     // return Err(FileSystemError::FsError {
-                //     //     what: "to_absolute_path".into(),
-                //     //     path: "home_directory_path".into(),
-                //     //     error: "need source process name".into(),
-                //     // })
-                // };
                 if our_node != km.source.node {
                     println!(
                         "vfs: request must come from our_node={}, got: {}",
@@ -227,7 +337,11 @@ pub async fn vfs(
                         process_to_vfs.get(&km.source.process).unwrap()
                     }
                 });
-                println!("{:?}", vfs);
+                //  TODO: remove after vfs is stable
+                send_to_terminal.send(Printout {
+                    verbosity: 1,
+                    content: format!("{:?}", vfs)
+                }).await;
                 let our_node = our_node.clone();
                 let source = km.source.clone();
                 let id = km.id;
@@ -308,7 +422,7 @@ async fn handle_request(
     let request: VfsRequest = match serde_json::from_str(&ipc) {
         Ok(r) => r,
         Err(e) => {
-            panic!("");
+            panic!("{}", e);
             // return Err(FileSystemError::BadJson {
             //     json: ipc.into(),
             //     error: format!("parse failed: {:?}", e),
@@ -326,7 +440,7 @@ async fn handle_request(
         &send_to_terminal,
         recv_response,
     )
-    .await?;
+        .await?;
 
     //  TODO: properly handle rsvp
     if expects_response {

@@ -1186,8 +1186,8 @@ async fn make_event_loop(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
-    send_to_encryptor: t::MessageSender,
     send_to_vfs: t::MessageSender,
+    send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {

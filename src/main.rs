@@ -380,7 +380,7 @@ async fn main() {
     tasks.spawn(kernel::kernel(
         our.clone(),
         home_directory_path.into(),
-        kernel_process_map,
+        kernel_process_map.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,
@@ -431,6 +431,7 @@ async fn main() {
     ));
     tasks.spawn(vfs::vfs(
         our.name.clone(),
+        kernel_process_map,
         kernel_message_sender.clone(),
         print_sender.clone(),
         vfs_message_receiver,

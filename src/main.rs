@@ -27,6 +27,7 @@ mod net;
 mod register;
 mod terminal;
 mod types;
+mod vfs;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -35,6 +36,7 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
+const VFS_CHANNEL_CAPACITY: usize = 1_000;
 const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -109,6 +111,9 @@ async fn main() {
     // http client performs http requests on behalf of processes
     let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    // vfs maintains metadata about files in fs for processes
+    let (vfs_message_sender, vfs_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(VFS_CHANNEL_CAPACITY);
     // encryptor handles end-to-end encryption for client messages
     let (encryptor_sender, encryptor_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(ENCRYPTOR_CHANNEL_CAPACITY);
@@ -377,7 +382,7 @@ async fn main() {
         our.clone(),
         networking_keypair_arc.clone(),
         home_directory_path.into(),
-        kernel_process_map,
+        kernel_process_map.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,
@@ -387,6 +392,7 @@ async fn main() {
         fs_message_sender,
         http_server_sender,
         http_client_sender,
+        vfs_message_sender,
         encryptor_sender,
     ));
     tasks.spawn(net::networking(
@@ -424,6 +430,13 @@ async fn main() {
         kernel_message_sender.clone(),
         http_client_receiver,
         print_sender.clone(),
+    ));
+    tasks.spawn(vfs::vfs(
+        our.name.clone(),
+        kernel_process_map,
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        vfs_message_receiver,
     ));
     tasks.spawn(encryptor::encryptor(
         our.name.clone(),

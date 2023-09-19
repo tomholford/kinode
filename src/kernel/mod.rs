@@ -561,7 +561,13 @@ impl Process {
         };
         match &prompting_message.rsvp {
             None => {
-                println!("prompting_message has no rsvp, no bueno");
+                let _ = self
+                    .send_to_terminal
+                    .send(t::Printout {
+                        verbosity: 1,
+                        content: "kernel: prompting_message has no rsvp".into(),
+                    })
+                    .await;
                 return None;
             }
             Some(address) => Some((prompting_message.id, address.clone())),
@@ -640,12 +646,9 @@ impl Process {
                 &self.prompting_message,
             ) {
                 // this request inherits, but has no rsvp, so itself receives any response
-                (true, true, None) => Some(source),
-                // this request wants a response, which overrides any prompting message
-                (false, true, _) => Some(source),
-                // this request inherits, so regardless of whether it expects response,
-                // response will be routed to prompting message
-                (true, _, Some(ref prompt)) => prompt.rsvp.clone(),
+                (_, true, _) => Some(source),
+                // this request inherits, so response will be routed to prompting message
+                (true, false, Some(ref prompt)) => prompt.rsvp.clone(),
                 // this request doesn't inherit, and doesn't itself want a response
                 (false, false, _) => None,
                 // no rsvp because neither prompting message nor this request wants a response
@@ -676,7 +679,7 @@ impl Process {
                 self.send_to_terminal
                     .send(t::Printout {
                         verbosity: 1,
-                        content: format!("dropping Response",),
+                        content: format!("kernel: dropping Response {:?}", response),
                     })
                     .await
                     .unwrap();
@@ -1355,6 +1358,7 @@ async fn make_event_loop(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_vfs: t::MessageSender,
     send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
     engine: Engine,
@@ -1380,6 +1384,10 @@ async fn make_event_loop(
         senders.insert(
             t::ProcessId::Name("net".into()),
             ProcessSender::Runtime(send_to_net.clone()),
+        );
+        senders.insert(
+            t::ProcessId::Name("vfs".into()),
+            ProcessSender::Runtime(send_to_vfs.clone()),
         );
 
         // each running process is stored in this map
@@ -1577,6 +1585,7 @@ pub async fn kernel(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_vfs: t::MessageSender,
     send_to_encryptor: t::MessageSender,
 ) -> Result<()> {
     let mut config = Config::new();
@@ -1600,6 +1609,7 @@ pub async fn kernel(
             send_to_fs,
             send_to_http_server,
             send_to_http_client,
+            send_to_vfs,
             send_to_encryptor,
             send_to_terminal,
             engine,

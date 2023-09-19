@@ -310,6 +310,19 @@ pub enum FsResponse {
     SetState,
 }
 
+impl VfsError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            VfsError::BadDescriptor => "BadDescriptor",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsError {
+    BadDescriptor,
+}
+
 impl FileSystemError {
     pub fn kind(&self) -> &str {
         match *self {
@@ -453,6 +466,89 @@ pub enum FileSystemEntryType {
     Symlink,
     File,
     Dir,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsRequest {
+    Add {
+        full_path: String,
+        entry_type: AddEntryType,
+    },
+    Rename {
+        full_path: String,
+        new_full_path: String,
+    },
+    Delete {
+        full_path: String,
+    },
+    GetPath {
+        hash: u128,
+    },
+    GetEntry {
+        full_path: String,
+    },
+    GetFileChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        full_path: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AddEntryType {
+    Dir,
+    NewFile, //  add a new file to fs and add name in vfs
+    ExistingFile { hash: u128 }, //  link an existing file in fs to a new name in vfs
+             //  ...  //  symlinks?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum GetEntryType {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsResponse {
+    Add {
+        full_path: String,
+    },
+    Rename {
+        new_full_path: String,
+    },
+    Delete {
+        full_path: String,
+    },
+    GetPath {
+        hash: u128,
+        full_path: Option<String>,
+    },
+    GetEntry {
+        full_path: String,
+        children: Vec<String>,
+    },
+    GetFileChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteChunk {
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        full_path: String,
+        length: u64,
+    },
 }
 
 //

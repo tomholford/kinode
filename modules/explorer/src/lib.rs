@@ -60,7 +60,7 @@ fn send_write(
 ) -> anyhow::Result<[u8; 32]> {
     let file_msg = process_lib::send_and_await_receive(
         our_name.to_string(),
-        types::ProcessIdentifier::Name("lfs".to_string()),
+        types::ProcessIdentifier::Name("fs".to_string()),
         Some(&FsAction::Write),
         types::OutboundPayloadBytes::Some(bytes),
     )?;
@@ -81,7 +81,7 @@ fn send_read(
 ) -> anyhow::Result<Vec<u8>> {
     let file_msg = process_lib::send_and_await_receive(
         our_name.to_string(),
-        types::ProcessIdentifier::Name("lfs".to_string()),
+        types::ProcessIdentifier::Name("fs".to_string()),
         Some(&FsAction::Read(file_hash)),
         types::OutboundPayloadBytes::None,
     )?;

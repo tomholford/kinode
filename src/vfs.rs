@@ -1131,10 +1131,7 @@ async fn match_request(
                 Some(payload.bytes),
             )
         }
-        VfsRequest::WriteOffset {
-            full_path,
-            offset,
-        } => {
+        VfsRequest::WriteOffset { full_path, offset } => {
             let file_hash = {
                 let mut vfs = vfs.lock().await;
                 let Some(key) = vfs.path_to_key.remove(&full_path) else {
@@ -1162,10 +1159,10 @@ async fn match_request(
                     message: Message::Request(Request {
                         inherit: true,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&FsAction::WriteOffset((
-                            file_hash,
-                            offset,
-                        ))).unwrap()),
+                        ipc: Some(
+                            serde_json::to_string(&FsAction::WriteOffset((file_hash, offset)))
+                                .unwrap(),
+                        ),
                         metadata: None,
                     }),
                     payload,
@@ -1174,8 +1171,7 @@ async fn match_request(
 
             (
                 Some(
-                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset })
-                        .unwrap(),
+                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset }).unwrap(),
                 ),
                 None,
             )

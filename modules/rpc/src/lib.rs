@@ -153,7 +153,7 @@ impl Guest for Component {
                         let body_json: RpcMessage = match serde_json::from_slice::<RpcMessage>(&payload.bytes) {
                             Ok(v) => v,
                             Err(_) => {
-                                print_to_terminal(1, "rpc: JSON is not valid RpcMessage");
+                                print_to_terminal(1, &format!("rpc: JSON is not valid RpcMessage: {:?}", serde_json::from_slice::<serde_json::Value>(&payload.bytes)));
                                 send_http_response(400, default_headers.clone(), "JSON is not valid RpcMessage".to_string().as_bytes().to_vec());
                                 continue;
                             },

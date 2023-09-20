@@ -404,6 +404,7 @@ pub async fn vfs(
                 }
 
                 let identifier = match &request {
+                    VfsRequest::New { identifier } => identifier.clone(),
                     VfsRequest::Add { identifier, .. } => identifier.clone(),
                     VfsRequest::Rename { identifier, .. } => identifier.clone(),
                     VfsRequest::Delete { identifier, .. } => identifier.clone(),
@@ -598,6 +599,18 @@ async fn match_request(
     mut recv_response: MessageReceiver,
 ) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
     Ok(match request {
+        VfsRequest::New { identifier } => {
+            (
+                Some(
+                    serde_json::to_string(&VfsResponse::New {
+                        identifier,
+                        new_caps,
+                    })
+                    .unwrap(),
+                ),
+                None,
+            )
+        },
         VfsRequest::Add {
             identifier,
             full_path,
@@ -804,7 +817,6 @@ async fn match_request(
                     serde_json::to_string(&VfsResponse::Add {
                         identifier,
                         full_path: full_path.clone(),
-                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -884,7 +896,6 @@ async fn match_request(
                     serde_json::to_string(&VfsResponse::Rename {
                         identifier,
                         new_full_path,
-                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -971,7 +982,6 @@ async fn match_request(
                     serde_json::to_string(&VfsResponse::Delete {
                         identifier,
                         full_path,
-                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -1026,7 +1036,6 @@ async fn match_request(
                         identifier,
                         full_path,
                         offset,
-                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -1048,7 +1057,6 @@ async fn match_request(
                             Some(full_path)
                         }
                     },
-                    new_caps,
                 })
                 .unwrap(),
             );
@@ -1109,7 +1117,6 @@ async fn match_request(
                         identifier: identifier.clone(),
                         full_path: full_path.clone(),
                         children: vec![],
-                        new_caps: new_caps.clone(),
                     })
                     .unwrap(),
                 ),
@@ -1129,7 +1136,6 @@ async fn match_request(
                                     identifier,
                                     full_path: full_path.clone(),
                                     children: paths,
-                                    new_caps,
                                 })
                                 .unwrap(),
                             ),
@@ -1196,7 +1202,6 @@ async fn match_request(
                                         identifier,
                                         full_path: full_path.clone(),
                                         children: vec![],
-                                        new_caps,
                                     })
                                     .unwrap(),
                                 ),
@@ -1284,7 +1289,6 @@ async fn match_request(
                         full_path,
                         offset,
                         length,
-                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -1302,7 +1306,6 @@ async fn match_request(
                             identifier,
                             full_path,
                             length: 0,
-                            new_caps,
                         })
                         .unwrap(),
                     ),
@@ -1368,7 +1371,6 @@ async fn match_request(
                             identifier,
                             full_path,
                             length,
-                            new_caps,
                         })
                         .unwrap(),
                     ),

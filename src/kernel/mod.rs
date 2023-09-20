@@ -596,6 +596,7 @@ impl Process {
                     // enforce that process has capability to read/write
                     if let Some(ref ipc) = request.ipc {
                         match serde_json::from_str(ipc).unwrap() {
+                            t::VfsRequest::New { identifier } => {},
                             t::VfsRequest::Add { identifier, .. }
                             | t::VfsRequest::Rename { identifier, .. }
                             | t::VfsRequest::Delete { identifier, .. }

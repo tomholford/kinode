@@ -260,6 +260,12 @@ pub enum KernelCommand {
         initial_capabilities: HashSet<Capability>,
     },
     Shutdown,
+    // capabilities creation
+    GrantCapability {
+        to_process: ProcessId,
+        label: String,
+        params: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -470,34 +476,44 @@ pub enum FileSystemEntryType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsRequest {
+    New {
+        identifier: String,
+    },
     Add {
+        identifier: String,
         full_path: String,
         entry_type: AddEntryType,
     },
     Rename {
+        identifier: String,
         full_path: String,
         new_full_path: String,
     },
     Delete {
+        identifier: String,
         full_path: String,
     },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
     GetPath {
+        identifier: String,
         hash: u128,
     },
     GetEntry {
+        identifier: String,
         full_path: String,
     },
     GetFileChunk {
-        full_path: String,
-        offset: u64,
-        length: u64,
-    },
-    WriteChunk {
+        identifier: String,
         full_path: String,
         offset: u64,
         length: u64,
     },
     GetEntryLength {
+        identifier: String,
         full_path: String,
     },
 }
@@ -518,34 +534,44 @@ pub enum GetEntryType {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsResponse {
+    New {
+        identifier: String,
+    },
     Add {
+        identifier: String,
         full_path: String,
     },
     Rename {
+        identifier: String,
         new_full_path: String,
     },
     Delete {
+        identifier: String,
         full_path: String,
     },
     GetPath {
+        identifier: String,
         hash: u128,
         full_path: Option<String>,
     },
     GetEntry {
+        identifier: String,
         full_path: String,
         children: Vec<String>,
     },
     GetFileChunk {
+        identifier: String,
         full_path: String,
         offset: u64,
         length: u64,
     },
-    WriteChunk {
+    WriteOffset {
+        identifier: String,
         full_path: String,
         offset: u64,
-        length: u64,
     },
     GetEntryLength {
+        identifier: String,
         full_path: String,
         length: u64,
     },

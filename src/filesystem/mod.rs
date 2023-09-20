@@ -102,6 +102,7 @@ pub async fn bootstrap(
         "encryptor",
         "lfs",
         "net",
+        "vfs",
     ] {
         special_capabilities.insert(Capability {
             issuer: Address {
@@ -115,7 +116,7 @@ pub async fn bootstrap(
     // give all distro processes the ability to send messages across the network
     special_capabilities.insert(Capability {
         issuer: Address {
-            node: our_name,
+            node: our_name.clone(),
             process: ProcessId::Name("kernel".into()),
         },
         label: "network".into(),
@@ -133,10 +134,29 @@ pub async fn bootstrap(
             .get(&process_name)
             .unwrap_or(&OnPanic::None);
 
+        // allow processes to read their own process bytes
+        let mut special_capabilities = special_capabilities.clone();
+        special_capabilities.insert(Capability {
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name("vfs".into()),
+            },
+            label: "read".into(),
+            params: Some(serde_json::to_string(&serde_json::json!(process_name)).unwrap()),
+        });
+        special_capabilities.insert(Capability {
+            issuer: Address {
+                node: our_name.clone(),
+                process: ProcessId::Name("vfs".into()),
+            },
+            label: "write".into(),
+            params: Some(serde_json::to_string(&serde_json::json!(process_name)).unwrap()),
+        });
+
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
             state_map.insert(
                 ProcessId::Name(process_name),
-                (id, on_panic.clone(), special_capabilities.clone()),
+                (id, on_panic.clone(), special_capabilities),
             );
         } else {
             //  FsAction::Write
@@ -150,7 +170,7 @@ pub async fn bootstrap(
                 (
                     file.to_uuid().unwrap(),
                     on_panic.clone(),
-                    special_capabilities.clone(),
+                    special_capabilities,
                 ),
             );
         }

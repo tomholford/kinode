@@ -438,6 +438,28 @@ impl Process {
         );
     }
 
+    /// never call recv_in_process directly. instead, use this, which will handle
+    /// messages that the kernel self and wants to intercept and self-evaluate.
+    async fn wrapped_recv(&mut self) -> Result<t::KernelMessage, t::WrappedNetworkError> {
+        let message = self.recv_in_process.recv().await.unwrap();
+
+        if let Ok(ref km) = message {
+            if km.source.node == self.metadata.our.node.clone()
+                && km.source.process == t::ProcessId::Name("kernel".into())
+            {
+                // intercept messages sent by our kernel. for now,
+                // only kind of message performed here is a capabilities grant.
+                // in future, can add more kinds of messages
+                if let t::Message::Request(ref req) = km.message {
+                    self.capabilities.insert(
+                        serde_json::from_str::<t::Capability>(&req.ipc.as_ref().unwrap()).unwrap(),
+                    );
+                }
+            }
+        }
+        return message;
+    }
+
     /// Ingest latest message directed to this process, and mark it as the prompting message.
     /// If there is no message in the queue, wait async until one is received.
     /// The message will only be saved as the prompting-message if it's a Request.
@@ -446,7 +468,7 @@ impl Process {
     ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
         let res = match self.message_queue.pop_front() {
             Some(message_from_queue) => message_from_queue,
-            None => self.recv_in_process.recv().await.unwrap(),
+            None => self.wrapped_recv().await,
         };
         self.kernel_message_to_process_receive(res)
     }
@@ -468,7 +490,7 @@ impl Process {
         }
         // next, wait for the awaited message to arrive
         loop {
-            let res = self.recv_in_process.recv().await.unwrap();
+            let res = self.wrapped_recv().await;
             match res {
                 Ok(ref km) if km.id == awaited_message_id => {
                     return self.kernel_message_to_process_receive(Ok(km.clone()))
@@ -590,6 +612,63 @@ impl Process {
                     "process does not have capability to send to that processID"
                 ));
             }
+
+            if let t::ProcessId::Name(name) = target_process {
+                if "vfs" == name {
+                    // enforce that process has capability to read/write
+                    if let Some(ref ipc) = request.ipc {
+                        match serde_json::from_str(ipc).unwrap() {
+                            t::VfsRequest::New { identifier } => {}
+                            t::VfsRequest::Add { identifier, .. }
+                            | t::VfsRequest::Rename { identifier, .. }
+                            | t::VfsRequest::Delete { identifier, .. }
+                            | t::VfsRequest::WriteOffset { identifier, .. } => {
+                                if !self.capabilities.contains(&t::Capability {
+                                    issuer: t::Address {
+                                        node: self.metadata.our.node.clone(),
+                                        process: t::ProcessId::Name("vfs".into()),
+                                    },
+                                    label: "write".into(),
+                                    params: Some(
+                                        serde_json::to_string(
+                                            &serde_json::json!({"identifier": identifier}),
+                                        )
+                                        .unwrap(),
+                                    ),
+                                }) {
+                                    return Err(anyhow::anyhow!(
+                                        "process does not have capability to write to vfs {}",
+                                        identifier,
+                                    ));
+                                }
+                            }
+                            t::VfsRequest::GetPath { identifier, .. }
+                            | t::VfsRequest::GetEntry { identifier, .. }
+                            | t::VfsRequest::GetFileChunk { identifier, .. }
+                            | t::VfsRequest::GetEntryLength { identifier, .. } => {
+                                if !self.capabilities.contains(&t::Capability {
+                                    issuer: t::Address {
+                                        node: self.metadata.our.node.clone(),
+                                        process: t::ProcessId::Name("vfs".into()),
+                                    },
+                                    label: "read".into(),
+                                    params: Some(
+                                        serde_json::to_string(
+                                            &serde_json::json!({"identifier": identifier}),
+                                        )
+                                        .unwrap(),
+                                    ),
+                                }) {
+                                    return Err(anyhow::anyhow!(
+                                        "process does not have capability to read to vfs {}",
+                                        identifier,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         let source = self.metadata.our.clone();
         // if request chooses to inherit context, match id to prompting_message
@@ -621,7 +700,7 @@ impl Process {
                 request.expects_response,
                 &self.prompting_message,
             ) {
-                // this request inherits, but has no rsvp, so itself receives any response
+                // this request expects response, so receives any response
                 (_, true, _) => Some(source),
                 // this request inherits, so response will be routed to prompting message
                 (true, false, Some(ref prompt)) => prompt.rsvp.clone(),
@@ -880,7 +959,7 @@ async fn make_process_loop(
                                         },
                                         wasm_bytes_handle,
                                         on_panic,
-                                        initial_capabilities: initial_capabilities,
+                                        initial_capabilities,
                                     })
                                     .unwrap(),
                                 ),
@@ -1103,6 +1182,39 @@ async fn handle_kernel_request(
                         }),
                         None,
                     )),
+                    payload: None,
+                })
+                .await
+                .unwrap();
+        }
+        t::KernelCommand::GrantCapability {
+            to_process,
+            label,
+            params,
+        } => {
+            let capability = t::Capability {
+                issuer: km.source.clone(),
+                label,
+                params,
+            };
+            send_to_loop
+                .send(t::KernelMessage {
+                    id: km.id,
+                    source: t::Address {
+                        node: our_name.clone(),
+                        process: t::ProcessId::Name("kernel".into()),
+                    },
+                    target: t::Address {
+                        node: our_name.clone(),
+                        process: to_process,
+                    },
+                    rsvp: None,
+                    message: t::Message::Request(t::Request {
+                        inherit: false,
+                        expects_response: false,
+                        ipc: Some(serde_json::to_string(&capability).unwrap()),
+                        metadata: None,
+                    }),
                     payload: None,
                 })
                 .await

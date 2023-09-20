@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{Address, Guest, print_to_terminal, receive};
+use bindings::{Address, Guest, print_to_terminal, receive, send_response};
 use serde::{Deserialize, Serialize};
 
 mod process_lib;
@@ -111,6 +111,13 @@ impl Guest for Component {
                             print_to_terminal(1, "persist: done Set request");
                         },
                     }
+                    send_response(
+                        &Response {
+                            ipc: None,
+                            metadata: None,
+                        },
+                        None,
+                    );
                 },
                 _ => {
                     print_to_terminal(0, "persist: got unexpected message");

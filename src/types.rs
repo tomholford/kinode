@@ -260,6 +260,12 @@ pub enum KernelCommand {
         initial_capabilities: HashSet<Capability>,
     },
     Shutdown,
+    // capabilities creation
+    GrantCapability {
+        to_process: ProcessId,
+        label: String,
+        params: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

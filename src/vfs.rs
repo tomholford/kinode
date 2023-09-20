@@ -428,7 +428,7 @@ pub async fn vfs(
                                 process: ProcessId::Name("vfs".into()),
                             },
                             label: "read".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                            params: Some(serde_json::to_string(&serde_json::json!({"identifier": identifier.clone()})).unwrap()),
                         };
                         let write_cap = Capability {
                             issuer: Address {
@@ -436,7 +436,7 @@ pub async fn vfs(
                                 process: ProcessId::Name("vfs".into()),
                             },
                             label: "write".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                            params: Some(serde_json::to_string(&serde_json::json!({"identifier": identifier.clone()})).unwrap()),
                         };
                         (
                             Arc::clone(identifier_to_vfs.get(&identifier).unwrap()),

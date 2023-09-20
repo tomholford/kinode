@@ -630,7 +630,7 @@ impl Process {
                                     },
                                     label: "write".into(),
                                     params: Some(
-                                        serde_json::to_string(&serde_json::json!(identifier))
+                                        serde_json::to_string(&serde_json::json!({"identifier": identifier}))
                                             .unwrap(),
                                     ),
                                 }) {
@@ -651,7 +651,7 @@ impl Process {
                                     },
                                     label: "read".into(),
                                     params: Some(
-                                        serde_json::to_string(&serde_json::json!(identifier))
+                                        serde_json::to_string(&serde_json::json!({"identifier": identifier}))
                                             .unwrap(),
                                     ),
                                 }) {

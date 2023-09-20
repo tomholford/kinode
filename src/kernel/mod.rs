@@ -630,8 +630,10 @@ impl Process {
                                     },
                                     label: "write".into(),
                                     params: Some(
-                                        serde_json::to_string(&serde_json::json!({"identifier": identifier}))
-                                            .unwrap(),
+                                        serde_json::to_string(
+                                            &serde_json::json!({"identifier": identifier}),
+                                        )
+                                        .unwrap(),
                                     ),
                                 }) {
                                     return Err(anyhow::anyhow!(
@@ -651,8 +653,10 @@ impl Process {
                                     },
                                     label: "read".into(),
                                     params: Some(
-                                        serde_json::to_string(&serde_json::json!({"identifier": identifier}))
-                                            .unwrap(),
+                                        serde_json::to_string(
+                                            &serde_json::json!({"identifier": identifier}),
+                                        )
+                                        .unwrap(),
                                     ),
                                 }) {
                                     return Err(anyhow::anyhow!(

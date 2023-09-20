@@ -448,30 +448,7 @@ impl Process {
             Some(message_from_queue) => message_from_queue,
             None => self.recv_in_process.recv().await.unwrap(),
         };
-        match res {
-            Ok(km) => match self.contexts.remove(&km.id) {
-                None => {
-                    self.last_payload = km.payload.clone();
-                    self.prompting_message = Some(km.clone());
-                    Ok(self.kernel_message_to_process_receive(None, km))
-                }
-                Some(context) => {
-                    self.last_payload = km.payload.clone();
-                    self.prompting_message = match context.prompting_message {
-                        None => Some(km.clone()),
-                        Some(prompting_message) => Some(prompting_message),
-                    };
-                    Ok(self.kernel_message_to_process_receive(context.context, km))
-                }
-            },
-            Err(e) => match self.contexts.remove(&e.id) {
-                None => Err((en_wit_network_error(e.error), None)),
-                Some(context) => {
-                    self.prompting_message = context.prompting_message;
-                    Err((en_wit_network_error(e.error), context.context))
-                }
-            },
-        }
+        self.kernel_message_to_process_receive(res)
     }
 
     /// instead of ingesting latest, wait for a specific ID and queue all others
@@ -479,50 +456,25 @@ impl Process {
         &mut self,
         awaited_message_id: u64,
     ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
+        // first, check if the awaited message is already in the queue and handle if so
+        for (i, message) in self.message_queue.iter().enumerate() {
+            match message {
+                Ok(ref km) if km.id == awaited_message_id => {
+                    let km = self.message_queue.remove(i).unwrap();
+                    return self.kernel_message_to_process_receive(km.clone());
+                }
+                _ => continue,
+            }
+        }
+        // next, wait for the awaited message to arrive
         loop {
-            let res = match self.message_queue.pop_front() {
-                Some(message_from_queue) => message_from_queue,
-                None => self.recv_in_process.recv().await.unwrap(),
-            };
+            let res = self.recv_in_process.recv().await.unwrap();
             match res {
-                Ok(km) => {
-                    if km.id == awaited_message_id {
-                        match self.contexts.remove(&km.id) {
-                            None => {
-                                self.last_payload = km.payload.clone();
-                                self.prompting_message = Some(km.clone());
-                                return Ok(self.kernel_message_to_process_receive(None, km));
-                            }
-                            Some(context) => {
-                                self.last_payload = km.payload.clone();
-                                self.prompting_message = match context.prompting_message {
-                                    None => Some(km.clone()),
-                                    Some(prompting_message) => Some(prompting_message),
-                                };
-                                return Ok(
-                                    self.kernel_message_to_process_receive(context.context, km)
-                                );
-                            }
-                        }
-                    } else {
-                        self.message_queue.push_back(Ok(km));
-                        continue;
-                    }
+                Ok(ref km) if km.id == awaited_message_id => {
+                    return self.kernel_message_to_process_receive(Ok(km.clone()))
                 }
-                Err(e) => {
-                    if e.id == awaited_message_id {
-                        match self.contexts.remove(&e.id) {
-                            None => return Err((en_wit_network_error(e.error), None)),
-                            Some(context) => {
-                                self.prompting_message = context.prompting_message;
-                                return Err((en_wit_network_error(e.error), context.context));
-                            }
-                        }
-                    } else {
-                        self.message_queue.push_back(Err(e));
-                        continue;
-                    }
-                }
+                Ok(km) => self.message_queue.push_back(Ok(km)),
+                Err(e) => self.message_queue.push_back(Err(e)),
             }
         }
     }
@@ -531,13 +483,37 @@ impl Process {
     /// if the message is a response or error, get context if we have one
     fn kernel_message_to_process_receive(
         &mut self,
-        context: Option<t::Context>,
-        km: t::KernelMessage,
-    ) -> (wit::Address, wit::Message) {
+        res: Result<t::KernelMessage, t::WrappedNetworkError>,
+    ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
+        let (context, km) = match res {
+            Ok(km) => match self.contexts.remove(&km.id) {
+                None => {
+                    self.last_payload = km.payload.clone();
+                    self.prompting_message = Some(km.clone());
+                    (None, km)
+                }
+                Some(context) => {
+                    self.last_payload = km.payload.clone();
+                    self.prompting_message = match context.prompting_message {
+                        None => Some(km.clone()),
+                        Some(prompting_message) => Some(prompting_message),
+                    };
+                    (context.context, km)
+                }
+            },
+            Err(e) => match self.contexts.remove(&e.id) {
+                None => return Err((en_wit_network_error(e.error), None)),
+                Some(context) => {
+                    self.prompting_message = context.prompting_message;
+                    return Err((en_wit_network_error(e.error), context.context));
+                }
+            },
+        };
+
         // note: the context in the KernelMessage is not actually the one we want:
         // (in fact it should be None, possibly always)
         // we need to get *our* context for this message id
-        (
+        Ok((
             en_wit_address(km.source),
             match km.message {
                 t::Message::Request(request) => wit::Message::Request(en_wit_request(request)),
@@ -548,7 +524,7 @@ impl Process {
                     wit::Message::Response((Err(en_wit_uqbar_error(error)), context))
                 }
             },
-        )
+        ))
     }
 
     /// Given the current process state, return the id and target that

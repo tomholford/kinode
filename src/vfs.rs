@@ -313,7 +313,6 @@ fn build_state_for_initial_boot(
 
 pub async fn vfs(
     our_node: String,
-    keypair: Arc<ring::signature::Ed25519KeyPair>,
     process_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
@@ -431,16 +430,6 @@ pub async fn vfs(
                             label: "read".into(),
                             params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
                         };
-                        let read_sig = keypair.sign(&bincode::serialize(&read_cap).unwrap());
-                        let read_cap = SignedCapability {
-                            issuer: Address {
-                                node: our_node.clone(),
-                                process: ProcessId::Name("vfs".into()),
-                            },
-                            label: "read".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
-                            signature: read_sig.as_ref().to_vec(),
-                        };
                         let write_cap = Capability {
                             issuer: Address {
                                 node: our_node.clone(),
@@ -448,16 +437,6 @@ pub async fn vfs(
                             },
                             label: "write".into(),
                             params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
-                        };
-                        let write_sig = keypair.sign(&bincode::serialize(&write_cap).unwrap());
-                        let write_cap = SignedCapability {
-                            issuer: Address {
-                                node: our_node.clone(),
-                                process: ProcessId::Name("vfs".into()),
-                            },
-                            label: "write".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
-                            signature: write_sig.as_ref().to_vec(),
                         };
                         (
                             Arc::clone(identifier_to_vfs.get(&identifier).unwrap()),
@@ -535,7 +514,7 @@ async fn handle_request(
     request: VfsRequest,
     metadata: Option<String>,
     payload: Option<Payload>,
-    new_caps: Vec<SignedCapability>,
+    new_caps: Vec<Capability>,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: MessageSender,
     send_to_persist: tokio::sync::mpsc::Sender<bool>,
@@ -545,6 +524,7 @@ async fn handle_request(
     let (ipc, bytes) = match_request(
         our_name.clone(),
         id.clone(),
+        source.clone(),
         request,
         payload,
         new_caps,
@@ -589,9 +569,10 @@ async fn handle_request(
 async fn match_request(
     our_name: String,
     id: u64,
+    source: Address,
     request: VfsRequest,
     payload: Option<Payload>,
-    new_caps: Vec<SignedCapability>,
+    new_caps: Vec<Capability>,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: &MessageSender,
     send_to_persist: &tokio::sync::mpsc::Sender<bool>,
@@ -599,16 +580,45 @@ async fn match_request(
     mut recv_response: MessageReceiver,
 ) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
     Ok(match request {
-        VfsRequest::New { identifier } => (
-            Some(
-                serde_json::to_string(&VfsResponse::New {
-                    identifier,
-                    new_caps,
-                })
-                .unwrap(),
-            ),
-            None,
-        ),
+        VfsRequest::New { identifier } => {
+            for new_cap in new_caps {
+                let _ = send_to_loop
+                    .send(KernelMessage {
+                        id,
+                        source: Address {
+                            node: our_name.clone(),
+                            process: ProcessId::Name("vfs".into()),
+                        },
+                        target: Address {
+                            node: our_name.clone(),
+                            process: ProcessId::Name("kernel".into()),
+                        },
+                        rsvp: None,
+                        message: Message::Request(Request {
+                            inherit: false,
+                            expects_response: false,
+                            ipc: Some(serde_json::to_string(&KernelCommand::GrantCapability {
+                                to_process: source.process.clone(),
+                                label: new_cap.label,
+                                params: new_cap.params,
+                            }).unwrap()),
+                            metadata: None,
+                        }),
+                        payload: None,
+                    })
+                    .await;
+            }
+
+            (
+                Some(
+                    serde_json::to_string(&VfsResponse::New {
+                        identifier,
+                    })
+                    .unwrap(),
+                ),
+                None,
+            )
+        },
         VfsRequest::Add {
             identifier,
             full_path,

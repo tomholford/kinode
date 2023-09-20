@@ -536,7 +536,6 @@ pub enum GetEntryType {
 pub enum VfsResponse {
     New {
         identifier: String,
-        new_caps: Vec<SignedCapability>,
     },
     Add {
         identifier: String,

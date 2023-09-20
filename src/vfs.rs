@@ -599,18 +599,16 @@ async fn match_request(
     mut recv_response: MessageReceiver,
 ) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
     Ok(match request {
-        VfsRequest::New { identifier } => {
-            (
-                Some(
-                    serde_json::to_string(&VfsResponse::New {
-                        identifier,
-                        new_caps,
-                    })
-                    .unwrap(),
-                ),
-                None,
-            )
-        },
+        VfsRequest::New { identifier } => (
+            Some(
+                serde_json::to_string(&VfsResponse::New {
+                    identifier,
+                    new_caps,
+                })
+                .unwrap(),
+            ),
+            None,
+        ),
         VfsRequest::Add {
             identifier,
             full_path,

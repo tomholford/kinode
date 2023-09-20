@@ -136,11 +136,7 @@ fn bytes_to_state(bytes: &Vec<u8>, state: &mut IdentifierToVfs) {
     }
 }
 
-async fn persist_state(
-    our_node: String,
-    send_to_loop: &MessageSender,
-    state: &IdentifierToVfs,
-) {
+async fn persist_state(our_node: String, send_to_loop: &MessageSender, state: &IdentifierToVfs) {
     let _ = send_to_loop
         .send(KernelMessage {
             id: rand::random(),
@@ -843,7 +839,10 @@ async fn match_request(
                 None,
             )
         }
-        VfsRequest::Delete { identifier: _, full_path } => {
+        VfsRequest::Delete {
+            identifier: _,
+            full_path,
+        } => {
             let mut vfs = vfs.lock().await;
             let Some(key) = vfs.path_to_key.remove(&full_path) else {
                 send_to_terminal
@@ -952,10 +951,10 @@ async fn match_request(
                     message: Message::Request(Request {
                         inherit: true,
                         expects_response: true,
-                        ipc: Some(serde_json::to_string(&FsAction::WriteOffset((
-                            file_hash,
-                            offset,
-                        ))).unwrap()),
+                        ipc: Some(
+                            serde_json::to_string(&FsAction::WriteOffset((file_hash, offset)))
+                                .unwrap(),
+                        ),
                         metadata: None,
                     }),
                     payload,
@@ -964,13 +963,15 @@ async fn match_request(
 
             (
                 Some(
-                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset })
-                        .unwrap(),
+                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset }).unwrap(),
                 ),
                 None,
             )
         }
-        VfsRequest::GetPath { identifier: _, hash } => {
+        VfsRequest::GetPath {
+            identifier: _,
+            hash,
+        } => {
             let mut vfs = vfs.lock().await;
             let key = Key::File { id: hash.clone() };
             let ipc = Some(
@@ -989,7 +990,10 @@ async fn match_request(
             );
             (ipc, None)
         }
-        VfsRequest::GetEntry { identifier: _, ref full_path } => {
+        VfsRequest::GetEntry {
+            identifier: _,
+            ref full_path,
+        } => {
             let (key, entry, paths) = {
                 let mut vfs = vfs.lock().await;
                 let key = vfs.path_to_key.remove(full_path);
@@ -1215,7 +1219,10 @@ async fn match_request(
                 Some(payload.bytes),
             )
         }
-        VfsRequest::GetEntryLength { identifier: _, full_path } => {
+        VfsRequest::GetEntryLength {
+            identifier: _,
+            full_path,
+        } => {
             if full_path.chars().last() == Some('/') {
                 (
                     Some(

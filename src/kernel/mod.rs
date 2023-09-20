@@ -620,17 +620,20 @@ impl Process {
                     // enforce that process has capability to read/write
                     if let Some(ref ipc) = request.ipc {
                         match serde_json::from_str(ipc).unwrap() {
-                            t::VfsRequest::Add { identifier, .. }         |
-                            t::VfsRequest::Rename { identifier, .. }      |
-                            t::VfsRequest::Delete { identifier, .. }      |
-                            t::VfsRequest::WriteOffset { identifier, .. } => {
+                            t::VfsRequest::Add { identifier, .. }
+                            | t::VfsRequest::Rename { identifier, .. }
+                            | t::VfsRequest::Delete { identifier, .. }
+                            | t::VfsRequest::WriteOffset { identifier, .. } => {
                                 if !self.capabilities.contains(&t::Capability {
                                     issuer: t::Address {
                                         node: self.metadata.our.node.clone(),
                                         process: t::ProcessId::Name("vfs".into()),
                                     },
                                     label: "write".into(),
-                                    params: Some(serde_json::to_string(&serde_json::json!(identifier)).unwrap()),
+                                    params: Some(
+                                        serde_json::to_string(&serde_json::json!(identifier))
+                                            .unwrap(),
+                                    ),
                                 }) {
                                     return Err(anyhow::anyhow!(
                                         "process does not have capability to write to vfs {}",
@@ -638,17 +641,20 @@ impl Process {
                                     ));
                                 }
                             }
-                            t::VfsRequest::GetPath { identifier, .. }        |
-                            t::VfsRequest::GetEntry { identifier, .. }       |
-                            t::VfsRequest::GetFileChunk { identifier, .. }   |
-                            t::VfsRequest::GetEntryLength { identifier, .. } => {
+                            t::VfsRequest::GetPath { identifier, .. }
+                            | t::VfsRequest::GetEntry { identifier, .. }
+                            | t::VfsRequest::GetFileChunk { identifier, .. }
+                            | t::VfsRequest::GetEntryLength { identifier, .. } => {
                                 if !self.capabilities.contains(&t::Capability {
                                     issuer: t::Address {
                                         node: self.metadata.our.node.clone(),
                                         process: t::ProcessId::Name("vfs".into()),
                                     },
                                     label: "read".into(),
-                                    params: Some(serde_json::to_string(&serde_json::json!(identifier)).unwrap()),
+                                    params: Some(
+                                        serde_json::to_string(&serde_json::json!(identifier))
+                                            .unwrap(),
+                                    ),
                                 }) {
                                     return Err(anyhow::anyhow!(
                                         "process does not have capability to read to vfs {}",

@@ -597,11 +597,14 @@ async fn match_request(
                         message: Message::Request(Request {
                             inherit: false,
                             expects_response: false,
-                            ipc: Some(serde_json::to_string(&KernelCommand::GrantCapability {
-                                to_process: source.process.clone(),
-                                label: new_cap.label,
-                                params: new_cap.params,
-                            }).unwrap()),
+                            ipc: Some(
+                                serde_json::to_string(&KernelCommand::GrantCapability {
+                                    to_process: source.process.clone(),
+                                    label: new_cap.label,
+                                    params: new_cap.params,
+                                })
+                                .unwrap(),
+                            ),
                             metadata: None,
                         }),
                         payload: None,
@@ -610,15 +613,10 @@ async fn match_request(
             }
 
             (
-                Some(
-                    serde_json::to_string(&VfsResponse::New {
-                        identifier,
-                    })
-                    .unwrap(),
-                ),
+                Some(serde_json::to_string(&VfsResponse::New { identifier }).unwrap()),
                 None,
             )
-        },
+        }
         VfsRequest::Add {
             identifier,
             full_path,

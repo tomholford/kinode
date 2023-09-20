@@ -277,12 +277,12 @@ async fn load_state_from_reboot(
 }
 
 fn build_state_for_initial_boot(
-    process_map: &HashMap<ProcessId, (u128, OnPanic)>,
+    process_map: &HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     process_to_vfs: &mut ProcessToVfs,
 ) {
     //  add wasm bytes to each process' vfs and to terminal's vfs
     let mut terminal_vfs = Vfs::new();
-    for (process_id, (hash, _)) in process_map.iter() {
+    for (process_id, (hash, _, _)) in process_map.iter() {
         let mut vfs = Vfs::new();
         let ProcessId::Name(process_name) = process_id else {
             process_to_vfs.insert(process_id.clone(), Arc::new(Mutex::new(vfs)));
@@ -312,7 +312,7 @@ fn build_state_for_initial_boot(
 
 pub async fn vfs(
     our_node: String,
-    process_map: HashMap<ProcessId, (u128, OnPanic)>,
+    process_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_from_loop: MessageReceiver,

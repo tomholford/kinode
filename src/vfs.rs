@@ -313,6 +313,7 @@ fn build_state_for_initial_boot(
 
 pub async fn vfs(
     our_node: String,
+    keypair: Arc<ring::signature::Ed25519KeyPair>,
     process_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
@@ -413,17 +414,56 @@ pub async fn vfs(
                     VfsRequest::GetEntryLength { identifier, .. } => identifier.clone(),
                 };
 
-                let vfs = Arc::clone(match identifier_to_vfs.get(&identifier) {
-                    Some(vfs) => vfs,
+                let (vfs, new_caps) = match identifier_to_vfs.get(&identifier) {
+                    Some(vfs) => (Arc::clone(vfs), vec![]),
                     None => {
                         //  create open_files entry
                         identifier_to_vfs.insert(
                             identifier.clone(),
                             Arc::new(Mutex::new(Vfs::new())),
                         );
-                        identifier_to_vfs.get(&identifier).unwrap()
+                        let read_cap = Capability {
+                            issuer: Address {
+                                node: our_node.clone(),
+                                process: ProcessId::Name("vfs".into()),
+                            },
+                            label: "read".into(),
+                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                        };
+                        let read_sig = keypair.sign(&bincode::serialize(&read_cap).unwrap());
+                        let read_cap = SignedCapability {
+                            issuer: Address {
+                                node: our_node.clone(),
+                                process: ProcessId::Name("vfs".into()),
+                            },
+                            label: "read".into(),
+                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                            signature: read_sig.as_ref().to_vec(),
+                        };
+                        let write_cap = Capability {
+                            issuer: Address {
+                                node: our_node.clone(),
+                                process: ProcessId::Name("vfs".into()),
+                            },
+                            label: "write".into(),
+                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                        };
+                        let write_sig = keypair.sign(&bincode::serialize(&write_cap).unwrap());
+                        let write_cap = SignedCapability {
+                            issuer: Address {
+                                node: our_node.clone(),
+                                process: ProcessId::Name("vfs".into()),
+                            },
+                            label: "write".into(),
+                            params: Some(serde_json::to_string(&serde_json::json!(identifier.clone())).unwrap()),
+                            signature: write_sig.as_ref().to_vec(),
+                        };
+                        (
+                            Arc::clone(identifier_to_vfs.get(&identifier).unwrap()),
+                            vec![read_cap, write_cap],
+                        )
                     }
-                });
+                };
                 //  TODO: remove after vfs is stable
                 let _ = send_to_terminal.send(Printout {
                     verbosity: 1,
@@ -455,6 +495,7 @@ pub async fn vfs(
                                 request,
                                 metadata,
                                 payload,
+                                new_caps,
                                 vfs,
                                 send_to_loop.clone(),
                                 send_persist_state,
@@ -486,7 +527,6 @@ pub async fn vfs(
 //  TODO: error handling: send error messages to caller
 async fn handle_request(
     our_name: String,
-    // kernel_message: KernelMessage,
     id: u64,
     source: Address,
     expects_response: bool,
@@ -494,6 +534,7 @@ async fn handle_request(
     request: VfsRequest,
     metadata: Option<String>,
     payload: Option<Payload>,
+    new_caps: Vec<SignedCapability>,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: MessageSender,
     send_to_persist: tokio::sync::mpsc::Sender<bool>,
@@ -505,6 +546,7 @@ async fn handle_request(
         id.clone(),
         request,
         payload,
+        new_caps,
         vfs,
         &send_to_loop,
         &send_to_persist,
@@ -548,6 +590,7 @@ async fn match_request(
     id: u64,
     request: VfsRequest,
     payload: Option<Payload>,
+    new_caps: Vec<SignedCapability>,
     vfs: Arc<Mutex<Vfs>>,
     send_to_loop: &MessageSender,
     send_to_persist: &tokio::sync::mpsc::Sender<bool>,
@@ -556,7 +599,7 @@ async fn match_request(
 ) -> Result<(Option<String>, Option<Vec<u8>>), VfsError> {
     Ok(match request {
         VfsRequest::Add {
-            identifier: _,
+            identifier,
             full_path,
             entry_type,
         } => {
@@ -759,7 +802,9 @@ async fn match_request(
             (
                 Some(
                     serde_json::to_string(&VfsResponse::Add {
+                        identifier,
                         full_path: full_path.clone(),
+                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -767,7 +812,7 @@ async fn match_request(
             )
         }
         VfsRequest::Rename {
-            identifier: _,
+            identifier,
             full_path,
             new_full_path,
         } => {
@@ -835,12 +880,16 @@ async fn match_request(
             }
             send_to_persist.send(true).await.unwrap();
             (
-                Some(serde_json::to_string(&VfsResponse::Rename { new_full_path }).unwrap()),
+                Some(serde_json::to_string(&VfsResponse::Rename {
+                    identifier,
+                    new_full_path,
+                    new_caps,
+                }).unwrap()),
                 None,
             )
         }
         VfsRequest::Delete {
-            identifier: _,
+            identifier,
             full_path,
         } => {
             let mut vfs = vfs.lock().await;
@@ -915,12 +964,16 @@ async fn match_request(
             }
             send_to_persist.send(true).await.unwrap();
             (
-                Some(serde_json::to_string(&VfsResponse::Delete { full_path }).unwrap()),
+                Some(serde_json::to_string(&VfsResponse::Delete {
+                    identifier,
+                    full_path,
+                    new_caps,
+                }).unwrap()),
                 None,
             )
         }
         VfsRequest::WriteOffset {
-            identifier: _,
+            identifier,
             full_path,
             offset,
         } => {
@@ -963,19 +1016,25 @@ async fn match_request(
 
             (
                 Some(
-                    serde_json::to_string(&VfsResponse::WriteOffset { full_path, offset }).unwrap(),
+                    serde_json::to_string(&VfsResponse::WriteOffset {
+                        identifier,
+                        full_path,
+                        offset,
+                        new_caps,
+                    }).unwrap(),
                 ),
                 None,
             )
         }
         VfsRequest::GetPath {
-            identifier: _,
+            identifier,
             hash,
         } => {
             let mut vfs = vfs.lock().await;
             let key = Key::File { id: hash.clone() };
             let ipc = Some(
                 serde_json::to_string(&VfsResponse::GetPath {
+                    identifier,
                     hash,
                     full_path: match vfs.key_to_entry.remove(&key) {
                         None => None,
@@ -985,13 +1044,14 @@ async fn match_request(
                             Some(full_path)
                         }
                     },
+                    new_caps,
                 })
                 .unwrap(),
             );
             (ipc, None)
         }
         VfsRequest::GetEntry {
-            identifier: _,
+            identifier,
             ref full_path,
         } => {
             let (key, entry, paths) = {
@@ -1042,8 +1102,10 @@ async fn match_request(
             let entry_not_found = (
                 Some(
                     serde_json::to_string(&VfsResponse::GetEntry {
+                        identifier: identifier.clone(),
                         full_path: full_path.clone(),
                         children: vec![],
+                        new_caps: new_caps.clone(),
                     })
                     .unwrap(),
                 ),
@@ -1060,8 +1122,10 @@ async fn match_request(
                         } => (
                             Some(
                                 serde_json::to_string(&VfsResponse::GetEntry {
+                                    identifier,
                                     full_path: full_path.clone(),
                                     children: paths,
+                                    new_caps,
                                 })
                                 .unwrap(),
                             ),
@@ -1125,8 +1189,10 @@ async fn match_request(
                             (
                                 Some(
                                     serde_json::to_string(&VfsResponse::GetEntry {
+                                        identifier,
                                         full_path: full_path.clone(),
                                         children: vec![],
+                                        new_caps,
                                     })
                                     .unwrap(),
                                 ),
@@ -1138,7 +1204,7 @@ async fn match_request(
             }
         }
         VfsRequest::GetFileChunk {
-            identifier: _,
+            identifier,
             full_path,
             offset,
             length,
@@ -1210,9 +1276,11 @@ async fn match_request(
             (
                 Some(
                     serde_json::to_string(&VfsResponse::GetFileChunk {
+                        identifier,
                         full_path,
                         offset,
                         length,
+                        new_caps,
                     })
                     .unwrap(),
                 ),
@@ -1220,15 +1288,17 @@ async fn match_request(
             )
         }
         VfsRequest::GetEntryLength {
-            identifier: _,
+            identifier,
             full_path,
         } => {
             if full_path.chars().last() == Some('/') {
                 (
                     Some(
                         serde_json::to_string(&VfsResponse::GetEntryLength {
+                            identifier,
                             full_path,
                             length: 0,
+                            new_caps,
                         })
                         .unwrap(),
                     ),
@@ -1290,7 +1360,12 @@ async fn match_request(
 
                 (
                     Some(
-                        serde_json::to_string(&VfsResponse::GetEntryLength { full_path, length })
+                        serde_json::to_string(&VfsResponse::GetEntryLength {
+                            identifier,
+                            full_path,
+                            length,
+                            new_caps,
+                        })
                             .unwrap(),
                     ),
                     None,

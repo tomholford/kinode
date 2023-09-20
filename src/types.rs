@@ -526,34 +526,50 @@ pub enum GetEntryType {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsResponse {
     Add {
+        identifier: String,
         full_path: String,
+        new_caps: Vec<SignedCapability>,
     },
     Rename {
+        identifier: String,
         new_full_path: String,
+        new_caps: Vec<SignedCapability>,
     },
     Delete {
+        identifier: String,
         full_path: String,
+        new_caps: Vec<SignedCapability>,
     },
     GetPath {
+        identifier: String,
         hash: u128,
         full_path: Option<String>,
+        new_caps: Vec<SignedCapability>,
     },
     GetEntry {
+        identifier: String,
         full_path: String,
         children: Vec<String>,
+        new_caps: Vec<SignedCapability>,
     },
     GetFileChunk {
+        identifier: String,
         full_path: String,
         offset: u64,
         length: u64,
+        new_caps: Vec<SignedCapability>,
     },
     WriteOffset {
+        identifier: String,
         full_path: String,
         offset: u64,
+        new_caps: Vec<SignedCapability>,
     },
     GetEntryLength {
+        identifier: String,
         full_path: String,
         length: u64,
+        new_caps: Vec<SignedCapability>,
     },
 }
 

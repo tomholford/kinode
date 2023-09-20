@@ -880,11 +880,14 @@ async fn match_request(
             }
             send_to_persist.send(true).await.unwrap();
             (
-                Some(serde_json::to_string(&VfsResponse::Rename {
-                    identifier,
-                    new_full_path,
-                    new_caps,
-                }).unwrap()),
+                Some(
+                    serde_json::to_string(&VfsResponse::Rename {
+                        identifier,
+                        new_full_path,
+                        new_caps,
+                    })
+                    .unwrap(),
+                ),
                 None,
             )
         }
@@ -964,11 +967,14 @@ async fn match_request(
             }
             send_to_persist.send(true).await.unwrap();
             (
-                Some(serde_json::to_string(&VfsResponse::Delete {
-                    identifier,
-                    full_path,
-                    new_caps,
-                }).unwrap()),
+                Some(
+                    serde_json::to_string(&VfsResponse::Delete {
+                        identifier,
+                        full_path,
+                        new_caps,
+                    })
+                    .unwrap(),
+                ),
                 None,
             )
         }
@@ -1021,15 +1027,13 @@ async fn match_request(
                         full_path,
                         offset,
                         new_caps,
-                    }).unwrap(),
+                    })
+                    .unwrap(),
                 ),
                 None,
             )
         }
-        VfsRequest::GetPath {
-            identifier,
-            hash,
-        } => {
+        VfsRequest::GetPath { identifier, hash } => {
             let mut vfs = vfs.lock().await;
             let key = Key::File { id: hash.clone() };
             let ipc = Some(
@@ -1366,7 +1370,7 @@ async fn match_request(
                             length,
                             new_caps,
                         })
-                            .unwrap(),
+                        .unwrap(),
                     ),
                     None,
                 )

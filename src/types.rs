@@ -471,32 +471,40 @@ pub enum FileSystemEntryType {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum VfsRequest {
     Add {
+        identifier: String,
         full_path: String,
         entry_type: AddEntryType,
     },
     Rename {
+        identifier: String,
         full_path: String,
         new_full_path: String,
     },
     Delete {
+        identifier: String,
         full_path: String,
     },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
     GetPath {
+        identifier: String,
         hash: u128,
     },
     GetEntry {
+        identifier: String,
         full_path: String,
     },
     GetFileChunk {
+        identifier: String,
         full_path: String,
         offset: u64,
         length: u64,
     },
-    WriteOffset {
-        full_path: String,
-        offset: u64,
-    },
     GetEntryLength {
+        identifier: String,
         full_path: String,
     },
 }

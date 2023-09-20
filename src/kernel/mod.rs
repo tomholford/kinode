@@ -614,6 +614,52 @@ impl Process {
                     "process does not have capability to send to that processID"
                 ));
             }
+
+            if let t::ProcessId::Name(name) = target_process {
+                if "vfs" == name {
+                    // enforce that process has capability to read/write
+                    if let Some(ref ipc) = request.ipc {
+                        match serde_json::from_str(ipc).unwrap() {
+                            t::VfsRequest::Add { identifier, .. }         |
+                            t::VfsRequest::Rename { identifier, .. }      |
+                            t::VfsRequest::Delete { identifier, .. }      |
+                            t::VfsRequest::WriteOffset { identifier, .. } => {
+                                if !self.capabilities.contains(&t::Capability {
+                                    issuer: t::Address {
+                                        node: self.metadata.our.node.clone(),
+                                        process: t::ProcessId::Name("vfs".into()),
+                                    },
+                                    label: "write".into(),
+                                    params: Some(serde_json::to_string(&serde_json::json!(identifier)).unwrap()),
+                                }) {
+                                    return Err(anyhow::anyhow!(
+                                        "process does not have capability to write to vfs {}",
+                                        identifier,
+                                    ));
+                                }
+                            }
+                            t::VfsRequest::GetPath { identifier, .. }        |
+                            t::VfsRequest::GetEntry { identifier, .. }       |
+                            t::VfsRequest::GetFileChunk { identifier, .. }   |
+                            t::VfsRequest::GetEntryLength { identifier, .. } => {
+                                if !self.capabilities.contains(&t::Capability {
+                                    issuer: t::Address {
+                                        node: self.metadata.our.node.clone(),
+                                        process: t::ProcessId::Name("vfs".into()),
+                                    },
+                                    label: "read".into(),
+                                    params: Some(serde_json::to_string(&serde_json::json!(identifier)).unwrap()),
+                                }) {
+                                    return Err(anyhow::anyhow!(
+                                        "process does not have capability to read to vfs {}",
+                                        identifier,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         let source = self.metadata.our.clone();
         // if request chooses to inherit context, match id to prompting_message
@@ -645,7 +691,7 @@ impl Process {
                 request.expects_response,
                 &self.prompting_message,
             ) {
-                // this request inherits, but has no rsvp, so itself receives any response
+                // this request expects response, so receives any response
                 (_, true, _) => Some(source),
                 // this request inherits, so response will be routed to prompting message
                 (true, false, Some(ref prompt)) => prompt.rsvp.clone(),
@@ -904,7 +950,7 @@ async fn make_process_loop(
                                         },
                                         wasm_bytes_handle,
                                         on_panic,
-                                        initial_capabilities: initial_capabilities,
+                                        initial_capabilities,
                                     })
                                     .unwrap(),
                                 ),

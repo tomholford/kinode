@@ -810,10 +810,7 @@ async fn persist_state(
                 ipc: Some(serde_json::to_string(&t::FsAction::SetState).unwrap()),
                 metadata: None,
             }),
-            payload: Some(t::Payload {
-                mime: None,
-                bytes,
-            }),
+            payload: Some(t::Payload { mime: None, bytes }),
         })
         .await?;
     Ok(())
@@ -1162,8 +1159,8 @@ async fn handle_kernel_request(
             }
 
             process_map.remove(&process_id);
-            let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
-                .await;
+            let _ =
+                persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone()).await;
 
             send_to_loop
                 .send(t::KernelMessage {
@@ -1205,11 +1202,8 @@ async fn handle_kernel_request(
             if let Some((wasm_bytes, on_panic, mut caps)) = process_map.remove(&to_process) {
                 caps.insert(capability.clone());
                 process_map.insert(to_process.clone(), (wasm_bytes, on_panic, caps));
-                let _ = persist_state(
-                    our_name.clone(),
-                    send_to_loop.clone(),
-                    process_map.clone(),
-                ).await;
+                let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
+                    .await;
             };
             send_to_loop
                 .send(t::KernelMessage {
@@ -1417,8 +1411,7 @@ async fn start_process(
 
     if !process_metadata.reboot {
         // if new, persist
-        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
-            .await;
+        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone()).await;
     }
 
     send_to_loop

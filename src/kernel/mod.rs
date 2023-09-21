@@ -400,6 +400,9 @@ impl UqProcessImports for ProcessWasi {
         payload: Option<wit::Payload>,
     ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
     {
+        if !request.expects_response {
+            return Err(anyhow::anyhow!("kernel: got invalid send_and_await_response() Request from {:?}: must expect-response=true", self.process.metadata.our.process));
+        }
         let id = self
             .process
             .handle_request(target, request, context, payload)
@@ -809,7 +812,7 @@ async fn persist_state(
             }),
             payload: Some(t::Payload {
                 mime: None,
-                bytes: bytes,
+                bytes,
             }),
         })
         .await?;
@@ -1159,7 +1162,8 @@ async fn handle_kernel_request(
             }
 
             process_map.remove(&process_id);
-            let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+            let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
+                .await;
 
             send_to_loop
                 .send(t::KernelMessage {
@@ -1196,6 +1200,16 @@ async fn handle_kernel_request(
                 issuer: km.source.clone(),
                 label,
                 params,
+            };
+
+            if let Some((wasm_bytes, on_panic, mut caps)) = process_map.remove(&to_process) {
+                caps.insert(capability.clone());
+                process_map.insert(to_process.clone(), (wasm_bytes, on_panic, caps));
+                let _ = persist_state(
+                    our_name.clone(),
+                    send_to_loop.clone(),
+                    process_map.clone(),
+                ).await;
             };
             send_to_loop
                 .send(t::KernelMessage {
@@ -1403,7 +1417,8 @@ async fn start_process(
 
     if !process_metadata.reboot {
         // if new, persist
-        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone());
+        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
+            .await;
     }
 
     send_to_loop

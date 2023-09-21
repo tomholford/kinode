@@ -640,6 +640,7 @@ async fn peer_handler(
                                         },
                                         result_tx,
                                     ));
+                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                                 }
                             }
                         }
@@ -652,6 +653,7 @@ async fn peer_handler(
                                 .unwrap();
                         } else {
                             let _ = socket_tx.send((message, result_tx));
+
                         }
                     }
                 }

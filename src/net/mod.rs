@@ -410,6 +410,7 @@ async fn connect_to_routers(
                 content: format!("offline! couldn't connect to any routers. trying again..."),
             })
             .await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 

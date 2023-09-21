@@ -586,7 +586,6 @@ pub struct HttpClientRequest {
     pub uri: String,
     pub method: String,
     pub headers: HashMap<String, String>,
-    pub body: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -178,7 +178,6 @@ impl Guest for Component {
                                 ipc: body_json.ipc,
                                 metadata: body_json.metadata,
                             },
-                            body_json.context.as_ref(),
                             payload.as_ref(),
                         );
 
@@ -229,7 +228,7 @@ impl Guest for Component {
                                 send_http_response(200, default_headers.clone(), body);
                                 continue;
                             }
-                            Err((error, _context)) => {
+                            Err(error) => {
                                 print_to_terminal(1, "rpc: error coming back");
                                 send_http_response(500, default_headers.clone(), "Network Error".to_string().as_bytes().to_vec());
                                 continue;

@@ -396,29 +396,24 @@ impl UqProcessImports for ProcessWasi {
         &mut self,
         target: wit::Address,
         request: wit::Request,
-        context: Option<wit::Context>,
         payload: Option<wit::Payload>,
-    ) -> Result<Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)>>
-    {
+    ) -> Result<Result<(wit::Address, wit::Message), wit::NetworkError>> {
         if !request.expects_response {
             return Err(anyhow::anyhow!("kernel: got invalid send_and_await_response() Request from {:?}: must expect-response=true", self.process.metadata.our.process));
         }
         let id = self
             .process
-            .handle_request(target, request, context, payload)
+            .handle_request(target, request, None, payload)
             .await;
         match id {
             Ok(id) => match self.process.get_specific_message_for_process(id).await {
                 Ok((address, wit::Message::Response(response))) => {
                     Ok(Ok((address, wit::Message::Response(response))))
                 }
-                Ok((_address, wit::Message::Request(_))) => {
-                    // this is an error
-                    Err(anyhow::anyhow!(
-                        "fatal: received Request instead of Response"
-                    ))
-                }
-                Err((net_err, context)) => Ok(Err((net_err, context))),
+                Ok((_address, wit::Message::Request(_))) => Err(anyhow::anyhow!(
+                    "fatal: received Request instead of Response"
+                )),
+                Err((net_err, _context)) => Ok(Err(net_err)),
             },
             Err(e) => Err(e),
         }

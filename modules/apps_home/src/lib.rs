@@ -9,7 +9,7 @@ mod process_lib;
 struct Component;
 
 const APPS_HOME_PAGE: &str = include_str!("home.html");
-const PQI_ENDPOINT: &str = "http://147.135.114.167:8083/blockchain.json";
+const PQI_ENDPOINT: &str = "http://147.135.114.167:8083/sequencer/blockchain.json";
 
 fn generate_http_binding(add: Address, path: &str, authenticated: bool) -> (Address, Request, Option<Context>, Option<Payload>) {
     (

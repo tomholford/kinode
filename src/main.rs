@@ -88,7 +88,7 @@ async fn main() {
     }
     // read PKI from HTTP endpoint served by RPC
     let blockchain_url = &args[2];
-    // let blockchain_url = "http://147.135.114.167:8083/blockchain.json";
+    // let blockchain_url = "http://147.135.114.167:8083/sequencer/blockchain.json";
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =

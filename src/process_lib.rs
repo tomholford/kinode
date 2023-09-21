@@ -35,7 +35,7 @@ pub fn send_and_await_response(
     ipc: Option<Json>,
     metadata: Option<Json>,
     payload: Option<&Payload>,
-) -> Result<(Address, Message), (NetworkError, Option<Context>)> {
+) -> Result<(Address, Message), NetworkError> {
     super::bindings::send_and_await_response(
         target,
         &Request {
@@ -44,7 +44,6 @@ pub fn send_and_await_response(
             ipc,
             metadata,
         },
-        None,
         payload,
     )
 }
@@ -92,7 +91,6 @@ pub fn set_state(
 pub fn await_set_state<T>(
     our: String,
     state: &T,
-    // bytes: Vec<u8>,
 ) -> Result<(), UqbarError>
 where
     T: serde::Serialize,

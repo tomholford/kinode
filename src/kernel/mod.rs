@@ -40,18 +40,10 @@ struct Process {
     send_to_terminal: t::PrintSender,
     prompting_message: Option<t::KernelMessage>,
     last_payload: Option<t::Payload>,
-    contexts: HashMap<u64, ProcessContext>,
+    contexts: HashMap<u64, t::ProcessContext>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
     caps_oracle: t::CapMessageSender,
     next_message_caps: Option<Vec<t::SignedCapability>>,
-}
-
-#[derive(Clone, Debug)]
-struct ProcessContext {
-    // store ultimate in order to set prompting message if needed
-    prompting_message: Option<t::KernelMessage>,
-    // can be empty if a request doesn't set context, but still needs to inherit
-    context: Option<t::Context>,
 }
 
 struct ProcessWasi {
@@ -64,9 +56,7 @@ struct ProcessWasi {
 struct StartProcessMetadata {
     source: t::Address,
     process_id: Option<t::ProcessId>,
-    wasm_bytes_handle: u128,
-    on_panic: t::OnPanic,
-    initial_capabilities: HashSet<t::Capability>,
+    persisted: t::PersistedProcess,
     reboot: bool,
 }
 
@@ -74,7 +64,6 @@ struct StartProcessMetadata {
 type Senders = HashMap<t::ProcessId, ProcessSender>;
 //  handles are for managing liveness, map is for persistence and metadata.
 type ProcessHandles = HashMap<t::ProcessId, JoinHandle<Result<()>>>;
-type ProcessMap = HashMap<t::ProcessId, (u128, t::OnPanic, HashSet<t::Capability>)>;
 
 enum ProcessSender {
     Runtime(t::MessageSender),
@@ -493,7 +482,7 @@ impl Process {
     async fn save_context(&mut self, request_id: u64, context: Option<t::Context>) {
         self.contexts.insert(
             request_id,
-            ProcessContext {
+            t::ProcessContext {
                 prompting_message: if self.prompting_message.is_some() {
                     self.prompting_message.clone()
                 } else {
@@ -741,11 +730,11 @@ impl Process {
 
 /// persist process_map state for next bootup
 async fn persist_state(
-    our_name: String,
-    send_to_loop: t::MessageSender,
-    process_map: ProcessMap,
+    our_name: &String,
+    send_to_loop: &t::MessageSender,
+    process_map: &t::ProcessMap,
 ) -> Result<()> {
-    let bytes = bincode::serialize(&process_map)?;
+    let bytes = bincode::serialize(process_map)?;
 
     send_to_loop
         .send(t::KernelMessage {
@@ -983,7 +972,8 @@ async fn handle_kernel_request(
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
-    process_map: &mut ProcessMap,
+    process_map: &mut t::ProcessMap,
+    caps_oracle: t::CapMessageSender,
 ) {
     let t::Message::Request(request) = km.message else {
         return;
@@ -1043,9 +1033,13 @@ async fn handle_kernel_request(
                         serde_json::to_string(&StartProcessMetadata {
                             source: km.source,
                             process_id: name.map(|n| t::ProcessId::Name(n)),
-                            wasm_bytes_handle,
-                            on_panic,
-                            initial_capabilities,
+                            persisted: t::PersistedProcess {
+                                wasm_bytes_handle,
+                                on_panic,
+                                capabilities: initial_capabilities,
+                                contexts: None,
+                                message_queue: None,
+                            },
                             reboot: false,
                         })
                         .unwrap(),
@@ -1059,9 +1053,7 @@ async fn handle_kernel_request(
         //  reboot from persisted process.
         t::KernelCommand::RebootProcess {
             process_id,
-            wasm_bytes_handle,
-            on_panic,
-            initial_capabilities,
+            persisted,
         } => send_to_loop
             .send(t::KernelMessage {
                 id: km.id,
@@ -1078,15 +1070,14 @@ async fn handle_kernel_request(
                     inherit: true,
                     expects_response: true,
                     ipc: Some(
-                        serde_json::to_string(&t::FsAction::Read(wasm_bytes_handle)).unwrap(),
+                        serde_json::to_string(&t::FsAction::Read(persisted.wasm_bytes_handle))
+                            .unwrap(),
                     ),
                     metadata: Some(
                         serde_json::to_string(&StartProcessMetadata {
                             source: km.source,
                             process_id: Some(process_id),
-                            wasm_bytes_handle,
-                            on_panic,
-                            initial_capabilities,
+                            persisted,
                             reboot: true,
                         })
                         .unwrap(),
@@ -1122,8 +1113,7 @@ async fn handle_kernel_request(
             }
 
             process_map.remove(&process_id);
-            let _ =
-                persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone()).await;
+            let _ = persist_state(&our_name, &send_to_loop, &process_map).await;
 
             send_to_loop
                 .send(t::KernelMessage {
@@ -1153,39 +1143,14 @@ async fn handle_kernel_request(
                 .unwrap();
         }
         t::KernelCommand::GrantCapability { to_process, params } => {
-            let capability = t::Capability {
-                issuer: km.source.clone(),
-                params,
-            };
-
-            if let Some((wasm_bytes, on_panic, mut caps)) = process_map.remove(&to_process) {
-                caps.insert(capability.clone());
-                process_map.insert(to_process.clone(), (wasm_bytes, on_panic, caps));
-                let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone())
-                    .await;
-            };
-            send_to_loop
-                .send(t::KernelMessage {
-                    id: km.id,
-                    source: t::Address {
-                        node: our_name.clone(),
-                        process: t::ProcessId::Name("kernel".into()),
+            caps_oracle
+                .send(t::CapMessage::Add {
+                    on: to_process,
+                    cap: t::Capability {
+                        issuer: km.source.clone(),
+                        params,
                     },
-                    target: t::Address {
-                        node: our_name.clone(),
-                        process: to_process,
-                    },
-                    rsvp: None,
-                    message: t::Message::Request(t::Request {
-                        inherit: false,
-                        expects_response: false,
-                        ipc: Some(serde_json::to_string(&capability).unwrap()),
-                        metadata: None,
-                    }),
-                    payload: None,
-                    signed_capabilities: None,
                 })
-                .await
                 .unwrap();
         }
     }
@@ -1203,7 +1168,7 @@ async fn handle_kernel_response(
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
-    process_map: &mut ProcessMap,
+    process_map: &mut t::ProcessMap,
     caps_oracle: t::CapMessageSender,
     engine: &Engine,
 ) {
@@ -1281,7 +1246,7 @@ async fn start_process(
     send_to_terminal: t::PrintSender,
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
-    process_map: &mut ProcessMap,
+    process_map: &mut t::ProcessMap,
     engine: &Engine,
     caps_oracle: t::CapMessageSender,
     process_metadata: StartProcessMetadata,
@@ -1342,8 +1307,8 @@ async fn start_process(
             node: our_name.clone(),
             process: process_id.clone(),
         },
-        wasm_bytes_handle: process_metadata.wasm_bytes_handle.clone(),
-        on_panic: process_metadata.on_panic.clone(),
+        wasm_bytes_handle: process_metadata.persisted.wasm_bytes_handle.clone(),
+        on_panic: process_metadata.persisted.on_panic.clone(),
     };
     process_handles.insert(
         process_id.clone(),
@@ -1356,7 +1321,7 @@ async fn start_process(
                 send_to_terminal.clone(),
                 recv_in_process,
                 &km_payload_bytes,
-                process_metadata.initial_capabilities.clone(),
+                process_metadata.persisted.capabilities.clone(),
                 caps_oracle,
                 engine,
             )
@@ -1366,16 +1331,18 @@ async fn start_process(
 
     process_map.insert(
         process_id,
-        (
-            process_metadata.wasm_bytes_handle,
-            process_metadata.on_panic,
-            process_metadata.initial_capabilities,
-        ),
+        t::PersistedProcess {
+            wasm_bytes_handle: process_metadata.persisted.wasm_bytes_handle,
+            on_panic: process_metadata.persisted.on_panic,
+            capabilities: process_metadata.persisted.capabilities,
+            contexts: None,
+            message_queue: None,
+        },
     );
 
     if !process_metadata.reboot {
         // if new, persist
-        let _ = persist_state(our_name.clone(), send_to_loop.clone(), process_map.clone()).await;
+        let _ = persist_state(&our_name, &send_to_loop, &process_map).await;
     }
 
     send_to_loop
@@ -1410,7 +1377,7 @@ async fn make_event_loop(
     our_name: String,
     keypair: Arc<signature::Ed25519KeyPair>,
     home_directory_path: String,
-    mut process_map: ProcessMap,
+    mut process_map: t::ProcessMap,
     caps_oracle_sender: t::CapMessageSender,
     mut caps_oracle_receiver: t::CapMessageReceiver,
     mut recv_in_loop: t::MessageReceiver,
@@ -1465,13 +1432,11 @@ async fn make_event_loop(
 
         let exclude_list: Vec<t::ProcessId> = vec![
             t::ProcessId::Name("explorer".into()),
-            t::ProcessId::Name("process_manager".into()),
             t::ProcessId::Name("file_transfer".into()),
             t::ProcessId::Name("file_transfer_one_off".into()),
         ];
 
-        for (process_id, (wasm_bytes_handle, on_panic, initial_capabilities)) in process_map.clone()
-        {
+        for (process_id, persisted) in &process_map {
             if !exclude_list.contains(&process_id) {
                 send_to_loop
                     .send(t::KernelMessage {
@@ -1490,10 +1455,8 @@ async fn make_event_loop(
                             expects_response: false,
                             ipc: Some(
                                 serde_json::to_string(&t::KernelCommand::RebootProcess {
-                                    process_id,
-                                    wasm_bytes_handle,
-                                    on_panic,
-                                    initial_capabilities,
+                                    process_id: process_id.clone(),
+                                    persisted: persisted.clone(),
                                 })
                                 .unwrap(),
                             ),
@@ -1558,12 +1521,13 @@ async fn make_event_loop(
                     // enforce capabilities by matching from our set based on fixed format
                     // enforce that if message is directed over the network, process has capability to do so
                     if kernel_message.target.node != our_name {
-                        if !process_map.get(&kernel_message.source.process).unwrap().2.contains(&t::Capability {
-                            issuer: t::Address {
-                                node: our_name.clone(),
-                                process: t::ProcessId::Name("kernel".into()),
-                            },
-                            params: "\"network\"".into(),
+                        if !process_map.get(&kernel_message.source.process).unwrap().capabilities.contains(
+                                &t::Capability {
+                                    issuer: t::Address {
+                                    node: our_name.clone(),
+                                    process: t::ProcessId::Name("kernel".into()),
+                                },
+                                params: "\"network\"".into(),
                         }) {
                             // capabilities are not correct! skip this message.
                             // TODO some kind of error thrown
@@ -1582,8 +1546,8 @@ async fn make_event_loop(
                         // enforce that process has capability to message a target process of this name
                         match process_map.get(&kernel_message.source.process) {
                             None => {}
-                            Some((_, _, caps)) => {
-                                if !caps.contains(&t::Capability {
+                            Some(persisted) => {
+                                if !persisted.capabilities.contains(&t::Capability {
                                     issuer: t::Address {
                                         node: our_name.clone(),
                                         process: kernel_message.target.process.clone(),
@@ -1643,6 +1607,7 @@ async fn make_event_loop(
                                         &mut senders,
                                         &mut process_handles,
                                         &mut process_map,
+                                        caps_oracle_sender.clone(),
                                     ).await;
                                 }
                                 t::Message::Response(_) => {
@@ -1693,18 +1658,20 @@ async fn make_event_loop(
                     match cap_message {
                         t::CapMessage::Add { on, cap } => {
                             // insert cap in process map
-                            process_map.get_mut(&on).unwrap().2.insert(cap);
+                            process_map.get_mut(&on).unwrap().capabilities.insert(cap);
+                            let _ = persist_state(&our_name, &send_to_loop, &process_map).await;
                         },
                         t::CapMessage::Drop { on, cap } => {
                             // remove cap from process map
-                            process_map.get_mut(&on).unwrap().2.remove(&cap);
+                            process_map.get_mut(&on).unwrap().capabilities.remove(&cap);
+                            let _ = persist_state(&our_name, &send_to_loop, &process_map).await;
                         },
                         t::CapMessage::Has { on, cap, responder } => {
                             // return boolean on responder
                             let _ = responder.send(
                                 match process_map.get(&on) {
                                     None => false,
-                                    Some(p) => p.2.contains(&cap),
+                                    Some(p) => p.capabilities.contains(&cap),
                                 }
                             );
                         },
@@ -1713,7 +1680,7 @@ async fn make_event_loop(
                             let _ = responder.send(
                                 match process_map.get(&on) {
                                     None => HashSet::new(),
-                                    Some(p) => p.2.clone(),
+                                    Some(p) => p.capabilities.clone(),
                                 }
                             );
                         },
@@ -1729,7 +1696,7 @@ pub async fn kernel(
     our: t::Identity,
     keypair: Arc<signature::Ed25519KeyPair>,
     home_directory_path: String,
-    process_map: ProcessMap,
+    process_map: t::ProcessMap,
     caps_oracle_sender: t::CapMessageSender,
     caps_oracle_receiver: t::CapMessageReceiver,
     send_to_loop: t::MessageSender,

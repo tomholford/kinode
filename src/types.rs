@@ -172,6 +172,16 @@ pub enum OnPanic {
     Requests(Vec<(Address, Request, Option<Payload>)>),
 }
 
+impl OnPanic {
+    pub fn is_restart(&self) -> bool {
+        match self {
+            OnPanic::None => false,
+            OnPanic::Restart => true,
+            OnPanic::Requests(_) => false,
+        }
+    }
+}
+
 //
 // kernel types that runtime modules use
 //
@@ -302,10 +312,6 @@ pub struct PersistedProcess {
     pub wasm_bytes_handle: u128,
     pub on_panic: OnPanic,
     pub capabilities: HashSet<Capability>,
-    // these two are only saved if we are shutting down the kernel.
-    pub contexts: Option<HashMap<u64, ProcessContext>>,
-    pub message_queue:
-        Option<std::collections::VecDeque<Result<KernelMessage, WrappedNetworkError>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

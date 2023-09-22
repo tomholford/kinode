@@ -1037,8 +1037,6 @@ async fn handle_kernel_request(
                                 wasm_bytes_handle,
                                 on_panic,
                                 capabilities: initial_capabilities,
-                                contexts: None,
-                                message_queue: None,
                             },
                             reboot: false,
                         })
@@ -1335,8 +1333,6 @@ async fn start_process(
             wasm_bytes_handle: process_metadata.persisted.wasm_bytes_handle,
             on_panic: process_metadata.persisted.on_panic,
             capabilities: process_metadata.persisted.capabilities,
-            contexts: None,
-            message_queue: None,
         },
     );
 
@@ -1437,7 +1433,7 @@ async fn make_event_loop(
         ];
 
         for (process_id, persisted) in &process_map {
-            if !exclude_list.contains(&process_id) {
+            if !exclude_list.contains(&process_id) && persisted.on_panic.is_restart() {
                 send_to_loop
                     .send(t::KernelMessage {
                         id: rand::random(),
@@ -1467,6 +1463,29 @@ async fn make_event_loop(
                     })
                     .await
                     .unwrap();
+            }
+            if let t::OnPanic::Requests(requests) = &persisted.on_panic {
+                // if a persisted process had on-death-requests, we should perform them now
+                for (address, request, payload) in requests {
+                    // the process that made the request is dead, so never expects response
+                    let mut request = request.clone();
+                    request.expects_response = false;
+                    send_to_loop
+                        .send(t::KernelMessage {
+                            id: rand::random(),
+                            source: t::Address {
+                                node: our_name.clone(),
+                                process: process_id.clone(),
+                            },
+                            target: address.clone(),
+                            rsvp: None,
+                            message: t::Message::Request(request),
+                            payload: payload.clone(),
+                            signed_capabilities: None,
+                        })
+                        .await
+                        .unwrap();
+                }
             }
         }
 

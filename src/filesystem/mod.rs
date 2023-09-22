@@ -122,26 +122,17 @@ pub async fn bootstrap(
         params: "\"network\"".into(),
     });
 
-    let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
-    special_on_panics.insert("terminal".into(), OnPanic::Restart);
-
     // for a module in /modules, put its bytes into filesystem, add to process_map
     for (process_name, wasm_bytes) in names_and_bytes {
         let hash: [u8; 32] = hash_bytes(&wasm_bytes);
-
-        let on_panic = special_on_panics
-            .get(&process_name)
-            .unwrap_or(&OnPanic::None);
 
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
             process_map.insert(
                 ProcessId::Name(process_name),
                 PersistedProcess {
                     wasm_bytes_handle: id,
-                    on_panic: on_panic.clone(),
+                    on_panic: OnPanic::Restart,
                     capabilities: special_capabilities.clone(),
-                    contexts: None,
-                    message_queue: None,
                 },
             );
         } else {
@@ -155,10 +146,8 @@ pub async fn bootstrap(
                 ProcessId::Name(process_name),
                 PersistedProcess {
                     wasm_bytes_handle: file.to_uuid().unwrap(),
-                    on_panic: on_panic.clone(),
+                    on_panic: OnPanic::Restart,
                     capabilities: special_capabilities.clone(),
-                    contexts: None,
-                    message_queue: None,
                 },
             );
         }
@@ -170,10 +159,8 @@ pub async fn bootstrap(
             ProcessId::Name(runtime_module.into()),
             PersistedProcess {
                 wasm_bytes_handle: 0,
-                on_panic: OnPanic::None,
+                on_panic: OnPanic::Restart,
                 capabilities: special_capabilities.clone(),
-                contexts: None,
-                message_queue: None,
             },
         );
     }

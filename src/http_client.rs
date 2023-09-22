@@ -18,7 +18,6 @@ pub async fn http_client(
         let KernelMessage {
             id,
             source,
-            target: _,
             rsvp,
             message:
                 Message::Request(Request {
@@ -28,6 +27,7 @@ pub async fn http_client(
                     metadata: _,
                 }),
             payload,
+            ..
         } = message.clone()
         else {
             return Err(anyhow::anyhow!("http_client: bad message"));
@@ -154,6 +154,7 @@ async fn handle_message(
             mime: Some("application/json".into()),
             bytes: response.bytes().await.unwrap().to_vec(),
         }),
+        signed_capabilities: None,
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -220,6 +221,7 @@ fn make_error_message(
             None,
         )),
         payload: None,
+        signed_capabilities: None,
     }
 }
 

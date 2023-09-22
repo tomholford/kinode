@@ -117,6 +117,7 @@ fn make_error_message(
             None,
         )),
         payload: None,
+        signed_capabilities: None,
     }
 }
 
@@ -159,6 +160,7 @@ async fn persist_state(our_node: String, send_to_loop: &MessageSender, state: &I
                 mime: None,
                 bytes: state_to_bytes(state).await,
             }),
+            signed_capabilities: None,
         })
         .await;
 }
@@ -244,6 +246,7 @@ async fn load_state_from_reboot(
                 metadata: None,
             }),
             payload: None,
+            signed_capabilities: None,
         })
         .await;
     let km = recv_from_loop.recv().await;
@@ -252,12 +255,7 @@ async fn load_state_from_reboot(
     };
 
     let KernelMessage {
-        id: _,
-        source: _,
-        target: _,
-        rsvp: _,
-        message,
-        payload,
+        message, payload, ..
     } = km;
     let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
         return false;
@@ -317,6 +315,7 @@ pub async fn vfs(
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_from_loop: MessageReceiver,
+    send_to_caps_oracle: CapMessageSender,
 ) -> anyhow::Result<()> {
     let mut identifier_to_vfs: IdentifierToVfs = HashMap::new();
     let mut response_router: ResponseRouter = HashMap::new();
@@ -362,10 +361,10 @@ pub async fn vfs(
                 let KernelMessage {
                     id,
                     source,
-                    target: _,
                     rsvp,
                     message,
                     payload,
+                    ..
                 } = km;
                 let Message::Request(Request {
                     expects_response,
@@ -402,22 +401,34 @@ pub async fn vfs(
                     continue;
                 }
 
-                let identifier = match &request {
-                    VfsRequest::New { identifier } => identifier.clone(),
-                    VfsRequest::Add { identifier, .. } => identifier.clone(),
-                    VfsRequest::Rename { identifier, .. } => identifier.clone(),
-                    VfsRequest::Delete { identifier, .. } => identifier.clone(),
-                    VfsRequest::WriteOffset { identifier, .. } => identifier.clone(),
-                    VfsRequest::GetPath { identifier, .. } => identifier.clone(),
-                    VfsRequest::GetEntry { identifier, .. } => identifier.clone(),
-                    VfsRequest::GetFileChunk { identifier, .. } => identifier.clone(),
-                    VfsRequest::GetEntryLength { identifier, .. } => identifier.clone(),
+                let (identifier, is_new) = match &request {
+                    VfsRequest::New { identifier } => (identifier.clone(), true),
+                    VfsRequest::Add { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::Rename { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::Delete { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::WriteOffset { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::GetPath { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::GetEntry { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::GetFileChunk { identifier, .. } => (identifier.clone(), false),
+                    VfsRequest::GetEntryLength { identifier, .. } => (identifier.clone(), false),
                 };
 
                 let (vfs, new_caps) = match identifier_to_vfs.get(&identifier) {
                     Some(vfs) => (Arc::clone(vfs), vec![]),
                     None => {
-                        //  create open_files entry
+                        if !is_new {
+                            println!("vfs: invalid Request: non-New to non-existent");
+                            send_to_loop
+                                .send(make_error_message(
+                                    our_node.clone(),
+                                    id,
+                                    source.clone(),
+                                    VfsError::BadIdentifier,
+                                ))
+                                .await
+                                .unwrap();
+                            continue;
+                        }
                         identifier_to_vfs.insert(
                             identifier.clone(),
                             Arc::new(Mutex::new(Vfs::new())),
@@ -427,16 +438,14 @@ pub async fn vfs(
                                 node: our_node.clone(),
                                 process: ProcessId::Name("vfs".into()),
                             },
-                            label: "read".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!({"identifier": identifier.clone()})).unwrap()),
+                            params: serde_json::to_string(&serde_json::json!({"kind": "read", "identifier": identifier})).unwrap(),
                         };
                         let write_cap = Capability {
                             issuer: Address {
                                 node: our_node.clone(),
                                 process: ProcessId::Name("vfs".into()),
                             },
-                            label: "write".into(),
-                            params: Some(serde_json::to_string(&serde_json::json!({"identifier": identifier.clone()})).unwrap()),
+                            params: serde_json::to_string(&serde_json::json!({"kind": "write", "identifier": identifier})).unwrap(),
                         };
                         (
                             Arc::clone(identifier_to_vfs.get(&identifier).unwrap()),
@@ -444,23 +453,23 @@ pub async fn vfs(
                         )
                     }
                 };
+
                 //  TODO: remove after vfs is stable
                 let _ = send_to_terminal.send(Printout {
                     verbosity: 1,
                     content: format!("{:?}", vfs)
                 }).await;
-                let our_node = our_node.clone();
-                // let source = km.source.clone();
-                // let id = km.id;
 
                 let (response_sender, response_receiver): (
                     MessageSender,
                     MessageReceiver,
                 ) = tokio::sync::mpsc::channel(VFS_RESPONSE_CHANNEL_CAPACITY);
                 response_router.insert(id.clone(), response_sender);
+                let our_node = our_node.clone();
                 let send_to_loop = send_to_loop.clone();
                 let send_persist_state = send_persist_state.clone();
                 let send_to_terminal = send_to_terminal.clone();
+                let send_to_caps_oracle = send_to_caps_oracle.clone();
                 let send_vfs_task_done = send_vfs_task_done.clone();
                 match &message {
                     Message::Response(_) => {},
@@ -480,6 +489,7 @@ pub async fn vfs(
                                 send_to_loop.clone(),
                                 send_persist_state,
                                 send_to_terminal,
+                                send_to_caps_oracle,
                                 response_receiver,
                             ).await {
                                 Err(e) => {
@@ -519,8 +529,68 @@ async fn handle_request(
     send_to_loop: MessageSender,
     send_to_persist: tokio::sync::mpsc::Sender<bool>,
     send_to_terminal: PrintSender,
+    send_to_caps_oracle: CapMessageSender,
     recv_response: MessageReceiver,
 ) -> Result<(), VfsError> {
+    let (send_cap_bool, recv_cap_bool) = tokio::sync::oneshot::channel();
+    match &request {
+        VfsRequest::New { identifier } => {}
+        VfsRequest::Add { identifier, .. }
+        | VfsRequest::Rename { identifier, .. }
+        | VfsRequest::Delete { identifier, .. }
+        | VfsRequest::WriteOffset { identifier, .. } => {
+            let _ = send_to_caps_oracle
+                .send(CapMessage::Has {
+                    on: source.process.clone(),
+                    cap: Capability {
+                        issuer: Address {
+                            node: our_name.clone(),
+                            process: ProcessId::Name("vfs".into()),
+                        },
+                        params: serde_json::to_string(&serde_json::json!({
+                            "kind": "write",
+                            "identifier": identifier,
+                        }))
+                        .unwrap(),
+                    },
+                    responder: send_cap_bool,
+                })
+                .unwrap();
+            let has_cap = recv_cap_bool.await.unwrap();
+
+            if !has_cap {
+                return Err(VfsError::NoCap);
+            }
+        }
+        VfsRequest::GetPath { identifier, .. }
+        | VfsRequest::GetEntry { identifier, .. }
+        | VfsRequest::GetFileChunk { identifier, .. }
+        | VfsRequest::GetEntryLength { identifier, .. } => {
+            let _ = send_to_caps_oracle
+                .send(CapMessage::Has {
+                    on: source.process.clone(),
+                    cap: Capability {
+                        issuer: Address {
+                            node: our_name.clone(),
+                            process: ProcessId::Name("vfs".into()),
+                        },
+                        params: serde_json::to_string(&serde_json::json!({
+                            "kind": "read",
+                            "identifier": identifier,
+                        }))
+                        .unwrap(),
+                    },
+                    responder: send_cap_bool,
+                })
+                .unwrap();
+            let has_cap = recv_cap_bool.await.unwrap();
+
+            if !has_cap {
+                return Err(VfsError::NoCap);
+            }
+        }
+    }
+
     let (ipc, bytes) = match_request(
         our_name.clone(),
         id.clone(),
@@ -557,6 +627,7 @@ async fn handle_request(
                 }),
                 None => None,
             },
+            signed_capabilities: None,
         };
 
         let _ = send_to_loop.send(response).await;
@@ -600,7 +671,6 @@ async fn match_request(
                             ipc: Some(
                                 serde_json::to_string(&KernelCommand::GrantCapability {
                                     to_process: source.process.clone(),
-                                    label: new_cap.label,
                                     params: new_cap.params,
                                 })
                                 .unwrap(),
@@ -608,6 +678,7 @@ async fn match_request(
                             metadata: None,
                         }),
                         payload: None,
+                        signed_capabilities: None,
                     })
                     .await;
             }
@@ -726,17 +797,11 @@ async fn match_request(
                                 metadata: None,
                             }),
                             payload,
+                            signed_capabilities: None,
                         })
                         .await;
                     let write_response = recv_response.recv().await.unwrap();
-                    let KernelMessage {
-                        id: _,
-                        source: _,
-                        target: _,
-                        rsvp: _,
-                        message,
-                        payload: _,
-                    } = write_response;
+                    let KernelMessage { message, .. } = write_response;
                     let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message
                     else {
                         panic!("")
@@ -1033,6 +1098,7 @@ async fn match_request(
                         metadata: None,
                     }),
                     payload,
+                    signed_capabilities: None,
                 })
                 .await;
 
@@ -1175,16 +1241,12 @@ async fn match_request(
                                         metadata: None,
                                     }),
                                     payload: None,
+                                    signed_capabilities: None,
                                 })
                                 .await;
                             let read_response = recv_response.recv().await.unwrap();
                             let KernelMessage {
-                                id: _,
-                                source: _,
-                                target: _,
-                                rsvp: _,
-                                message,
-                                payload,
+                                message, payload, ..
                             } = read_response;
                             let Message::Response((Ok(Response { ipc, metadata: _ }), None)) =
                                 message
@@ -1263,16 +1325,12 @@ async fn match_request(
                         metadata: None,
                     }),
                     payload: None,
+                    signed_capabilities: None,
                 })
                 .await;
             let read_response = recv_response.recv().await.unwrap();
             let KernelMessage {
-                id: _,
-                source: _,
-                target: _,
-                rsvp: _,
-                message,
-                payload,
+                message, payload, ..
             } = read_response;
             let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
                 panic!("")
@@ -1350,17 +1408,11 @@ async fn match_request(
                             metadata: None,
                         }),
                         payload: None,
+                        signed_capabilities: None,
                     })
                     .await;
                 let length_response = recv_response.recv().await.unwrap();
-                let KernelMessage {
-                    id: _,
-                    source: _,
-                    target: _,
-                    rsvp: _,
-                    message,
-                    payload: _,
-                } = length_response;
+                let KernelMessage { message, .. } = length_response;
                 let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
                     panic!("")
                 };

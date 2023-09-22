@@ -240,6 +240,7 @@ pub async fn handle_ws_register(
                 mime: Some("application/octet-stream".to_string()),
                 bytes: vec![],
             }),
+            signed_capabilities: None,
         };
 
         send_to_loop.send(message).await.unwrap();
@@ -285,6 +286,7 @@ pub async fn handle_ws_message(
             mime: Some("application/octet-stream".to_string()),
             bytes: json.unwrap_or_default().to_string().as_bytes().to_vec(),
         }),
+        signed_capabilities: None,
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -343,6 +345,7 @@ pub async fn handle_encrypted_ws_message(
             mime: Some("application/octet-stream".to_string()),
             bytes: encrypted_data,
         }),
+        signed_capabilities: None,
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -377,6 +380,7 @@ pub async fn proxy_ws_message(
             mime: Some("application/octet-stream".to_string()),
             bytes: vec![],
         }),
+        signed_capabilities: None,
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -431,6 +435,7 @@ pub async fn send_ws_disconnect(
             mime: Some("application/octet-stream".to_string()),
             bytes: vec![],
         }),
+        signed_capabilities: None,
     };
 
     send_to_loop.send(message).await.unwrap();
@@ -458,5 +463,6 @@ pub fn make_error_message(
             None,
         )),
         payload: None,
+        signed_capabilities: None,
     }
 }

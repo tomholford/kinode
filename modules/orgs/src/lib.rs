@@ -108,7 +108,7 @@ fn send_http_response(status: u16, headers: HashMap<String, String>, payload_byt
 }
 
 fn get_response_info(
-    response: Result<(Address, Message), (NetworkError, Option<String>)>,
+    response: Result<(Address, Message), NetworkError>,
 ) -> (Option<String>, Option<Payload>, Option<String>) {
     match response {
         Ok((_source, message)) => {
@@ -339,7 +339,6 @@ fn handle_telegram_update(
                                 }).to_string()),
                                 metadata: None,
                             },
-                            None,
                             Some(&Payload {
                                 mime: Some("application/json".to_string()),
                                 bytes: serde_json::json!({
@@ -1022,7 +1021,6 @@ impl Guest for Component {
                                                     }).to_string()),
                                                     metadata: None,
                                                 },
-                                                None,
                                                 Some(&Payload {
                                                     mime: Some("application/json".to_string()),
                                                     bytes: serde_json::json!({
@@ -1168,7 +1166,6 @@ impl Guest for Component {
                                                     }).to_string()),
                                                     metadata: None,
                                                 },
-                                                None,
                                                 None,
                                             );
 

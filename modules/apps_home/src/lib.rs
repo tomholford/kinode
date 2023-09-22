@@ -104,7 +104,6 @@ impl Guest for Component {
                             metadata: None,
                         },
                         None,
-                        None,
                     );
                     match response {
                         Ok(_reponse) => {

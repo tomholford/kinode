@@ -27,9 +27,9 @@ bindgen!({
 });
 const PROCESS_CHANNEL_CAPACITY: usize = 100;
 
-pub type ProcessMessageSender =
+type ProcessMessageSender =
     tokio::sync::mpsc::Sender<Result<t::KernelMessage, t::WrappedNetworkError>>;
-pub type ProcessMessageReceiver =
+type ProcessMessageReceiver =
     tokio::sync::mpsc::Receiver<Result<t::KernelMessage, t::WrappedNetworkError>>;
 
 struct Process {
@@ -41,8 +41,9 @@ struct Process {
     prompting_message: Option<t::KernelMessage>,
     last_payload: Option<t::Payload>,
     contexts: HashMap<u64, ProcessContext>,
-    capabilities: HashSet<t::Capability>,
     message_queue: VecDeque<Result<t::KernelMessage, t::WrappedNetworkError>>,
+    caps_oracle: t::CapMessageSender,
+    next_message_caps: Option<Vec<t::SignedCapability>>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,7 +180,7 @@ impl UqProcessImports for ProcessWasi {
     // process management:
     //
 
-    ///  todo -> move to kernel logic to enable persitence etc.
+    ///  todo -> move to kernel logic to enable persistence etc.
     async fn set_on_panic(&mut self, _on_panic: wit::OnPanic) -> Result<()> {
         unimplemented!();
         //     let on_panic = match on_panic {
@@ -225,19 +226,26 @@ impl UqProcessImports for ProcessWasi {
                     ipc: Some(
                         serde_json::to_string(&t::KernelCommand::StartProcess {
                             name: match id {
-                                wit::ProcessId::Name(name) => Some(name),
+                                wit::ProcessId::Name(ref name) => Some(name.into()),
                                 wit::ProcessId::Id(_id) => None,
                             },
                             wasm_bytes_handle: 0, // ???????
                             on_panic: de_wit_on_panic(on_panic),
+                            // TODO
                             initial_capabilities: match capabilities {
                                 wit::Capabilities::None => HashSet::new(),
-                                wit::Capabilities::All => self.process.capabilities.clone(),
+                                wit::Capabilities::All => {
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    let _ = self.process.caps_oracle.send(t::CapMessage::GetAll {
+                                        on: self.process.metadata.our.process.clone(),
+                                        responder: tx,
+                                    });
+                                    rx.await.unwrap()
+                                }
                                 wit::Capabilities::Some(caps) => caps
                                     .into_iter()
                                     .map(|cap| t::Capability {
                                         issuer: de_wit_address(cap.issuer),
-                                        label: cap.label,
                                         params: cap.params,
                                     })
                                     .collect(),
@@ -248,30 +256,80 @@ impl UqProcessImports for ProcessWasi {
                     metadata: None,
                 }),
                 payload: None,
+                signed_capabilities: None,
             })
             .await?;
 
-        Ok(Ok(wit::ProcessId::Name("".into())))
+        Ok(Ok(id))
     }
 
     //
     // capabilities management
     //
     async fn get_capabilities(&mut self) -> Result<Vec<wit::SignedCapability>> {
-        let mut caps = Vec::with_capacity(self.process.capabilities.len());
-        for cap in &self.process.capabilities {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.process.caps_oracle.send(t::CapMessage::GetAll {
+            on: self.process.metadata.our.process.clone(),
+            responder: tx,
+        });
+        Ok(rx
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|cap| wit::SignedCapability {
+                issuer: en_wit_address(cap.issuer.clone()),
+                params: cap.params.clone(),
+                signature: self
+                    .process
+                    .keypair
+                    .sign(&bincode::serialize(&cap).unwrap())
+                    .as_ref()
+                    .to_vec(),
+            })
+            .collect())
+    }
+
+    async fn get_capability(
+        &mut self,
+        issuer: wit::Address,
+        params: String,
+    ) -> Result<Option<wit::SignedCapability>> {
+        let cap = t::Capability {
+            issuer: de_wit_address(issuer),
+            params,
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.process.caps_oracle.send(t::CapMessage::Has {
+            on: self.process.metadata.our.process.clone(),
+            cap: cap.clone(),
+            responder: tx,
+        });
+        if rx.await.unwrap() {
             let sig = self
                 .process
                 .keypair
                 .sign(&bincode::serialize(&cap).unwrap());
-            caps.push(wit::SignedCapability {
+            return Ok(Some(wit::SignedCapability {
                 issuer: en_wit_address(cap.issuer.clone()),
-                label: cap.label.clone(),
                 params: cap.params.clone(),
                 signature: sig.as_ref().to_vec(),
-            });
+            }));
+        } else {
+            return Ok(None);
         }
-        Ok(caps)
+    }
+
+    async fn attach_capability(&mut self, capability: wit::SignedCapability) -> Result<()> {
+        match self.process.next_message_caps {
+            None => {
+                self.process.next_message_caps = Some(vec![de_wit_signed_capability(capability)]);
+                Ok(())
+            }
+            Some(ref mut v) => {
+                v.push(de_wit_signed_capability(capability));
+                Ok(())
+            }
+        }
     }
 
     async fn save_capabilities(&mut self, capabilities: Vec<wit::SignedCapability>) -> Result<()> {
@@ -283,39 +341,49 @@ impl UqProcessImports for ProcessWasi {
             // validate our signature!
             let cap = t::Capability {
                 issuer: de_wit_address(signed_cap.issuer),
-                label: signed_cap.label,
                 params: signed_cap.params,
             };
             pk.verify(&bincode::serialize(&cap).unwrap(), &signed_cap.signature)?;
-            self.process.capabilities.insert(cap);
+
+            let _ = self.process.caps_oracle.send(t::CapMessage::Add {
+                on: self.process.metadata.our.process.clone(),
+                cap: cap.clone(),
+            });
         }
         Ok(())
     }
 
-    async fn get_capability(
-        &mut self,
-        issuer: wit::Address,
-        label: String,
-        params: Option<String>,
-    ) -> Result<Option<wit::SignedCapability>> {
-        let cap = t::Capability {
-            issuer: de_wit_address(issuer),
-            label,
-            params,
-        };
-        if self.process.capabilities.contains(&cap) {
-            let sig = self
-                .process
-                .keypair
-                .sign(&bincode::serialize(&cap).unwrap());
-            Ok(Some(wit::SignedCapability {
-                issuer: en_wit_address(cap.issuer.clone()),
-                label: cap.label.clone(),
-                params: cap.params.clone(),
-                signature: sig.as_ref().to_vec(),
-            }))
+    async fn has_capability(&mut self, params: String) -> Result<bool> {
+        if self.process.prompting_message.is_none() {
+            return Err(anyhow::anyhow!(
+                "kernel: has_capability() called with no prompting_message"
+            ));
+        }
+        let prompt = self.process.prompting_message.as_ref().unwrap();
+        if prompt.source.node == self.process.metadata.our.node {
+            // if local, need to ask them
+            let cap = t::Capability {
+                issuer: prompt.source.clone(),
+                params,
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = self.process.caps_oracle.send(t::CapMessage::Has {
+                on: self.process.metadata.our.process.clone(),
+                cap: cap.clone(),
+                responder: tx,
+            });
+            Ok(rx.await.unwrap_or(false))
         } else {
-            Ok(None)
+            // if remote, just check prompting_message
+            if prompt.signed_capabilities.is_none() {
+                return Ok(false);
+            }
+            for cap in prompt.signed_capabilities.as_ref().unwrap() {
+                if cap.issuer == self.process.metadata.our && cap.params == params {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
     }
 
@@ -436,28 +504,6 @@ impl Process {
         );
     }
 
-    /// never call recv_in_process directly. instead, use this, which will handle
-    /// messages that the kernel self and wants to intercept and self-evaluate.
-    async fn wrapped_recv(&mut self) -> Result<t::KernelMessage, t::WrappedNetworkError> {
-        let message = self.recv_in_process.recv().await.unwrap();
-
-        if let Ok(ref km) = message {
-            if km.source.node == self.metadata.our.node.clone()
-                && km.source.process == t::ProcessId::Name("kernel".into())
-            {
-                // intercept messages sent by our kernel. for now,
-                // only kind of message performed here is a capabilities grant.
-                // in future, can add more kinds of messages
-                if let t::Message::Request(ref req) = km.message {
-                    self.capabilities.insert(
-                        serde_json::from_str::<t::Capability>(&req.ipc.as_ref().unwrap()).unwrap(),
-                    );
-                }
-            }
-        }
-        return message;
-    }
-
     /// Ingest latest message directed to this process, and mark it as the prompting message.
     /// If there is no message in the queue, wait async until one is received.
     /// The message will only be saved as the prompting-message if it's a Request.
@@ -466,7 +512,7 @@ impl Process {
     ) -> Result<(wit::Address, wit::Message), (wit::NetworkError, Option<wit::Context>)> {
         let res = match self.message_queue.pop_front() {
             Some(message_from_queue) => message_from_queue,
-            None => self.wrapped_recv().await,
+            None => self.recv_in_process.recv().await.unwrap(),
         };
         self.kernel_message_to_process_receive(res)
     }
@@ -488,7 +534,7 @@ impl Process {
         }
         // next, wait for the awaited message to arrive
         loop {
-            let res = self.wrapped_recv().await;
+            let res = self.recv_in_process.recv().await.unwrap();
             match res {
                 Ok(ref km) if km.id == awaited_message_id => {
                     return self.kernel_message_to_process_receive(Ok(km.clone()))
@@ -579,95 +625,6 @@ impl Process {
         new_context: Option<wit::Context>,
         payload: Option<wit::Payload>,
     ) -> Result<u64> {
-        // enforce capabilities by matching from our set based on fixed format
-        // enforce that if message is directed over the network, process has capability to do so
-        if target.node != self.metadata.our.node {
-            if !self.capabilities.contains(&t::Capability {
-                issuer: t::Address {
-                    node: self.metadata.our.node.clone(),
-                    process: t::ProcessId::Name("kernel".into()),
-                },
-                label: "network".into(),
-                params: None,
-            }) {
-                return Err(anyhow::anyhow!(
-                    "process does not have capability to send to that node"
-                ));
-            }
-        } else {
-            // enforce that process has capability to message a target process of this name
-            let target_process = de_wit_process_id(target.process.clone());
-            let cap = t::Capability {
-                issuer: t::Address {
-                    node: self.metadata.our.node.clone(),
-                    process: target_process.clone(),
-                },
-                label: "messaging".into(),
-                params: Some(serde_json::to_string(&target_process).unwrap()),
-            };
-            if !self.capabilities.contains(&cap) {
-                return Err(anyhow::anyhow!(
-                    "process does not have capability to send to that processID"
-                ));
-            }
-
-            if let t::ProcessId::Name(name) = target_process {
-                if "vfs" == name {
-                    // enforce that process has capability to read/write
-                    if let Some(ref ipc) = request.ipc {
-                        match serde_json::from_str(ipc).unwrap() {
-                            t::VfsRequest::New { identifier } => {}
-                            t::VfsRequest::Add { identifier, .. }
-                            | t::VfsRequest::Rename { identifier, .. }
-                            | t::VfsRequest::Delete { identifier, .. }
-                            | t::VfsRequest::WriteOffset { identifier, .. } => {
-                                if !self.capabilities.contains(&t::Capability {
-                                    issuer: t::Address {
-                                        node: self.metadata.our.node.clone(),
-                                        process: t::ProcessId::Name("vfs".into()),
-                                    },
-                                    label: "write".into(),
-                                    params: Some(
-                                        serde_json::to_string(
-                                            &serde_json::json!({"identifier": identifier}),
-                                        )
-                                        .unwrap(),
-                                    ),
-                                }) {
-                                    return Err(anyhow::anyhow!(
-                                        "process does not have capability to write to vfs {}",
-                                        identifier,
-                                    ));
-                                }
-                            }
-                            t::VfsRequest::GetPath { identifier, .. }
-                            | t::VfsRequest::GetEntry { identifier, .. }
-                            | t::VfsRequest::GetFileChunk { identifier, .. }
-                            | t::VfsRequest::GetEntryLength { identifier, .. } => {
-                                if !self.capabilities.contains(&t::Capability {
-                                    issuer: t::Address {
-                                        node: self.metadata.our.node.clone(),
-                                        process: t::ProcessId::Name("vfs".into()),
-                                    },
-                                    label: "read".into(),
-                                    params: Some(
-                                        serde_json::to_string(
-                                            &serde_json::json!({"identifier": identifier}),
-                                        )
-                                        .unwrap(),
-                                    ),
-                                }) {
-                                    return Err(anyhow::anyhow!(
-                                        "process does not have capability to read to vfs {}",
-                                        identifier,
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
         let source = self.metadata.our.clone();
         // if request chooses to inherit context, match id to prompting_message
         // otherwise, id is generated randomly
@@ -709,6 +666,7 @@ impl Process {
             },
             message: t::Message::Request(de_wit_request(request.clone())),
             payload: de_wit_payload(payload),
+            signed_capabilities: None,
         };
 
         // modify the process' context map as needed.
@@ -752,6 +710,7 @@ impl Process {
                     None,
                 )),
                 payload: de_wit_payload(payload),
+                signed_capabilities: None,
             })
             .await
             .unwrap();
@@ -773,6 +732,7 @@ impl Process {
             rsvp: None,
             message: t::Message::Response((Err(de_wit_uqbar_error(error)), None)),
             payload: None,
+            signed_capabilities: None,
         };
 
         self.send_to_loop.send(kernel_message).await.unwrap();
@@ -806,6 +766,7 @@ async fn persist_state(
                 metadata: None,
             }),
             payload: Some(t::Payload { mime: None, bytes }),
+            signed_capabilities: None,
         })
         .await?;
     Ok(())
@@ -821,6 +782,7 @@ async fn make_process_loop(
     recv_in_process: ProcessMessageReceiver,
     wasm_bytes: &Vec<u8>,
     initial_capabilities: HashSet<t::Capability>,
+    caps_oracle: t::CapMessageSender,
     engine: &Engine,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     let our = metadata.our.clone();
@@ -874,8 +836,9 @@ async fn make_process_loop(
                 prompting_message: None,
                 last_payload: None,
                 contexts: HashMap::new(),
-                capabilities: initial_capabilities.clone(),
                 message_queue: VecDeque::new(),
+                caps_oracle,
+                next_message_caps: None,
             },
             table,
             wasi,
@@ -961,6 +924,7 @@ async fn make_process_loop(
                                 metadata: None,
                             }),
                             payload: None,
+                            signed_capabilities: None,
                         })
                         .await
                         .unwrap();
@@ -977,6 +941,7 @@ async fn make_process_loop(
                                 rsvp: None,
                                 message: t::Message::Request(request),
                                 payload,
+                                signed_capabilities: None,
                             })
                             .await
                             .unwrap();
@@ -1002,6 +967,7 @@ async fn make_process_loop(
                     metadata: None,
                 }),
                 payload: None,
+                signed_capabilities: None,
             })
             .await
             .unwrap();
@@ -1086,6 +1052,7 @@ async fn handle_kernel_request(
                     ),
                 }),
                 payload: None,
+                signed_capabilities: None,
             })
             .await
             .unwrap(),
@@ -1126,6 +1093,7 @@ async fn handle_kernel_request(
                     ),
                 }),
                 payload: None,
+                signed_capabilities: None,
             })
             .await
             .unwrap(),
@@ -1179,18 +1147,14 @@ async fn handle_kernel_request(
                         None,
                     )),
                     payload: None,
+                    signed_capabilities: None,
                 })
                 .await
                 .unwrap();
         }
-        t::KernelCommand::GrantCapability {
-            to_process,
-            label,
-            params,
-        } => {
+        t::KernelCommand::GrantCapability { to_process, params } => {
             let capability = t::Capability {
                 issuer: km.source.clone(),
-                label,
                 params,
             };
 
@@ -1219,6 +1183,7 @@ async fn handle_kernel_request(
                         metadata: None,
                     }),
                     payload: None,
+                    signed_capabilities: None,
                 })
                 .await
                 .unwrap();
@@ -1239,6 +1204,7 @@ async fn handle_kernel_response(
     senders: &mut Senders,
     process_handles: &mut ProcessHandles,
     process_map: &mut ProcessMap,
+    caps_oracle: t::CapMessageSender,
     engine: &Engine,
 ) {
     let t::Message::Response((Ok(ref response), _)) = km.message else {
@@ -1299,6 +1265,7 @@ async fn handle_kernel_response(
         process_handles,
         process_map,
         engine,
+        caps_oracle,
         meta,
     )
     .await;
@@ -1316,6 +1283,7 @@ async fn start_process(
     process_handles: &mut ProcessHandles,
     process_map: &mut ProcessMap,
     engine: &Engine,
+    caps_oracle: t::CapMessageSender,
     process_metadata: StartProcessMetadata,
 ) {
     let (send_to_process, recv_in_process) =
@@ -1389,6 +1357,7 @@ async fn start_process(
                 recv_in_process,
                 &km_payload_bytes,
                 process_metadata.initial_capabilities.clone(),
+                caps_oracle,
                 engine,
             )
             .await,
@@ -1429,6 +1398,7 @@ async fn start_process(
                 None,
             )),
             payload: None,
+            signed_capabilities: None,
         })
         .await
         .unwrap();
@@ -1441,6 +1411,8 @@ async fn make_event_loop(
     keypair: Arc<signature::Ed25519KeyPair>,
     home_directory_path: String,
     mut process_map: ProcessMap,
+    caps_oracle_sender: t::CapMessageSender,
+    mut caps_oracle_receiver: t::CapMessageReceiver,
     mut recv_in_loop: t::MessageReceiver,
     mut network_error_recv: t::NetworkErrorReceiver,
     mut recv_debug_in_loop: t::DebugReceiver,
@@ -1528,6 +1500,7 @@ async fn make_event_loop(
                             metadata: None,
                         }),
                         payload: None,
+                        signed_capabilities: None,
                     })
                     .await
                     .unwrap();
@@ -1579,6 +1552,64 @@ async fn make_event_loop(
                 },
                 kernel_message = recv_in_loop.recv() => {
                     let kernel_message = kernel_message.expect("fatal: event loop died");
+                    //
+                    // here: are the special kernel-level capabilities checks!
+                    //
+                    // enforce capabilities by matching from our set based on fixed format
+                    // enforce that if message is directed over the network, process has capability to do so
+                    if kernel_message.target.node != our_name {
+                        if !process_map.get(&kernel_message.source.process).unwrap().2.contains(&t::Capability {
+                            issuer: t::Address {
+                                node: our_name.clone(),
+                                process: t::ProcessId::Name("kernel".into()),
+                            },
+                            params: "\"network\"".into(),
+                        }) {
+                            // capabilities are not correct! skip this message.
+                            // TODO some kind of error thrown
+                            let _ = send_to_terminal.send(
+                                t::Printout {
+                                    verbosity: 0,
+                                    content: format!(
+                                        "event loop: process {:?} doesn't have capability to send networked messages",
+                                        kernel_message.source.process
+                                    )
+                                }
+                            ).await;
+                            continue;
+                        }
+                    } else {
+                        // enforce that process has capability to message a target process of this name
+                        match process_map.get(&kernel_message.source.process) {
+                            None => {}
+                            Some((_, _, caps)) => {
+                                if !caps.contains(&t::Capability {
+                                    issuer: t::Address {
+                                        node: our_name.clone(),
+                                        process: kernel_message.target.process.clone(),
+                                    },
+                                    params: format!(
+                                        "{{\"messaging\": \"{}\"}}",
+                                        serde_json::to_string(&kernel_message.target.process.clone()).unwrap()
+                                    ),
+                                }) {
+                                    // capabilities are not correct! skip this message.
+                                    // TODO do some kind of error or something
+                                    let _ = send_to_terminal.send(
+                                        t::Printout {
+                                            verbosity: 0,
+                                            content: format!(
+                                                "event loop: process {:?} doesn't have capability to message process {:?}",
+                                                kernel_message.source.process, kernel_message.target.process
+                                            )
+                                        }
+                                    ).await;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    // end capabilities checks
                     while is_debug {
                         let debug = recv_debug_in_loop.recv().await.unwrap();
                         match debug {
@@ -1625,6 +1656,7 @@ async fn make_event_loop(
                                         &mut senders,
                                         &mut process_handles,
                                         &mut process_map,
+                                        caps_oracle_sender.clone(),
                                         &engine,
                                     ).await;
                                 }
@@ -1656,6 +1688,37 @@ async fn make_event_loop(
                         }
                     }
                 },
+                // capabilities oracle!!!
+                Some(cap_message) = caps_oracle_receiver.recv() => {
+                    match cap_message {
+                        t::CapMessage::Add { on, cap } => {
+                            // insert cap in process map
+                            process_map.get_mut(&on).unwrap().2.insert(cap);
+                        },
+                        t::CapMessage::Drop { on, cap } => {
+                            // remove cap from process map
+                            process_map.get_mut(&on).unwrap().2.remove(&cap);
+                        },
+                        t::CapMessage::Has { on, cap, responder } => {
+                            // return boolean on responder
+                            let _ = responder.send(
+                                match process_map.get(&on) {
+                                    None => false,
+                                    Some(p) => p.2.contains(&cap),
+                                }
+                            );
+                        },
+                        t::CapMessage::GetAll { on, responder } => {
+                            // return all caps on responder
+                            let _ = responder.send(
+                                match process_map.get(&on) {
+                                    None => HashSet::new(),
+                                    Some(p) => p.2.clone(),
+                                }
+                            );
+                        },
+                    }
+                }
             }
         }
     })
@@ -1667,6 +1730,8 @@ pub async fn kernel(
     keypair: Arc<signature::Ed25519KeyPair>,
     home_directory_path: String,
     process_map: ProcessMap,
+    caps_oracle_sender: t::CapMessageSender,
+    caps_oracle_receiver: t::CapMessageReceiver,
     send_to_loop: t::MessageSender,
     send_to_terminal: t::PrintSender,
     recv_in_loop: t::MessageReceiver,
@@ -1692,6 +1757,8 @@ pub async fn kernel(
             keypair,
             home_directory_path,
             process_map,
+            caps_oracle_sender,
+            caps_oracle_receiver,
             recv_in_loop,
             network_error_recv,
             recv_debug_in_loop,

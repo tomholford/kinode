@@ -61,8 +61,7 @@ interface types {
 
     record signed-capability {
         issuer: address,
-        label: string,
-        params: option<json>,
+        params: json,
         signature: list<u8>,
     }
 
@@ -140,8 +139,20 @@ world uq-process {
 
     // gives us all our signed capabilities so we can send them to others
     import get-capabilities: func() -> list<signed-capability>
+
+    // gets a single specific capability
+    import get-capability: func(issuer: address, params: json) -> option<signed-capability>
+
+    // attaches a specific signed capability to our next message
+    import attach-capability: func(capability: signed-capability)
+
+    // saves capabilities to our store, so we can use them
     import save-capabilities: func(capabilities: list<signed-capability>)
-    import get-capability: func(issuer: address, label: string, params: option<json>) -> option<signed-capability>
+
+    // check to see if the sender of a prompting message has a given capability, issued by us
+    // if the prompting message has a remote source, they must have attached it.
+    import has-capability: func(params: json) -> bool
+
 
     // message I/O:
 

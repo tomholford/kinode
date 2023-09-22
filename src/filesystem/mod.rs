@@ -1,8 +1,8 @@
 /// log structured filesystem
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use tokio::fs;
 use tokio::time::{interval, Duration};
+use tokio::{fs, runtime};
 
 use crate::filesystem::manifest::{FileIdentifier, Manifest};
 use crate::types::*;
@@ -83,6 +83,16 @@ pub async fn bootstrap(
     // this can be easily changed in the future.
     // they are also given access to all runtime modules by name
     let names_and_bytes = get_processes_from_directories().await;
+    const RUNTIME_MODULES: [&str; 8] = [
+        "filesystem",
+        "http_server",
+        "http_client",
+        "encryptor",
+        "lfs",
+        "net",
+        "vfs",
+        "kernel",
+    ];
 
     let mut special_capabilities: HashSet<Capability> = HashSet::new();
     for (process_name, _) in &names_and_bytes {
@@ -91,26 +101,22 @@ pub async fn bootstrap(
                 node: our_name.clone(),
                 process: ProcessId::Name(process_name.into()),
             },
-            label: "messaging".into(),
-            params: Some(serde_json::to_string(&ProcessId::Name(process_name.into())).unwrap()),
+            params: format!(
+                "{{\"messaging\": \"{}\"}}",
+                serde_json::to_string(&ProcessId::Name(process_name.into())).unwrap()
+            ),
         });
     }
-    for runtime_module in vec![
-        "filesystem",
-        "http_server",
-        "http_client",
-        "encryptor",
-        "lfs",
-        "net",
-        "vfs",
-    ] {
+    for runtime_module in RUNTIME_MODULES {
         special_capabilities.insert(Capability {
             issuer: Address {
                 node: our_name.clone(),
                 process: ProcessId::Name(runtime_module.into()),
             },
-            label: "messaging".into(),
-            params: Some(serde_json::to_string(&ProcessId::Name(runtime_module.into())).unwrap()),
+            params: format!(
+                "{{\"messaging\": \"{}\"}}",
+                serde_json::to_string(&ProcessId::Name(runtime_module.into())).unwrap()
+            ),
         });
     }
     // give all distro processes the ability to send messages across the network
@@ -119,14 +125,13 @@ pub async fn bootstrap(
             node: our_name.clone(),
             process: ProcessId::Name("kernel".into()),
         },
-        label: "network".into(),
-        params: None,
+        params: "\"network\"".into(),
     });
 
     let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
     special_on_panics.insert("terminal".into(), OnPanic::Restart);
 
-    // for a module in /modules, put it's bytes into filesystem, add to state_map
+    // for a module in /modules, put its bytes into filesystem, add to state_map
     for (process_name, wasm_bytes) in names_and_bytes {
         let hash: [u8; 32] = hash_bytes(&wasm_bytes);
 
@@ -134,29 +139,10 @@ pub async fn bootstrap(
             .get(&process_name)
             .unwrap_or(&OnPanic::None);
 
-        // allow processes to read their own process bytes
-        let mut special_capabilities = special_capabilities.clone();
-        special_capabilities.insert(Capability {
-            issuer: Address {
-                node: our_name.clone(),
-                process: ProcessId::Name("vfs".into()),
-            },
-            label: "read".into(),
-            params: Some(serde_json::to_string(&serde_json::json!(process_name)).unwrap()),
-        });
-        special_capabilities.insert(Capability {
-            issuer: Address {
-                node: our_name.clone(),
-                process: ProcessId::Name("vfs".into()),
-            },
-            label: "write".into(),
-            params: Some(serde_json::to_string(&serde_json::json!(process_name)).unwrap()),
-        });
-
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
             state_map.insert(
                 ProcessId::Name(process_name),
-                (id, on_panic.clone(), special_capabilities),
+                (id, on_panic.clone(), special_capabilities.clone()),
             );
         } else {
             //  FsAction::Write
@@ -170,10 +156,18 @@ pub async fn bootstrap(
                 (
                     file.to_uuid().unwrap(),
                     on_panic.clone(),
-                    special_capabilities,
+                    special_capabilities.clone(),
                 ),
             );
         }
+    }
+
+    // finally, save runtime modules in state map as well
+    for runtime_module in RUNTIME_MODULES {
+        state_map.insert(
+            ProcessId::Name(runtime_module.into()),
+            (0, OnPanic::None, special_capabilities.clone()),
+        );
     }
 
     // save kernel process state. FsAction::SetState(kernel)
@@ -520,6 +514,7 @@ async fn handle_request(
                 mime: None,
                 bytes: bytes.unwrap_or_default(),
             }),
+            signed_capabilities: None,
         };
 
         let _ = send_to_loop.send(response).await;
@@ -575,5 +570,6 @@ fn make_error_message(
             None,
         )),
         payload: None,
+        signed_capabilities: None,
     }
 }

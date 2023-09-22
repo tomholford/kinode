@@ -52,10 +52,10 @@ pub async fn http_server(
                 let KernelMessage {
                     id,
                     source,
-                    target: _,
                     rsvp,
                     message,
                     payload,
+                    ..
                 } = kernel_message;
 
                 if let Err(e) = http_handle_messages(
@@ -398,6 +398,7 @@ async fn http_handle_messages(
                                                 mime: Some("application/octet-stream".to_string()),
                                                 bytes: bytes_content,
                                             }),
+                                            signed_capabilities: None,
                                         };
 
                                         send_to_loop.send(message).await.unwrap();
@@ -471,6 +472,7 @@ async fn http_handle_messages(
                                         mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
                                         bytes: jwt_secret_bytes.clone(),
                                     }),
+                                    signed_capabilities: None,
                                 };
 
                                 send_to_loop.send(message).await.unwrap();
@@ -706,6 +708,7 @@ async fn handler(
             mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
             bytes: body.to_vec(),
         }),
+        signed_capabilities: None,
     };
 
     let (response_sender, response_receiver) = oneshot::channel();

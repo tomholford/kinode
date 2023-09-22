@@ -71,10 +71,10 @@ pub async fn encryptor(
         let KernelMessage {
             ref id,
             source,
-            target: _,
             rsvp,
             message,
             payload,
+            ..
         } = kernel_message;
         let Message::Request(Request {
             expects_response,
@@ -180,6 +180,7 @@ pub async fn encryptor(
                                             "signed_public_key": hex::encode(&signed_public_key).to_string(),
                                         }).to_string().as_bytes().to_vec(),
                                     }),
+                                    signed_capabilities: None,
                                 };
 
                                 message_tx.send(response).await.unwrap();
@@ -245,6 +246,7 @@ pub async fn encryptor(
                                     mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
                                     bytes: decrypted_bytes,
                                 }),
+                                signed_capabilities: None,
                             };
                             message_tx.send(message).await.unwrap();
                         } else {
@@ -298,6 +300,7 @@ pub async fn encryptor(
                                     mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
                                     bytes: encrypted_bytes,
                                 }),
+                                signed_capabilities: None,
                             };
 
                             message_tx.send(message).await.unwrap();
@@ -352,6 +355,7 @@ pub async fn encryptor(
                                     mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
                                     bytes: decrypted_bytes,
                                 }),
+                                signed_capabilities: None,
                             };
 
                             message_tx.send(message).await.unwrap();
@@ -406,6 +410,7 @@ pub async fn encryptor(
                                     mime: Some("application/octet-stream".to_string()), // TODO adjust MIME type as needed
                                     bytes: encrypted_bytes,
                                 }),
+                                signed_capabilities: None,
                             };
 
                             message_tx.send(message).await.unwrap();

@@ -69,6 +69,8 @@ async fn main() {
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(EVENT_LOOP_CHANNEL_CAPACITY);
+    // kernel informs other runtime modules of capabilities through this
+    let (caps_oracle_sender, caps_oracle_receiver) = mpsc::unbounded_channel::<CapMessage>();
     // networking module sends error messages to kernel
     let (network_error_sender, network_error_receiver): (NetworkErrorSender, NetworkErrorReceiver) =
         mpsc::channel(EVENT_LOOP_CHANNEL_CAPACITY);
@@ -336,6 +338,8 @@ async fn main() {
         networking_keypair_arc.clone(),
         home_directory_path.into(),
         kernel_process_map.clone(),
+        caps_oracle_sender.clone(),
+        caps_oracle_receiver,
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,
@@ -391,6 +395,7 @@ async fn main() {
         kernel_message_sender.clone(),
         print_sender.clone(),
         vfs_message_receiver,
+        caps_oracle_sender.clone(),
     ));
     tasks.spawn(encryptor::encryptor(
         our.name.clone(),
@@ -451,6 +456,7 @@ async fn main() {
                 metadata: None,
             }),
             payload: None,
+            signed_capabilities: None,
         })
         .await;
     // abort all remaining tasks

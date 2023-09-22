@@ -603,6 +603,7 @@ pub async fn terminal(
                                                 metadata: None,
                                             }),
                                             payload: None,
+                                            signed_capabilities: None,
                                         }
                                     ).await;
                                 },

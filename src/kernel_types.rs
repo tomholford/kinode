@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::bindings::component::uq_process::types as wit;
 
@@ -77,15 +77,13 @@ pub enum Message {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Capability {
     pub issuer: Address,
-    pub label: String,
-    pub params: Option<String>, // JSON-string
+    pub params: String, // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedCapability {
     pub issuer: Address,
-    pub label: String,
-    pub params: Option<String>, // JSON-string
+    pub params: String,     // JSON-string
     pub signature: Vec<u8>, // signed by the kernel, so we can verify that the kernel issued it
 }
 
@@ -223,7 +221,6 @@ pub fn en_wit_payload(load: Option<Payload>) -> Option<wit::Payload> {
 pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> SignedCapability {
     SignedCapability {
         issuer: de_wit_address(wit.issuer),
-        label: wit.label,
         params: wit.params,
         signature: wit.signature,
     }
@@ -232,7 +229,6 @@ pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> SignedCapability 
 pub fn en_wit_signed_capability(cap: SignedCapability) -> wit::SignedCapability {
     wit::SignedCapability {
         issuer: en_wit_address(cap.issuer),
-        label: cap.label,
         params: cap.params,
         signature: cap.signature,
     }

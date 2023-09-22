@@ -185,6 +185,7 @@ checksum = "b0293b4b29daaf487284529cc2f5675b8e57c61f70167ba415a463651fd6a918"
 name = "sequencer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "cargo-component-bindings",
  "serde",

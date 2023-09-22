@@ -65,7 +65,7 @@ impl Guest for Component {
             None => {
                 print_to_terminal(
                     0,
-                    "persist: error loading in previous boot state",
+                    "persist: no previous boot state",
                 );
             },
             Some(p) => {
@@ -78,6 +78,13 @@ impl Guest for Component {
                         state = s;
                     },
                 }
+            },
+        }
+
+        match process_lib::await_set_state(our.node.clone(), &state) {
+            Ok(_) => {},
+            Err(e) => {
+                print_to_terminal(0, &format!("persist: failed to set state: {:?}", e))
             },
         }
 

@@ -20,15 +20,17 @@ pub async fn http_client(
             source,
             target: _,
             rsvp,
-            message: Message::Request(Request {
-                inherit: _,
-                expects_response: is_expecting_response,
-                ipc: json,
-                metadata: _,
-            }),
-            payload: _,
-        } = message.clone() else {
-            return Err(anyhow::anyhow!("http_client: bad message"))
+            message:
+                Message::Request(Request {
+                    inherit: _,
+                    expects_response: is_expecting_response,
+                    ipc: json,
+                    metadata: _,
+                }),
+            payload,
+        } = message.clone()
+        else {
+            return Err(anyhow::anyhow!("http_client: bad message"));
         };
 
         let our_name = our_name.clone();
@@ -44,16 +46,21 @@ pub async fn http_client(
                 is_expecting_response,
                 source.clone(),
                 json,
+                {
+                    if let Some(payload) = payload {
+                        Some(payload.bytes)
+                    } else {
+                        None
+                    }
+                },
                 print_tx.clone(),
-            ).await {
-                send_to_loop.send(
-                    make_error_message(
-                        our_name.clone(),
-                        id,
-                        source,
-                        e,
-                    )
-                ).await.unwrap();
+            )
+            .await
+            {
+                send_to_loop
+                    .send(make_error_message(our_name.clone(), id, source, e))
+                    .await
+                    .unwrap();
             }
         });
     }
@@ -68,17 +75,17 @@ async fn handle_message(
     expects_response: bool,
     source: Address,
     json: Option<String>,
+    body: Option<Vec<u8>>,
     _print_tx: PrintSender,
 ) -> Result<(), HttpClientError> {
-    let target =
-        if expects_response {
-            source.clone()
-        } else {
-            let Some(rsvp) = rsvp else {
-                return Err(HttpClientError::BadRsvp);
-            };
-            rsvp.clone()
+    let target = if expects_response {
+        source.clone()
+    } else {
+        let Some(rsvp) = rsvp else {
+            return Err(HttpClientError::BadRsvp);
         };
+        rsvp.clone()
+    };
 
     let Some(ref json) = json else {
         return Err(HttpClientError::NoJson);
@@ -86,10 +93,12 @@ async fn handle_message(
 
     let req: HttpClientRequest = match serde_json::from_str(json) {
         Ok(req) => req,
-        Err(e) => return Err(HttpClientError::BadJson {
-            json: json.to_string(),
-            error: format!("{}", e) }
-        ),
+        Err(e) => {
+            return Err(HttpClientError::BadJson {
+                json: json.to_string(),
+                error: format!("{}", e),
+            })
+        }
     };
 
     let client = reqwest::Client::new();
@@ -100,20 +109,24 @@ async fn handle_message(
         "POST" => client.post(req.uri),
         "DELETE" => client.delete(req.uri),
         method => {
-            return Err(HttpClientError::BadMethod { method: method.into() });
+            return Err(HttpClientError::BadMethod {
+                method: method.into(),
+            });
         }
     };
 
     let request = request_builder
         .headers(deserialize_headers(req.headers))
-        .body(req.body.clone())
+        .body(body.unwrap_or(vec![]))
         .build()
         .unwrap();
 
     let response = match client.execute(request).await {
         Ok(response) => response,
         Err(e) => {
-            return Err(HttpClientError::RequestFailed { error: format!("{}", e) });
+            return Err(HttpClientError::RequestFailed {
+                error: format!("{}", e),
+            });
         }
     };
 
@@ -124,11 +137,14 @@ async fn handle_message(
 
     let message = KernelMessage {
         id,
-        source,
+        source: Address {
+            node: our,
+            process: ProcessId::Name("http_client".to_string()),
+        },
         target,
         rsvp: None,
-        message: Message::Response((Ok(
-            Response {
+        message: Message::Response((
+            Ok(Response {
                 ipc: Some(serde_json::to_string(&http_client_response).unwrap()),
                 metadata: None,
             }),
@@ -196,10 +212,13 @@ fn make_error_message(
             process: source.process.clone(),
         },
         rsvp: None,
-        message: Message::Response((Err(UqbarError {
-            kind: error.kind().into(),
-            message: Some(serde_json::to_string(&error).unwrap()),  //  TODO: handle error?
-        }), None)),
+        message: Message::Response((
+            Err(UqbarError {
+                kind: error.kind().into(),
+                message: Some(serde_json::to_string(&error).unwrap()), //  TODO: handle error?
+            }),
+            None,
+        )),
         payload: None,
     }
 }

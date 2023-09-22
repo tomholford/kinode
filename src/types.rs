@@ -1,6 +1,9 @@
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -94,7 +97,7 @@ impl PartialEq<u64> for ProcessId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Address {
     pub node: String,
     pub process: ProcessId,
@@ -124,6 +127,21 @@ pub struct Response {
 pub enum Message {
     Request(Request),
     Response((Result<Response, UqbarError>, Option<Context>)),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct Capability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignedCapability {
+    pub issuer: Address,
+    pub label: String,
+    pub params: Option<String>, // JSON-string
+    pub signature: Vec<u8>,     // signed by the kernel, so we can verify that the kernel issued it
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -231,6 +249,7 @@ pub enum KernelCommand {
         name: Option<String>,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
+        initial_capabilities: HashSet<Capability>,
     },
     KillProcess(ProcessId), // this is extrajudicial killing: we might lose messages!
     RebootProcess {
@@ -238,8 +257,15 @@ pub enum KernelCommand {
         process_id: ProcessId,
         wasm_bytes_handle: u128,
         on_panic: OnPanic,
+        initial_capabilities: HashSet<Capability>,
     },
     Shutdown,
+    // capabilities creation
+    GrantCapability {
+        to_process: ProcessId,
+        label: String,
+        params: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -260,34 +286,47 @@ pub enum KernelResponse {
 pub enum FsAction {
     Write,
     Replace(u128),
+    WriteOffset((u128, u64)),
     Append(Option<u128>),
     Read(u128),
     ReadChunk(ReadChunkRequest),
     Delete(u128),
     Length(u128),
-    //  process state management
+    SetLength((u128, u64)),
     GetState,
     SetState,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReadChunkRequest {
-    pub file_uuid: u128,
+    pub file: u128,
     pub start: u64,
     pub length: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FsResponse {
-    //  bytes are in payload_bytes
+    Write(u128),
     Read(u128),
     ReadChunk(u128),
-    Write(u128),
     Append(u128),
     Delete(u128),
     Length(u64),
     GetState,
-    SetState, //  use FileSystemError
+    SetState,
+}
+
+impl VfsError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            VfsError::BadDescriptor => "BadDescriptor",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsError {
+    BadDescriptor,
 }
 
 impl FileSystemError {
@@ -435,6 +474,109 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsRequest {
+    New {
+        identifier: String,
+    },
+    Add {
+        identifier: String,
+        full_path: String,
+        entry_type: AddEntryType,
+    },
+    Rename {
+        identifier: String,
+        full_path: String,
+        new_full_path: String,
+    },
+    Delete {
+        identifier: String,
+        full_path: String,
+    },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
+    GetPath {
+        identifier: String,
+        hash: u128,
+    },
+    GetEntry {
+        identifier: String,
+        full_path: String,
+    },
+    GetFileChunk {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        identifier: String,
+        full_path: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AddEntryType {
+    Dir,
+    NewFile, //  add a new file to fs and add name in vfs
+    ExistingFile { hash: u128 }, //  link an existing file in fs to a new name in vfs
+             //  ...  //  symlinks?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum GetEntryType {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsResponse {
+    New {
+        identifier: String,
+    },
+    Add {
+        identifier: String,
+        full_path: String,
+    },
+    Rename {
+        identifier: String,
+        new_full_path: String,
+    },
+    Delete {
+        identifier: String,
+        full_path: String,
+    },
+    GetPath {
+        identifier: String,
+        hash: u128,
+        full_path: Option<String>,
+    },
+    GetEntry {
+        identifier: String,
+        full_path: String,
+        children: Vec<String>,
+    },
+    GetFileChunk {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
+    GetEntryLength {
+        identifier: String,
+        full_path: String,
+        length: u64,
+    },
+}
+
 //
 // http_client.rs types
 //
@@ -444,7 +586,6 @@ pub struct HttpClientRequest {
     pub uri: String,
     pub method: String,
     pub headers: HashMap<String, String>,
-    pub body: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -497,9 +638,40 @@ impl std::fmt::Display for KernelMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "{{ id: {}, source: {:?}, target: {:?}, rsvp: {:?}, message: {:?} }}",
+            "{{\n    id: {},\n    source: {},\n    target: {},\n    rsvp: {:?},\n    message: {}\n}}",
             self.id, self.source, self.target, self.rsvp, self.message,
         )
+    }
+}
+
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Message::Request(request) => write!(
+                f,
+                "Request(\n    inherit: {},\n    expects_response: {},\n    ipc: {},\n    metadata: {}\n)",
+                request.inherit,
+                request.expects_response,
+                &request.ipc.as_ref().unwrap_or(&"None".into()),
+                &request.metadata.as_ref().unwrap_or(&"None".into()),
+            ),
+            Message::Response((response, context)) => match response {
+                Ok(response) => write!(
+                    f,
+                    "Response(\n    ipc: {},\n    metadata: {},\n    context: {}\n)",
+                    &response.ipc.as_ref().unwrap_or(&"None".into()),
+                    &response.metadata.as_ref().unwrap_or(&"None".into()),
+                    &context.as_ref().unwrap_or(&"None".into()),
+                ),
+                Err(error) => write!(
+                    f,
+                    "Response(\n    kind: {},\n    message: {},\n    context: {}\n)",
+                    error.kind,
+                    &error.message.as_ref().unwrap_or(&"None".into()),
+                    &context.as_ref().unwrap_or(&"None".into()),
+                ),
+            },
+        }
     }
 }
 
@@ -542,8 +714,8 @@ impl HttpServerError {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
-  pub username: String,
-  pub expiration: u64,
+    pub username: String,
+    pub expiration: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -586,9 +758,9 @@ pub struct ServerAction {
 pub enum HttpServerMessage {
     WebSocketPush(WebSocketPush),
     ServerAction(ServerAction),
-    WsRegister(WsRegister), // Coming from a proxy
-    WsProxyDisconnect(WsProxyDisconnect), // Coming from a proxy
-    WsMessage(WsMessage), // Coming from a proxy
+    WsRegister(WsRegister),                 // Coming from a proxy
+    WsProxyDisconnect(WsProxyDisconnect),   // Coming from a proxy
+    WsMessage(WsMessage),                   // Coming from a proxy
     EncryptedWsMessage(EncryptedWsMessage), // Coming from a proxy
 }
 
@@ -621,7 +793,7 @@ pub struct EncryptedWsMessage {
     pub channel_id: String,
     pub target: Address,
     pub encrypted: String, // Encrypted JSON as hex with the 32-byte authentication tag appended
-    pub nonce: String, // Hex of the 12-byte nonce
+    pub nonce: String,     // Hex of the 12-byte nonce
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

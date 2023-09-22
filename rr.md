@@ -62,3 +62,39 @@ It is possible to use both the payload field and the IPC field of a message at t
 Messages that result in networking failures are returned to the process that created them, as an Error. There are two kinds of networking errors: Offline and Timeout. Offline means the remote target node cannot be reached. Timeout means that the target node is reachable, but the message was not sent within 5 seconds. (THIS NUMBER SUBJECT TO CHANGE, COULD BE UP TO 30)
 
 A network error will give the process the original message along with any payload or context, so the process can handle re-sending, crashing, or otherwise dealing with the failure as it sees fit. If the error comes from a response, the process may send a response again: it will be directed towards the original outstanding request that the failed response was for.
+
+### Capabilities
+
+Processes, and apps composed of them, must acquire capabilities from the system in order to perform system-level operations. Processes themselves can also produce capabilities in order to give them to other processes. For more information about the general capabilities-based security paradigm, [insert link to good article here].
+
+Examples of capabilities:
+
+- access to files:
+    When a file is saved by a process, the filesystem returns a handle to that file upon success. This handle is the only way to read or write to that file. The process can clone the handle and share it via message with another process, or split the handle and only clone and share the 'read' or 'write' aspect.
+
+- access to networking:
+    TODO does a process need a cap granted to it at launch to "do networking"?
+
+- access to other processes:
+
+    ```rust
+    pub struct Address {
+        pub node: String,
+        pub process: ProcessId,
+    }
+    ```
+
+    Instead of `target` being a mere `Address` struct, a process must have a `Capability` in order to create a message directed at another process. Since this is such a common capability, we can have special affordances to make it as ergonomic as using an `Address`. Literally, the process can be written as though it simply uses Address structs in its messaging, and the kernel can interpolate them with matching CapAddress structs that it stores next to the running process.
+
+    ```rust
+    pub struct CapAddress {
+        pub node: String,
+        pub process: ProcessId,
+        issuer: Address,
+        signature: String,
+    }
+    ```
+
+    When a process starts, we need some kind of way for it to "request" certain capabilities that it requires for operation. This bubbles up all the way to top-level user-facing UX: it's similar to installing an iOS app and seeing it request camera and microphone access.
+
+    "This app wants to send messages to apps X, Y, and Z, and access your wallet...etc"

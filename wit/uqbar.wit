@@ -53,6 +53,19 @@ interface types {
         response(tuple<result<response, uqbar-error>, option<context>>),
     }
 
+    variant capabilities {
+        none,
+        all,
+        some(list<signed-capability>),
+    }
+
+    record signed-capability {
+        issuer: address,
+        label: string,
+        params: option<json>,
+        signature: list<u8>,
+    }
+
     record uqbar-error {
         kind: string,
         message: option<json>,
@@ -97,6 +110,9 @@ world uq-process {
         response,
         message,
 
+        capabilities,
+        signed-capability,
+
         uqbar-error,
         network-error,
         network-error-kind,
@@ -116,8 +132,16 @@ world uq-process {
 
     import set-on-panic: func(on-panic: on-panic)
 
-    // maybe have this?
-    // import spawn: func(id: process-id, request: option<request>) -> result<process-id, uqbar-error>
+    // what should bytes_uri be?? need vfs?
+    import spawn: func(id: process-id, bytes-uri: string, on-panic: on-panic, capabilities: capabilities) ->
+        result<process-id, uqbar-error>
+
+    // capabilities management
+
+    // gives us all our signed capabilities so we can send them to others
+    import get-capabilities: func() -> list<signed-capability>
+    import save-capabilities: func(capabilities: list<signed-capability>)
+    import get-capability: func(issuer: address, label: string, params: option<json>) -> option<signed-capability>
 
     // message I/O:
 
@@ -137,8 +161,8 @@ world uq-process {
     // send a single request, then block (internally) until its response
     // the type is Message but will always contain Response
     import send-and-await-response:
-        func(target: address, request: request, context: option<context>, payload: option<payload>) ->
-            result<tuple<address, message>, tuple<network-error, option<context>>>
+        func(target: address, request: request, payload: option<payload>) ->
+            result<tuple<address, message>, network-error>
 
     //  wasi
     import wasi:random/insecure

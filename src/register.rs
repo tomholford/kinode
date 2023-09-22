@@ -3,14 +3,20 @@ use aes_gcm::{
     Aes256Gcm,
     Key, // Or `Aes128Gcm`
 };
+use hmac::Hmac;
+use jwt::SignWithKey;
 use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
+use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use warp::{Filter, Rejection, Reply, http::{header::{HeaderValue, SET_COOKIE}}};
+use warp::{
+    http::header::{HeaderValue, SET_COOKIE},
+    Filter, Rejection, Reply,
+};
 use jwt::SignWithKey;
 use hmac::Hmac;
 use sha2::Sha256;
@@ -166,13 +172,18 @@ async fn handle_put(
     let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &our.name, &token);
 
     let mut response = warp::reply::html("Success".to_string()).into_response();
-            
+
     let headers = response.headers_mut();
     headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
-        .send((our, pw, networking_keypair, jwt_secret.to_vec()))
+        .send((
+            our,
+            pw,
+            networking_keypair,
+            jwt_secret.to_vec()
+        ))
         .await
         .unwrap();
     Ok(response)
@@ -190,22 +201,25 @@ pub async fn login(
     let username = username.to_string();
     let login_page_content = include_str!("login.html");
     let personalized_login_page = login_page_content.replace("${our}", username.as_str());
-    let redirect_to_login = warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
-    let routes = warp::path("login").and(
-        // 1. serve login.html right here
-        warp::get()
-            .map(move || warp::reply::html(personalized_login_page.clone()))
-            // 2. await a single POST
-            //    - password
-            .or(warp::post()
-                .and(warp::body::content_length_limit(1024 * 16))
-                .and(warp::body::json())
-                .and(warp::any().map(move || keyfile.clone()))
-                .and(warp::any().map(move || jwt_secret_file.clone()))
-                .and(warp::any().map(move || username.clone()))
-                .and(warp::any().map(move || tx.clone()))
-                .and_then(handle_login)),
-    ).or(redirect_to_login);
+    let redirect_to_login =
+        warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
+    let routes = warp::path("login")
+        .and(
+            // 1. serve login.html right here
+            warp::get()
+                .map(move || warp::reply::html(personalized_login_page.clone()))
+                // 2. await a single POST
+                //    - password
+                .or(warp::post()
+                    .and(warp::body::content_length_limit(1024 * 16))
+                    .and(warp::body::json())
+                    .and(warp::any().map(move || keyfile.clone()))
+                    .and(warp::any().map(move || jwt_secret_file.clone()))
+                    .and(warp::any().map(move || username.clone()))
+                    .and(warp::any().map(move || tx.clone()))
+                    .and_then(handle_password)),
+        )
+        .or(redirect_to_login);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)
@@ -274,12 +288,14 @@ async fn handle_login(
     let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &username, &token);
 
     let mut response = warp::reply::html("Success".to_string()).into_response();
-            
+
     let headers = response.headers_mut();
     headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
-    
-    tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
+
+    tx.send((networking_keypair, jwt_secret_bytes))
+        .await
+        .unwrap();
     // TODO unhappy paths where key has changed / can't be decrypted
     Ok(response)
 }

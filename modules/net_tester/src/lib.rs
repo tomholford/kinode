@@ -1,7 +1,8 @@
 cargo_component_bindings::generate!();
 
-use bindings::component::microkernel_process::types;
-use serde_json::*;
+use bindings::component::uq_process::types::*;
+use bindings::{print_to_terminal, receive, send_requests, Guest};
+use serde_json::{from_str, to_string, Value};
 
 struct Component;
 
@@ -10,40 +11,36 @@ struct Component;
  *  each chunk is "size" field bytes large
  *  format: !message our net_tester {"chunks": 1, "size": 65536, "target": "tester3"}
  */
-impl bindings::MicrokernelProcess for Component {
-    fn run_process(our: types::ProcessAddress) {
-        bindings::print_to_terminal(0, "net_tester: init");
+impl Guest for Component {
+    fn init(our: Address) {
+        print_to_terminal(0, "net_tester: init");
         loop {
-            let (inbound, _) = bindings::receive().unwrap();
-            let command = match inbound {
-                types::InboundMessage::Request(request) => request.payload,
-                _ => continue,
-            };
-            if command.source.node != our.node {
-                bindings::print_to_terminal(
-                    0,
-                    format!(
-                        "net_tester: got message {} from {}",
-                        command.json.unwrap(),
-                        command.source.node,
-                    )
-                    .as_str(),
-                );
-                continue;
-            } else if let types::ProcessIdentifier::Name(name) = command.source.identifier {
-                if name != "terminal" {
-                    bindings::print_to_terminal(
-                        0,
-                        format!(
-                            "net_tester: got message {} from {}",
-                            command.json.unwrap(),
-                            name,
-                        )
-                        .as_str(),
-                    );
+            let (source, message) = match receive() {
+                Ok((source, message)) => (source, message),
+                Err((e, _context)) => {
+                    print_to_terminal(0, &format!("net_tester: got network error: {:?}", e.kind));
                     continue;
                 }
-                let command: Value = from_str(&command.json.unwrap()).unwrap();
+            };
+            let Message::Request(request) = message else {
+                print_to_terminal(0, "net_tester: got unexpected non-Request");
+                continue;
+            };
+            if source.node != our.node {
+                print_to_terminal(
+                    0,
+                    &format!(
+                        "net_tester: got message #{} from {}",
+                        request.ipc.unwrap_or_default(),
+                        source.node,
+                    ),
+                );
+                continue;
+            } else if let ProcessId::Name(name) = source.process {
+                if name != "terminal" {
+                    continue;
+                }
+                let command: Value = from_str(&request.ipc.unwrap_or_default()).unwrap();
                 // read size of transfer to test and do it
                 bindings::print_to_terminal(
                     0,
@@ -53,24 +50,28 @@ impl bindings::MicrokernelProcess for Component {
                 let chunk: Vec<u8> = vec![0xfu8; command["size"].as_u64().unwrap() as usize];
                 let target = command["target"].as_str().unwrap();
 
-                let mut messages = Vec::new();
+                let mut messages =
+                    Vec::<(Address, Request, Option<Context>, Option<Payload>)>::new();
                 for num in 1..chunks + 1 {
                     messages.push((
-                        vec![types::OutboundRequest {
-                            is_expecting_response: false,
-                            target: types::ProcessReference {
-                                node: target.into(),
-                                identifier: types::ProcessIdentifier::Name("net_tester".into()),
-                            },
-                            payload: types::OutboundPayload {
-                                json: None,
-                                bytes: types::OutboundPayloadBytes::Some(chunk.clone()),
-                            },
-                        }],
-                        "".into(),
+                        Address {
+                            node: target.into(),
+                            process: ProcessId::Name("net_tester".into()),
+                        },
+                        Request {
+                            inherit: false,
+                            expects_response: false,
+                            ipc: Some(num.to_string()),
+                            metadata: None,
+                        },
+                        None,
+                        Some(Payload {
+                            mime: None,
+                            bytes: chunk.clone(),
+                        }),
                     ));
                 }
-                bindings::send(Ok(&types::OutboundMessage::Requests(messages)));
+                send_requests(&messages);
                 continue;
             }
         }

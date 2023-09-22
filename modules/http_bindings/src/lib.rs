@@ -18,6 +18,7 @@ struct Component;
 struct BoundPath {
     app: String,
     authenticated: bool,
+    local_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,7 +120,7 @@ impl Guest for Component {
         );
 
         loop {
-            let Ok((_source, message)) = receive() else {
+            let Ok((source, message)) = receive() else {
                 print_to_terminal(0, "http_bindings: got network error");
                 continue;
             };
@@ -143,9 +144,12 @@ impl Guest for Component {
             };
 
             let action = message_json["action"].as_str().unwrap_or("");
-            // Safely unwrap the path as a string
+            let address = message_json["address"].as_str().unwrap_or(""); // origin HTTP address
             let path = message_json["path"].as_str().unwrap_or("");
-            let app = message_json["app"].as_str().unwrap_or("");
+            let app = match source.process {
+                ProcessId::Name(name) => name,
+                _ => "".to_string(),
+            };
 
             print_to_terminal(1, "http_bindings: got message");
 
@@ -175,7 +179,7 @@ impl Guest for Component {
                 print_to_terminal(1, "http_bindings: binding app 1");
                 let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
                 if app != "apps_home" && (path_segments.is_empty() || path_segments[0] != app.clone().replace("_", "-")) {
-                    print_to_terminal(1, "http_bindings: first path segment does not match process");
+                    print_to_terminal(1, format!("http_bindings: first path segment does not match process: {}", path).as_str());
                     continue;
                 } else {
                     print_to_terminal(1, format!("http_bindings: binding app 2 {}", path.to_string()).as_str());
@@ -183,6 +187,7 @@ impl Guest for Component {
                         BoundPath {
                             app: app.to_string(),
                             authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
+                            local_only: message_json.get("local_only").and_then(|v| v.as_bool()).unwrap_or(false),
                         }
                     });
                 }
@@ -375,6 +380,7 @@ impl Guest for Component {
                         registered_path = key;
                         break;
                     }
+                    url_params = HashMap::new();
                 }
 
                 print_to_terminal(1, &("http_bindings: registered path ".to_string() + registered_path));
@@ -388,7 +394,6 @@ impl Guest for Component {
                             print_to_terminal(1, "AUTHENTICATED ROUTE");
                             let auth_success = match jwt_secret.clone() {
                                 Some(secret) => {
-                                    print_to_terminal(1, "HAVE SECRET");
                                     auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
                                 },
                                 None => {
@@ -419,6 +424,15 @@ impl Guest for Component {
                                 }, "Auth cookie not valid".as_bytes().to_vec());
                                 continue;
                             }
+                        }
+
+                        if bound_path.local_only && !address.starts_with("127.0.0.1:") {
+                            send_http_response(message_json["id"].to_string(), 403, {
+                                let mut headers = HashMap::new();
+                                headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                headers
+                            }, "<h1>Localhost Origin Required</h1>".as_bytes().to_vec());
+                            continue;
                         }
 
                         // import send-request: func(target: address, request: request, context: option<context>, payload: option<payload>)

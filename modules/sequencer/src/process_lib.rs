@@ -35,7 +35,7 @@ pub fn send_and_await_response(
     ipc: Option<Json>,
     metadata: Option<Json>,
     payload: Option<&Payload>,
-) -> Result<(Address, Message), NetworkError> {
+) -> Result<(Address, Message), (NetworkError, Option<Context>)> {
     super::bindings::send_and_await_response(
         target,
         &Request {
@@ -44,6 +44,7 @@ pub fn send_and_await_response(
             ipc,
             metadata,
         },
+        None,
         payload,
     )
 }
@@ -91,6 +92,7 @@ pub fn set_state(
 pub fn await_set_state<T>(
     our: String,
     state: &T,
+    // bytes: Vec<u8>,
 ) -> Result<(), UqbarError>
 where
     T: serde::Serialize,
@@ -118,17 +120,6 @@ where
             }
         },
     }
-}
-
-pub fn parse_message_ipc<T>(json_string: Option<String>) -> anyhow::Result<T>
-where
-    for<'a> T: serde::Deserialize<'a>
-{
-    let parsed: T = serde_json::from_str(
-        json_string.ok_or(anyhow::anyhow!("json payload empty"))?
-                   .as_str()
-    )?;
-    Ok(parsed)
 }
 
 //  move these to better place!

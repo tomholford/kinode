@@ -7,3 +7,4 @@ blockchain.json
 modules/**/wit
 target.wasm
 world
+uqbar-book/book

@@ -9,27 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4668cab20f66d8d020e1fbc0ebe47217433c1b6c8f2040faf858554e394ace6"
 
 [[package]]
-name = "apps_home"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "cargo-component-bindings",
- "serde",
- "serde_json",
- "wit-bindgen 0.9.0",
-]
-
-[[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -145,6 +124,15 @@ name = "memchr"
 version = "2.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f232d6ef707e1956a43342693d2a31e72989554d58299d7a88738cc95b0d35c"
+
+[[package]]
+name = "net_tester"
+version = "0.1.0"
+dependencies = [
+ "cargo-component-bindings",
+ "serde_json",
+ "wit-bindgen 0.9.0",
+]
 
 [[package]]
 name = "percent-encoding"

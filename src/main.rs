@@ -20,16 +20,16 @@ use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
 mod eth_rpc;
+mod encryptor;
 mod filesystem;
 mod http_client;
 mod http_server;
 mod kernel;
-mod lfs;
 mod net;
 mod register;
 mod terminal;
 mod types;
-mod encryptor;
+mod vfs;
 
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
@@ -39,6 +39,7 @@ const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
 const ETH_RPC_CHANNEL_CAPACITY: usize = 32;
+const VFS_CHANNEL_CAPACITY: usize = 1_000;
 const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 
 const QNS_ADDRESS: &str = "0xb598fe1771DB7EcF2AeD06f082dE1030CA0BF1DA";
@@ -80,19 +81,19 @@ async fn main() {
     // filesystem receives request messages via this channel, kernel sends messages
     let (fs_message_sender, fs_message_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY.clone());
-    // new FS channel: todo merge
-    let (lfs_message_sender, lfs_message_receiver): (MessageSender, MessageReceiver) =
-        mpsc::channel(FILESYSTEM_CHANNEL_CAPACITY);
     // http server channel w/ websockets (eyre)
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
     let (eth_rpc_sender, eth_rpc_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(ETH_RPC_CHANNEL_CAPACITY);
-    let (http_client_sender, http_client_receiver): (MessageSender,MessageReceiver) =
+    let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
+    // vfs maintains metadata about files in fs for processes
+    let (vfs_message_sender, vfs_message_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(VFS_CHANNEL_CAPACITY);
     // encryptor handles end-to-end encryption for client messages
-    let (encryptor_sender, encryptor_receiver): (MessageSender,MessageReceiver ) =
+    let (encryptor_sender, encryptor_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(ENCRYPTOR_CHANNEL_CAPACITY);
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
@@ -294,7 +295,6 @@ async fn main() {
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes.to_vec())
     };
-
     //  bootstrap FS.
     let _ = print_sender
         .send(Printout {
@@ -303,8 +303,8 @@ async fn main() {
         })
         .await;
 
-    let (kernel_process_map, manifest, wal, fs_directory) =
-        lfs::bootstrap(home_directory_path.clone())
+    let (kernel_process_map, manifest) =
+        filesystem::bootstrap(our.name.clone(), home_directory_path.clone())
             .await
             .expect("fs bootstrap failed!");
 
@@ -333,8 +333,9 @@ async fn main() {
     let mut tasks = tokio::task::JoinSet::<Result<()>>::new();
     tasks.spawn(kernel::kernel(
         our.clone(),
+        networking_keypair_arc.clone(),
         home_directory_path.into(),
-        kernel_process_map,
+        kernel_process_map.clone(),
         kernel_message_sender.clone(),
         print_sender.clone(),
         kernel_message_receiver,
@@ -342,10 +343,10 @@ async fn main() {
         kernel_debug_message_receiver,
         net_message_sender.clone(),
         fs_message_sender,
-        lfs_message_sender,
         http_server_sender,
         http_client_sender,
         eth_rpc_sender,
+        vfs_message_sender,
         encryptor_sender,
     ));
     tasks.spawn(net::networking(
@@ -359,19 +360,10 @@ async fn main() {
     ));
     tasks.spawn(filesystem::fs_sender(
         our.name.clone(),
-        home_directory_path.into(),
+        manifest,
         kernel_message_sender.clone(),
         print_sender.clone(),
         fs_message_receiver,
-    ));
-    tasks.spawn(lfs::fs_sender(
-        our.name.clone(),
-        fs_directory,
-        manifest,
-        wal,
-        kernel_message_sender.clone(),
-        print_sender.clone(),
-        lfs_message_receiver,
     ));
     tasks.spawn(http_server::http_server(
         our.name.clone(),
@@ -393,6 +385,12 @@ async fn main() {
         kernel_message_sender.clone(),
         eth_rpc_receiver,
         print_sender.clone(),
+    tasks.spawn(vfs::vfs(
+        our.name.clone(),
+        kernel_process_map,
+        kernel_message_sender.clone(),
+        print_sender.clone(),
+        vfs_message_receiver,
     ));
     tasks.spawn(encryptor::encryptor(
         our.name.clone(),

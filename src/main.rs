@@ -3,6 +3,8 @@ use aes_gcm::{
     Aes256Gcm, Key,
 };
 use anyhow::Result;
+use ethers::prelude::{Provider, Address as EthAddress, U256, abigen, namehash};
+use ethers_providers::{Ws};
 use lazy_static::__Deref;
 use reqwest;
 use ring::pbkdf2;
@@ -39,9 +41,13 @@ const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
 const ETH_RPC_CHANNEL_CAPACITY: usize = 32;
 const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 
+const QNS_ADDRESS: &str = "0xb598fe1771DB7EcF2AeD06f082dE1030CA0BF1DA";
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
+
+abigen!(QNSRegistry, "src/QNSRegistry.json");
 
 #[tokio::main]
 async fn main() {
@@ -127,56 +133,99 @@ async fn main() {
     ) = if keyfile.is_ok() {
         // LOGIN flow
         // get username, keyfile, and jwt_secret from disk
-        // let (username, key, jwt_secret) =
-        //     bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+        let (username, routers, key, jwt_secret) =
+            bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
 
-        // println!(
-        //     "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-        //     format!("http://localhost:{}/login", http_server_port),
-        //     format!(
-        //         "Welcome back, {}. Click here to log in to your node.",
-        //         username
-        //     ),
-        // );
-        // println!("(http://localhost:{}/login)", http_server_port);
-        // if our_ip != "localhost" {
-        //     println!(
-        //         "(if on a remote machine: http://{}:{}/login)",
-        //         our_ip, http_server_port
-        //     );
-        // }
+        println!("username: {:?}", username);
+        println!("routers: {:?}", routers);
 
-        // let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
-        // let (networking_keypair, jwt_secret_bytes) = tokio::select! {
-        //     _ = register::login(
-        //         tx,
-        //         kill_rx,
-        //         key,
-        //         jwt_secret,
-        //         http_server_port,
-        //         &username
-        //     ) => panic!("login failed"),
-        //     (networking_keypair, jwt_secret_bytes) = async {
-        //         while let Some(fin) = rx.recv().await {
-        //             return fin
-        //         }
-        //         panic!("login failed")
-        //     } => (networking_keypair, jwt_secret_bytes),
-        // };
+        println!(
+            "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
+            format!("http://localhost:{}/login", http_server_port),
+            format!(
+                "Welcome back, {}. Click here to log in to your node.",
+                username
+            ),
+        );
+        println!("(http://localhost:{}/login)", http_server_port);
+        if our_ip != "localhost" {
+            println!(
+                "(if on a remote machine: http://{}:{}/login)",
+                our_ip, http_server_port
+            );
+        }
 
-        // // check if Identity for this username has correct networking keys,
-        // // if not, prompt user to reset them.
-        // // TODO this should be decrypted from disk
-        // let our_identity = Identity {
-        //     name: username.clone(),
-        //     address: "0x0".into(),
-        //     networking_key: hex::encode(networking_keypair.public_key().as_ref()),
-        //     ws_routing: None,
-        //     allowed_routers: vec![],
-        // };
+        let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
+        let (networking_keypair, jwt_secret_bytes) = tokio::select! {
+            _ = register::login(
+                tx,
+                kill_rx,
+                key,
+                jwt_secret,
+                http_server_port,
+                &username
+            ) => panic!("login failed"),
+            (networking_keypair, jwt_secret_bytes) = async {
+                while let Some(fin) = rx.recv().await {
+                    return fin
+                }
+                panic!("login failed")
+            } => (networking_keypair, jwt_secret_bytes),
+        };
 
-        // (our_identity.clone(), networking_keypair, jwt_secret_bytes)
-        panic!("TODO LOGIN NOT IMPLEMENTED YET")
+        // check if Identity for this username has correct networking keys,
+        // if not, prompt user to reset them.
+        // TODO this should be read and filled in from chain
+        // 
+        let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
+            panic!("eth_rpc: couldn't connect to ws endpoint");
+        };
+        let qns_address: EthAddress = QNS_ADDRESS.parse().unwrap();
+        let contract = QNSRegistry::new(qns_address, ws_rpc.into());
+        let node_id: U256 = namehash(&username).as_bytes().into();
+        let onchain_id = contract.ws(node_id).call().await.unwrap(); // TODO unwrap
+
+        // double check that keys match on-chain information
+        if (onchain_id.public_key != networking_keypair.public_key().as_ref()) {
+            panic!("CRITICAL: your networking keys do not match what is on-chain.");
+        }
+
+        // double check that routers match on-chain information
+        let namehashed_routers: Vec<[u8; 32]> = routers
+            .clone()
+            .into_iter()
+            .map(|name| {
+                let hash = namehash(&name);
+                let mut result = [0u8; 32];
+                result.copy_from_slice(hash.as_bytes());
+                result
+            })
+            .collect();
+
+        if (onchain_id.routers != namehashed_routers) {
+            panic!("CRITICAL: your routing information does not match what is on-chain.");
+        }
+
+        let our_identity = Identity {
+            name: username.clone(),
+            address: "0x0".into(), // TODO
+            networking_key: hex::encode(networking_keypair.public_key().as_ref()),
+            ws_routing: if (onchain_id.ip_and_port > 0) {
+                let port = (onchain_id.ip_and_port & 0xFFFF) as u16;
+                let ip_num = (onchain_id.ip_and_port >> 16) as u32;
+                let ip = format!(
+                    "{}.{}.{}.{}",
+                    (ip_num >> 24) & 0xFF,
+                    (ip_num >> 16) & 0xFF,
+                    (ip_num >> 8) & 0xFF,
+                    ip_num & 0xFF
+                );
+                Some((ip, port))
+            } else { None },
+            allowed_routers: routers,
+        };
+
+        (our_identity.clone(), networking_keypair, jwt_secret_bytes)
     } else {
         // REGISTER flow
         println!(
@@ -220,7 +269,7 @@ async fn main() {
         let key = Key::<Aes256Gcm>::from_slice(&disk_key);
         let cipher = Aes256Gcm::new(&key);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-        let ciphertext: Vec<u8> = cipher
+        let keyciphertext: Vec<u8> = cipher
             .encrypt(&nonce, serialized_networking_keypair.as_ref())
             .unwrap();
 
@@ -230,7 +279,8 @@ async fn main() {
             format!("{}/.network.keys", home_directory_path),
             bincode::serialize(&(
                 our.name.clone(),
-                [nonce.deref().to_vec(), ciphertext].concat(),
+                our.allowed_routers.clone(),
+                [nonce.deref().to_vec(), keyciphertext].concat(),
                 [nonce.deref().to_vec(), jwtciphertext].concat(),
             ))
             .unwrap(),

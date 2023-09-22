@@ -133,17 +133,17 @@ async fn handle_post(
         },
         allowed_routers: if ip == "localhost" || !info.direct {
             vec![
-                "0xdaff2c4fc9d5e4c8d899e5e98cbdcdbebe7e0d0877fa9192fbd93683d4071820".into(), // "rolr1".into(),
-                "0xc9e0421b35a8fa2683b6e21a8f38cac49cbdbb24fd93ebb9ee2126161709db91".into(), // "rolr2".into(),
-                "0x5a8721920996c1e45762513dff2d2007749e7afe90b8fec679d36ec91e330352".into(), // "rolr3".into()
-            ] // TODO fix these
+                "uqbar-router-1.uq".into(), // "0x8d9e54427c50660c6d4802f63edca86a9ca5fd6a78070c4635950e9d149ed441".into(),
+                "uqbar-router-2.uq".into(), // "0x06d331ed65843ecf0860c73292005d8103af20820546b2f8f9007d01f60595b1".into(),
+                "uqbar-router-3.uq".into(), // "0xe6ab611eb62e8aee0460295667f8179cda4315982717db4b0b3da6022deecac1".into(),
+            ]
         } else {
             vec![]
         },
     };
     *our_post.lock().unwrap() = Some(our.clone());
     *pw_post.lock().unwrap() = Some(info.password);
-    // Return a response to the POST request containing all networking information
+    // Return a response containing all networking information
     Ok(warp::reply::json(&our))
 }
 
@@ -179,107 +179,107 @@ async fn handle_put(
 }
 
 // Serve the login page, just get a password
-// pub async fn login(
-//     tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
-//     kill_rx: oneshot::Receiver<bool>,
-//     keyfile: Vec<u8>,
-//     jwt_secret_file: Vec<u8>,
-//     port: u16,
-//     username: &str,
-// ) {
-//     let username = username.to_string();
-//     let login_page_content = include_str!("login.html");
-//     let personalized_login_page = login_page_content.replace("${our}", username.as_str());
-//     let redirect_to_login = warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
-//     let routes = warp::path("login").and(
-//         // 1. serve login.html right here
-//         warp::get()
-//             .map(move || warp::reply::html(personalized_login_page.clone()))
-//             // 2. await a single POST
-//             //    - password
-//             .or(warp::post()
-//                 .and(warp::body::content_length_limit(1024 * 16))
-//                 .and(warp::body::json())
-//                 .and(warp::any().map(move || keyfile.clone()))
-//                 .and(warp::any().map(move || jwt_secret_file.clone()))
-//                 .and(warp::any().map(move || username.clone()))
-//                 .and(warp::any().map(move || tx.clone()))
-//                 .and_then(handle_login)),
-//     ).or(redirect_to_login);
+pub async fn login(
+    tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
+    kill_rx: oneshot::Receiver<bool>,
+    keyfile: Vec<u8>,
+    jwt_secret_file: Vec<u8>,
+    port: u16,
+    username: &str,
+) {
+    let username = username.to_string();
+    let login_page_content = include_str!("login.html");
+    let personalized_login_page = login_page_content.replace("${our}", username.as_str());
+    let redirect_to_login = warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
+    let routes = warp::path("login").and(
+        // 1. serve login.html right here
+        warp::get()
+            .map(move || warp::reply::html(personalized_login_page.clone()))
+            // 2. await a single POST
+            //    - password
+            .or(warp::post()
+                .and(warp::body::content_length_limit(1024 * 16))
+                .and(warp::body::json())
+                .and(warp::any().map(move || keyfile.clone()))
+                .and(warp::any().map(move || jwt_secret_file.clone()))
+                .and(warp::any().map(move || username.clone()))
+                .and(warp::any().map(move || tx.clone()))
+                .and_then(handle_login)),
+    ).or(redirect_to_login);
 
-//     let _ = open::that(format!("http://localhost:{}/login", port));
-//     warp::serve(routes)
-//         .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
-//             kill_rx.await.ok();
-//         })
-//         .1
-//         .await;
-// }
+    let _ = open::that(format!("http://localhost:{}/login", port));
+    warp::serve(routes)
+        .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
+            kill_rx.await.ok();
+        })
+        .1
+        .await;
+}
 
-// async fn handle_login(
-//     password: serde_json::Value,
-//     keyfile: Vec<u8>,
-//     jwt_secret_file: Vec<u8>,
-//     username: String,
-//     tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
-// ) -> Result<impl Reply, Rejection> {
-//     let password = match password["password"].as_str() {
-//         Some(p) => p,
-//         None => return Err(warp::reject()),
-//     };
-//     // use password to decrypt networking keys
-//     println!("decrypting saved networking key...");
-//     let nonce = digest::generic_array::GenericArray::from_slice(&keyfile[..12]);
+async fn handle_login(
+    password: serde_json::Value,
+    keyfile: Vec<u8>,
+    jwt_secret_file: Vec<u8>,
+    username: String,
+    tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
+) -> Result<impl Reply, Rejection> {
+    let password = match password["password"].as_str() {
+        Some(p) => p,
+        None => return Err(warp::reject()),
+    };
+    // use password to decrypt networking keys
+    println!("decrypting saved networking key...");
+    let nonce = digest::generic_array::GenericArray::from_slice(&keyfile[..12]);
 
-//     let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
-//     pbkdf2::derive(
-//         PBKDF2_ALG,
-//         NonZeroU32::new(ITERATIONS).unwrap(),
-//         DISK_KEY_SALT,
-//         password.as_bytes(),
-//         &mut disk_key,
-//     );
-//     let key = Key::<Aes256Gcm>::from_slice(&disk_key);
-//     let cipher = Aes256Gcm::new(&key);
-//     let pkcs8_string: Vec<u8> = match cipher.decrypt(nonce, &keyfile[12..]) {
-//         Ok(p) => p,
-//         Err(e) => {
-//             println!("failed to decrypt networking keys: {}", e);
-//             return Err(warp::reject());
-//         }
-//     };
-//     let networking_keypair = match signature::Ed25519KeyPair::from_pkcs8(&pkcs8_string) {
-//         Ok(k) => k,
-//         Err(_) => return Err(warp::reject()),
-//     };
+    let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
+    pbkdf2::derive(
+        PBKDF2_ALG,
+        NonZeroU32::new(ITERATIONS).unwrap(),
+        DISK_KEY_SALT,
+        password.as_bytes(),
+        &mut disk_key,
+    );
+    let key = Key::<Aes256Gcm>::from_slice(&disk_key);
+    let cipher = Aes256Gcm::new(&key);
+    let pkcs8_string: Vec<u8> = match cipher.decrypt(nonce, &keyfile[12..]) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("failed to decrypt networking keys: {}", e);
+            return Err(warp::reject());
+        }
+    };
+    let networking_keypair = match signature::Ed25519KeyPair::from_pkcs8(&pkcs8_string) {
+        Ok(k) => k,
+        Err(_) => return Err(warp::reject()),
+    };
 
-//     // TODO: check if jwt_secret_file is valid and then proceed to unwrap and decrypt. If there is a failure, generate a new jwt_secret and save it
-//     // use password to decrypt jwt secret
-//     println!("decrypting saved jwt secret...");
-//     let jwt_nonce = digest::generic_array::GenericArray::from_slice(&jwt_secret_file[..12]);
+    // TODO: check if jwt_secret_file is valid and then proceed to unwrap and decrypt. If there is a failure, generate a new jwt_secret and save it
+    // use password to decrypt jwt secret
+    println!("decrypting saved jwt secret...");
+    let jwt_nonce = digest::generic_array::GenericArray::from_slice(&jwt_secret_file[..12]);
 
-//     let jwt_secret_bytes: Vec<u8> = match cipher.decrypt(jwt_nonce, &jwt_secret_file[12..]) {
-//         Ok(p) => p,
-//         Err(e) => {
-//             println!("failed to decrypt jwt secret: {}", e);
-//             return Err(warp::reject());
-//         }
-//     };
+    let jwt_secret_bytes: Vec<u8> = match cipher.decrypt(jwt_nonce, &jwt_secret_file[12..]) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("failed to decrypt jwt secret: {}", e);
+            return Err(warp::reject());
+        }
+    };
 
-//     let token = match generate_jwt(&jwt_secret_bytes, username.clone()) {
-//         Some(token) => token,
-//         None => return Err(warp::reject()),
-//     };
-//     let cookie_value = format!("uqbar-auth_{}={};", &username, &token);
-//     let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &username, &token);
+    let token = match generate_jwt(&jwt_secret_bytes, username.clone()) {
+        Some(token) => token,
+        None => return Err(warp::reject()),
+    };
+    let cookie_value = format!("uqbar-auth_{}={};", &username, &token);
+    let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &username, &token);
 
-//     let mut response = warp::reply::html("Success".to_string()).into_response();
+    let mut response = warp::reply::html("Success".to_string()).into_response();
             
-//     let headers = response.headers_mut();
-//     headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
-//     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
+    let headers = response.headers_mut();
+    headers.append(SET_COOKIE, HeaderValue::from_str(&cookie_value).unwrap());
+    headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
     
-//     tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
-//     // TODO unhappy paths where key has changed / can't be decrypted
-//     Ok(response)
-// }
+    tx.send((networking_keypair, jwt_secret_bytes)).await.unwrap();
+    // TODO unhappy paths where key has changed / can't be decrypted
+    Ok(response)
+}

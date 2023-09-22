@@ -9,7 +9,7 @@ use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -19,8 +19,8 @@ use warp::{
     Filter, Rejection, Reply,
 };
 
-use crate::types::*;
 use crate::http_server;
+use crate::types::*;
 
 type RegistrationSender = mpsc::Sender<(Identity, String, Document, Vec<u8>)>;
 
@@ -63,8 +63,7 @@ pub async fn register(
     let networking_keypair_post = networking_keypair.clone();
     let seed_post = seed.clone();
 
-    let static_files = warp::path("static")
-        .and(warp::fs::dir("./src/register_app/static/"));
+    let static_files = warp::path("static").and(warp::fs::dir("./src/register_app/static/"));
     let react_app = warp::path("register")
         .and(warp::get())
         .and(warp::fs::file("./src/register_app/index.html"));
@@ -81,15 +80,15 @@ pub async fn register(
             .and(warp::any().map(move || networking_keypair_post.clone()))
             .and_then(handle_post)
             // 2. trigger for finalizing registration once on-chain actions are done
-        .or(warp::put()
-            .and(warp::body::content_length_limit(1024 * 16))
-            .and(warp::any().map(move || tx.clone()))
-            .and(warp::any().map(move || our.lock().unwrap().take().unwrap()))
-            .and(warp::any().map(move || pw.lock().unwrap().take().unwrap()))
-            .and(warp::any().map(move || seed.clone()))
-            .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
-            .and(warp::any().map(move || redir_port))
-            .and_then(handle_put)),
+            .or(warp::put()
+                .and(warp::body::content_length_limit(1024 * 16))
+                .and(warp::any().map(move || tx.clone()))
+                .and(warp::any().map(move || our.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || pw.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || seed.clone()))
+                .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || redir_port))
+                .and_then(handle_put)),
     );
 
     let routes = static_files.or(react_app).or(api);
@@ -112,15 +111,13 @@ async fn handle_post(
     networking_keypair_post: Arc<Mutex<Option<Document>>>,
 ) -> Result<impl Reply, Rejection> {
     // 1. Generate networking keys
-    
-    let serialized_networking_keypair =
-        signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
-    
+
+    let serialized_networking_keypair = signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
+
     let networking_keypair =
         signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
     *networking_keypair_post.lock().unwrap() = Some(serialized_networking_keypair);
-
 
     // 2. generate ws and routing information
     // TODO: if IP is localhost, assign a router...
@@ -160,7 +157,7 @@ async fn handle_put(
 ) -> Result<impl Reply, Rejection> {
     let mut jwt_secret = [0u8; 32];
     ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
-    
+
     let token = match generate_jwt(&jwt_secret, our.name.clone()) {
         Some(token) => token,
         None => return Err(warp::reject()),
@@ -175,12 +172,7 @@ async fn handle_put(
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
-        .send((
-            our,
-            pw,
-            networking_keypair,
-            jwt_secret.to_vec()
-        ))
+        .send((our, pw, networking_keypair, jwt_secret.to_vec()))
         .await
         .unwrap();
     Ok(response)

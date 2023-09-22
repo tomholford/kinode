@@ -171,7 +171,15 @@ async fn sender(
     km: KernelMessage,
 ) {
     if km.target.node == our.name {
-        handle_incoming_message(&our, km, peers.clone(), pki.clone(), names.clone(), print_tx.clone()).await;
+        handle_incoming_message(
+            &our,
+            km,
+            peers.clone(),
+            pki.clone(),
+            names.clone(),
+            print_tx.clone(),
+        )
+        .await;
         return;
     }
     let start = std::time::Instant::now();
@@ -516,9 +524,13 @@ async fn handle_incoming_message(
                         name: log.name,
                         address: log.owner,
                         networking_key: log.public_key,
-                        ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 { None } else { Some((log.ip, log.port)) } ,
+                        ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
+                            None
+                        } else {
+                            Some((log.ip, log.port))
+                        },
                         allowed_routers: log.routers,
-                    }
+                    },
                 );
             }
         }

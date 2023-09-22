@@ -1,15 +1,15 @@
 use crate::types::*;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use ethers::core::types::Filter;
-use ethers::types::{ValueOrArray, U256};
-use ethers::prelude::Provider;
-use ethers_providers::{Middleware, Ws, StreamExt};
-use serde_json::json;
-use thiserror::Error;
 use anyhow::Result;
+use ethers::core::types::Filter;
+use ethers::prelude::Provider;
+use ethers::types::{ValueOrArray, U256};
+use ethers_providers::{Middleware, StreamExt, Ws};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum EthRpcAction {
@@ -37,7 +37,7 @@ pub enum EthRpcError {
 impl EthRpcError {
     pub fn kind(&self) -> &str {
         match *self {
-            EthRpcError::Error { .. } => "error",     
+            EthRpcError::Error { .. } => "error",
         }
     }
 }
@@ -48,14 +48,18 @@ pub async fn eth_rpc(
     send_to_loop: MessageSender,
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
-) -> Result<()> { // TODO swap panics for errors
+) -> Result<()> {
+    // TODO swap panics for errors
     let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
 
-    // TODO generate subscription IDs and put into here, create a cancel message        
+    // TODO generate subscription IDs and put into here, create a cancel message
     // TODO maybe don't need to do Arc Mutex
-    let subscriptions = Arc::new(Mutex::new(HashMap::<u64, tokio::task::JoinHandle<Result<(), EthRpcError>>>::new()));
+    let subscriptions = Arc::new(Mutex::new(HashMap::<
+        u64,
+        tokio::task::JoinHandle<Result<(), EthRpcError>>,
+    >::new()));
 
     while let Some(message) = recv_in_client.recv().await {
         let our = our.clone();
@@ -67,17 +71,19 @@ pub async fn eth_rpc(
             id,
             source,
             rsvp,
-            message: Message::Request(Request {
-                inherit: _,
-                expects_response: is_expecting_response,
-                ipc: json,
-                metadata: _,
-            }),
+            message:
+                Message::Request(Request {
+                    inherit: _,
+                    expects_response: is_expecting_response,
+                    ipc: json,
+                    metadata: _,
+                }),
             ..
-        } = message else {
+        } = message
+        else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
         };
-    
+
         let target = if is_expecting_response {
             Address {
                 node: our.clone(),
@@ -90,9 +96,8 @@ pub async fn eth_rpc(
             rsvp.clone()
         };
 
-    
         // let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
-    
+
         let Some(json) = json.clone() else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
         };
@@ -109,8 +114,8 @@ pub async fn eth_rpc(
                 // }).await;
 
                 let id: u64 = rand::random();
-                send_to_loop.send(
-                    KernelMessage {
+                send_to_loop
+                    .send(KernelMessage {
                         id: id.clone(),
                         source: Address {
                             node: our.clone(),
@@ -127,16 +132,14 @@ pub async fn eth_rpc(
                         )),
                         payload: None,
                         signed_capabilities: None,
-                    }
-                ).await.unwrap();
+                    })
+                    .await
+                    .unwrap();
 
                 let mut filter = Filter::new();
                 if let Some(addresses) = sub.addresses {
                     filter = filter.address(ValueOrArray::Array(
-                        addresses
-                            .into_iter()
-                            .map(|s| s.parse().unwrap())
-                            .collect()
+                        addresses.into_iter().map(|s| s.parse().unwrap()).collect(),
                     ));
                 }
 
@@ -164,9 +167,11 @@ pub async fn eth_rpc(
 
                 let handle = tokio::task::spawn(async move {
                     let Ok(mut stream) = ws_rpc.subscribe_logs(&filter).await else {
-                        return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't create event subscription") });
+                        return Err(EthRpcError::Error {
+                            error: format!("eth_rpc: couldn't create event subscription"),
+                        });
                     };
-        
+
                     while let Some(event) = stream.next().await {
                         // print_tx.send(Printout {
                         //     verbosity: 0,
@@ -199,18 +204,22 @@ pub async fn eth_rpc(
                 subscriptions.lock().await.insert(id, handle);
             }
             EthRpcAction::Unsubscribe(sub_id) => {
-                print_tx.send(Printout {
-                    verbosity: 0,
-                    content: format!("eth_rpc: unsubscribing from {}", sub_id),
-                }).await;
+                print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("eth_rpc: unsubscribing from {}", sub_id),
+                    })
+                    .await;
 
                 if let Some(handle) = subscriptions.lock().await.remove(&sub_id) {
                     handle.abort();
                 } else {
-                    print_tx.send(Printout {
-                        verbosity: 0,
-                        content: format!("eth_rpc: no task found with id {}", sub_id),
-                    }).await;
+                    print_tx
+                        .send(Printout {
+                            verbosity: 0,
+                            content: format!("eth_rpc: no task found with id {}", sub_id),
+                        })
+                        .await;
                 }
             }
         }

@@ -3,8 +3,8 @@ use aes_gcm::{
     Aes256Gcm, Key,
 };
 use anyhow::Result;
-use ethers::prelude::{Provider, Address as EthAddress, U256, abigen, namehash};
-use ethers_providers::{Ws};
+use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
+use ethers_providers::Ws;
 use lazy_static::__Deref;
 use reqwest;
 use ring::pbkdf2;
@@ -19,8 +19,8 @@ use tokio::{fs, time::timeout};
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
-mod eth_rpc;
 mod encryptor;
+mod eth_rpc;
 mod filesystem;
 mod http_client;
 mod http_server;
@@ -137,7 +137,8 @@ async fn main() {
         // LOGIN flow
         // get username, keyfile, and jwt_secret from disk
         let (username, routers, key, jwt_secret) =
-            bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+            bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap())
+                .unwrap();
 
         println!("username: {:?}", username);
         println!("routers: {:?}", routers);
@@ -179,7 +180,7 @@ async fn main() {
         // check if Identity for this username has correct networking keys,
         // if not, prompt user to reset them.
         // TODO this should be read and filled in from chain
-        // 
+        //
         let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
             panic!("eth_rpc: couldn't connect to ws endpoint");
         };
@@ -224,7 +225,9 @@ async fn main() {
                     ip_num & 0xFF
                 );
                 Some((ip, port))
-            } else { None },
+            } else {
+                None
+            },
             allowed_routers: routers,
         };
 
@@ -290,7 +293,7 @@ async fn main() {
         )
         .await
         .unwrap();
-        
+
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 

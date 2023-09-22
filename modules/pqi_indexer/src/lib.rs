@@ -30,12 +30,15 @@ struct EthEvent {
 }
 
 sol! {
-    event WsChanged(uint256 indexed node, bytes32 publicKey, uint48 ipAndPort,
-                    bytes32[] routers);
+    event WsChanged(
+        uint256 indexed node,
+        uint32 indexed protocols,
+        bytes32 publicKey,
+        uint48 ipAndPort,
+        bytes32[] routers
+    );
 
-    event NameRegistered(uint256 indexed node, bytes name, address owner);
-
-    // TODO we have to watch other events but for now this is fine
+    event NodeRegistered(uint256 indexed node, bytes name);
 }
 
 impl UqProcess for Component {
@@ -44,7 +47,7 @@ impl UqProcess for Component {
 
         // TODO node might have to be a Vec<u8> or a FixedBytes<32> to String...
         // capitalization screws this up
-        let mut names: HashMap<String, (String, String)> = HashMap::new();
+        let mut names: HashMap<String, String> = HashMap::new();
 
         let event_sub_res = send_request(
                 &Address{
@@ -61,15 +64,13 @@ impl UqProcess for Component {
                         "SubscribeEvents": {
                             "addresses": [
                                 // QNSRegistry on goerli opt
-                                "0xdFbC22778887649378f2DEcB24956144E5247c0b",
-                                // PublicResolver on goerli opt
-                                "0x82edbff907b5B8693abC6e5bA4bAc1d03C0f0b22"
+                                "0xb598fe1771DB7EcF2AeD06f082dE1030CA0BF1DA",
                             ],
                             "from_block": 0,
                             "to_block": null,
                             "events": [
-                                "NameRegistered(uint256,bytes,address)",
-                                "WsChanged(uint256,bytes32,uint48,bytes32[])",
+                                "NodeRegistered(uint256,bytes)",
+                                "WsChanged(uint256,uint32,bytes32,uint48,bytes32[])",
                             ],
                             "topic1": null,
                             "topic2": null,
@@ -100,31 +101,39 @@ impl UqProcess for Component {
                 // Probably more message types later...maybe not...
                 AllActions::EventSubscription(e) => {
                     match decode_hex(&e.topics[0].clone()) {
-                        NameRegistered::SIGNATURE_HASH => {
+                        NodeRegistered::SIGNATURE_HASH => {
                             // bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
-                            let decoded    = NameRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
+                            let decoded    = NodeRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let name = dnswire_decode(decoded.0); // TODO parse this into human readable name...
-                            let owner = decoded.1;
 
-                            bindings::print_to_terminal(0, format!("pqi_indexer: OWNER: {:?}", owner.to_string()).as_str());
-                            bindings::print_to_terminal(0, format!("pqi_indexer: NODE1: {:?}", node).as_str());
-                            bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name.to_string()).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE1: {:?}", node).as_str());
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name.to_string()).as_str());
 
-                            names.insert(node.to_string(), (name, owner.to_string()));
+                            names.insert(node.to_string(), name);
                         }
                         WsChanged::SIGNATURE_HASH => {
                             // bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
-                            bindings::print_to_terminal(0, format!("pqi_indexer: NODE2: {:?}", node.to_string()).as_str());
-                            let decoded    = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
-                            let public_key = hex::encode(decoded.0);
-                            let (ip, port) = split_ip_and_port(decoded.1);
-                            let routers    = decoded.2; // TODO these need to be parsed
+                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE2: {:?}", node.to_string()).as_str());
+                            let decoded     = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
+                            let public_key  = hex::encode(decoded.0);
+                            let (ip, port)  = split_ip_and_port(decoded.1);
+                            let routers_raw = decoded.2;
+                            let routers: Vec<String> = routers_raw
+                                .iter()
+                                .map(|r| {
+                                    let key = hex::encode(r);
+                                    match names.get(&key) {
+                                        Some(name) => name.clone(),
+                                        None => format!("0x{}", key), // TODO it should actually just panic here
+                                    }
+                                })
+                                .collect::<Vec<String>>();
 
-                            let (name, owner) = names.get(node).unwrap();
+                            let name = names.get(node).unwrap();
                             // bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name).as_str());
                             // bindings::print_to_terminal(0, format!("pqi_indexer: DECODED: {:?}", decoded).as_str());
                             // bindings::print_to_terminal(0, format!("pqi_indexer: PUB KEY: {:?}", public_key).as_str());
@@ -132,9 +141,9 @@ impl UqProcess for Component {
                             // bindings::print_to_terminal(0, format!("pqi_indexer: ROUTERS: {:?}", routers).as_str());
                             
                             let json_payload = json!({
-                                "PqiUpdate": {
+                                "QnsUpdate": {
                                     "name": name,
-                                    "owner": owner,
+                                    "owner": "0x", // TODO or get rid of
                                     "node": node,
                                     "public_key": format!("0x{}", public_key),
                                     "ip": format!(

@@ -75,11 +75,11 @@ pub struct Handshake {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NetActions {
     Peers,
-    PqiUpdate(PqiUpdate),
+    QnsUpdate(QnsUpdate),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PqiUpdate {
+pub struct QnsUpdate {
     pub name: String,
     pub owner: String,
     pub node: String,
@@ -472,7 +472,7 @@ async fn handle_incoming_message(
             })
             .await;
     } else {
-        // available commands: "peers"
+        // available commands: "peers", "QnsUpdate" (see pqi_indexer module)
         let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
             let _ = print_tx
                 .send(Printout {
@@ -493,7 +493,7 @@ async fn handle_incoming_message(
                     })
                     .await;
             }
-            NetActions::PqiUpdate(log) => {
+            NetActions::QnsUpdate(log) => {
                 if km.source.process != ProcessId::Name("pqi_indexer".to_string()) {
                     let _ = print_tx
                         .send(Printout {
@@ -505,8 +505,8 @@ async fn handle_incoming_message(
                 }
                 let _ = print_tx
                     .send(Printout {
-                        verbosity: 1,
-                        content: "net: got pqi update".into(),
+                        verbosity: 0, // TODO 1
+                        content: format!("net: got QNS update for {}", log.name),
                     })
                     .await;
 

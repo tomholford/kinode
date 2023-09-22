@@ -274,10 +274,7 @@ async fn load_state_from_reboot(
     return true;
 }
 
-fn build_state_for_initial_boot(
-    process_map: &ProcessMap,
-    identifier_to_vfs: &mut IdentifierToVfs,
-) {
+fn build_state_for_initial_boot(process_map: &ProcessMap, identifier_to_vfs: &mut IdentifierToVfs) {
     //  add wasm bytes to each process' vfs and to terminal's vfs
     let mut terminal_vfs = Vfs::new();
     for (process_id, persisted) in process_map.iter() {
@@ -288,7 +285,9 @@ fn build_state_for_initial_boot(
         };
         let name = format!("{}.wasm", id);
         let full_path = format!("/{}", name);
-        let key = Key::File { id: persisted.wasm_bytes_handle.clone() };
+        let key = Key::File {
+            id: persisted.wasm_bytes_handle.clone(),
+        };
         let entry_type = EntryType::File {
             parent: Key::Dir { id: 0 },
         };

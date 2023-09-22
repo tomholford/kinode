@@ -304,7 +304,8 @@ pub struct PersistedProcess {
     pub capabilities: HashSet<Capability>,
     // these two are only saved if we are shutting down the kernel.
     pub contexts: Option<HashMap<u64, ProcessContext>>,
-    pub message_queue: Option<std::collections::VecDeque<Result<KernelMessage, WrappedNetworkError>>>,
+    pub message_queue:
+        Option<std::collections::VecDeque<Result<KernelMessage, WrappedNetworkError>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

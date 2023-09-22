@@ -389,6 +389,7 @@ async fn main() {
         kernel_message_sender.clone(),
         eth_rpc_receiver,
         print_sender.clone(),
+    ));
     tasks.spawn(vfs::vfs(
         our.name.clone(),
         kernel_process_map,

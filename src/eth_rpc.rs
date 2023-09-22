@@ -66,7 +66,6 @@ pub async fn eth_rpc(
         let KernelMessage {
             id,
             source,
-            target: _,
             rsvp,
             message: Message::Request(Request {
                 inherit: _,
@@ -74,7 +73,7 @@ pub async fn eth_rpc(
                 ipc: json,
                 metadata: _,
             }),
-            payload: _,
+            ..
         } = message else {
             panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
         };
@@ -126,7 +125,8 @@ pub async fn eth_rpc(
                             }),
                             None,
                         )),
-                        payload: None
+                        payload: None,
+                        signed_capabilities: None,
                     }
                 ).await.unwrap();
 
@@ -190,6 +190,7 @@ pub async fn eth_rpc(
                                     metadata: None,
                                 }),
                                 payload: None,
+                                signed_capabilities: None,
                             }
                         ).await.unwrap();
                     }

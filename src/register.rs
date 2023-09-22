@@ -9,6 +9,7 @@ use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
+use serde::{Serialize, Deserialize};
 use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -17,10 +18,6 @@ use warp::{
     http::header::{HeaderValue, SET_COOKIE},
     Filter, Rejection, Reply,
 };
-use jwt::SignWithKey;
-use hmac::Hmac;
-use sha2::Sha256;
-use serde::{Serialize, Deserialize};
 
 use crate::types::*;
 use crate::http_server;
@@ -217,7 +214,7 @@ pub async fn login(
                     .and(warp::any().map(move || jwt_secret_file.clone()))
                     .and(warp::any().map(move || username.clone()))
                     .and(warp::any().map(move || tx.clone()))
-                    .and_then(handle_password)),
+                    .and_then(handle_login)),
         )
         .or(redirect_to_login);
 

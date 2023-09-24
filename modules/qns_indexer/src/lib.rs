@@ -32,7 +32,7 @@ struct EthEvent {
 sol! {
     event WsChanged(
         uint256 indexed node,
-        uint32 indexed protocols,
+        uint96 indexed protocols,
         bytes32 publicKey,
         uint48 ipAndPort,
         bytes32[] routers
@@ -66,7 +66,7 @@ impl UqProcess for Component {
                             "to_block": null,
                             "events": [
                                 "NodeRegistered(uint256,bytes)",
-                                "WsChanged(uint256,uint32,bytes32,uint48,bytes32[])",
+                                "WsChanged(uint256,uint96,bytes32,uint48,bytes32[])",
                             ],
                             "topic1": null,
                             "topic2": null,
@@ -98,22 +98,22 @@ impl UqProcess for Component {
                 AllActions::EventSubscription(e) => {
                     match decode_hex(&e.topics[0].clone()) {
                         NodeRegistered::SIGNATURE_HASH => {
-                            // bindings::print_to_terminal(0, format!("qns_indexer: got NameRegistered event: {:?}", e).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: got NodeRegistered event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
                             let decoded    = NodeRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let name = dnswire_decode(decoded.0);
 
-                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
-                            // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
 
                             names.insert(node.to_string(), name);
                         }
                         WsChanged::SIGNATURE_HASH => {
-                            // bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
-                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
                             let decoded     = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let public_key  = hex::encode(decoded.0);
                             let (ip, port)  = split_ip_and_port(decoded.1);
@@ -135,7 +135,7 @@ impl UqProcess for Component {
                             // bindings::print_to_terminal(0, format!("qns_indexer: PUB KEY: {:?}", public_key).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: IP PORT: {:?} {:?}", ip, port).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: ROUTERS: {:?}", routers).as_str());
-                            
+
                             let json_payload = json!({
                                 "QnsUpdate": {
                                     "name": name,
@@ -154,8 +154,8 @@ impl UqProcess for Component {
                                 }
                             }).to_string();
 
-                            // bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
-                            
+                            bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
+
                             send_request(
                                 &Address{
                                     node: our.node.clone(),
@@ -168,11 +168,11 @@ impl UqProcess for Component {
                                     ipc: Some(json_payload),
                                 },
                                 None,
-                                None, 
+                                None,
                             );
                         }
-                        _ => {
-                            bindings::print_to_terminal(0, format!("qns_indexer: got unknown event: {:?}", e).as_str());
+                        event => {
+                            bindings::print_to_terminal(0, format!("qns_indexer: got unknown event: {:?}", event).as_str());
                         }
                     }
                 }

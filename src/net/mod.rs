@@ -74,7 +74,6 @@ pub struct Handshake {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum NetActions {
-    Peers,
     QnsUpdate(QnsUpdate),
 }
 
@@ -242,7 +241,7 @@ async fn connect_to_routers(
                 continue;
             } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
                 if let Some((ip, port)) = &router_id.ws_routing {
-                    // println!("trying to connect to {router_name}\r");
+                    println!("trying to connect to {router_name}\r");
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                         if let Ok(Ok((websocket, _response))) =
                             timeout(TIMEOUT, connect_async(ws_url)).await
@@ -481,18 +480,9 @@ async fn handle_incoming_message(
             .await;
     } else {
         // available commands: "peers", "QnsUpdate" (see qns_indexer module)
-        let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
-            let _ = print_tx
-                .send(Printout {
-                    verbosity: 0,
-                    content: "net: got unknown command".into(),
-                })
-                .await;
-            return;
-        };
-
-        match act {
-            NetActions::Peers => {
+        // first parse as raw string, then deserialize to NetActions object
+        match data.as_ref() {
+            "peers" => {
                 let peer_read = peers.read().await;
                 let _ = print_tx
                     .send(Printout {
@@ -501,36 +491,67 @@ async fn handle_incoming_message(
                     })
                     .await;
             }
-            NetActions::QnsUpdate(log) => {
-                if km.source.process != ProcessId::Name("qns_indexer".to_string()) {
+            "pki" => {
+                let pki_read = pki.read().await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("{:?}", pki_read),
+                    })
+                    .await;
+            }
+            "names" => {
+                let names_read = names.read().await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("{:?}", names_read),
+                    })
+                    .await;
+            }
+            _ => {
+                let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
                     let _ = print_tx
                         .send(Printout {
                             verbosity: 0,
-                            content: "net: only qns_indexer can update qns data".into(),
+                            content: "net: got unknown command".into(),
                         })
                         .await;
                     return;
-                }
-                let _ = print_tx
-                    .send(Printout {
-                        verbosity: 0, // TODO 1
-                        content: format!("net: got QNS update for {}", log.name),
-                    })
-                    .await;
+                };
+                match act {
+                    NetActions::QnsUpdate(log) => {
+                        if km.source.process != ProcessId::Name("qns_indexer".to_string()) {
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 0,
+                                    content: "net: only qns_indexer can update qns data".into(),
+                                })
+                                .await;
+                            return;
+                        }
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 0, // TODO 1
+                                content: format!("net: got QNS update for {}", log.name),
+                            })
+                            .await;
 
-                let _ = pki.write().await.insert(
-                    log.name.clone(),
-                    Identity {
-                        name: log.name,
-                        networking_key: log.public_key,
-                        ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
-                            None
-                        } else {
-                            Some((log.ip, log.port))
-                        },
-                        allowed_routers: log.routers,
-                    },
-                );
+                        let _ = pki.write().await.insert(
+                            log.name.clone(),
+                            Identity {
+                                name: log.name,
+                                networking_key: log.public_key,
+                                ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
+                                    None
+                                } else {
+                                    Some((log.ip, log.port))
+                                },
+                                allowed_routers: log.routers,
+                            },
+                        );
+                    }
+                }
             }
         }
     }

@@ -57,7 +57,6 @@ impl UqProcess for Component {
                     expects_response: true,
                     metadata: None,
                     ipc: Some(json!({
-                        // TODO new deployments
                         "SubscribeEvents": {
                             "addresses": [
                                 // QNSRegistry on goerli opt

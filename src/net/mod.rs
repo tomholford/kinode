@@ -506,7 +506,7 @@ async fn handle_incoming_message(
                     let _ = print_tx
                         .send(Printout {
                             verbosity: 0,
-                            content: "net: only qns_indexer can update pqi".into(),
+                            content: "net: only qns_indexer can update qns data".into(),
                         })
                         .await;
                     return;

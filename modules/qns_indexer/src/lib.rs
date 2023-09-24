@@ -61,7 +61,7 @@ impl UqProcess for Component {
                         "SubscribeEvents": {
                             "addresses": [
                                 // QNSRegistry on goerli opt
-                                "0xb598fe1771DB7EcF2AeD06f082dE1030CA0BF1DA",
+                                "0xfd571a1a8Ba4bAe58f5729aF52E2ED7277ed3DF2",
                             ],
                             "from_block": 0,
                             "to_block": null,

@@ -37,14 +37,12 @@ pub type OnchainPKI = Arc<RwLock<HashMap<String, Identity>>>;
 pub struct Registration {
     pub username: String,
     pub password: String,
-    pub address: String,
     pub direct: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
-    pub address: String, // TODO get rid of this
     pub networking_key: String,
     pub ws_routing: Option<(String, u16)>,
     pub allowed_routers: Vec<String>,

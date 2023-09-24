@@ -522,7 +522,6 @@ async fn handle_incoming_message(
                     log.name.clone(),
                     Identity {
                         name: log.name,
-                        address: log.owner,
                         networking_key: log.public_key,
                         ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
                             None

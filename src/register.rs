@@ -123,7 +123,6 @@ async fn handle_post(
     let ws_port = http_server::find_open_port(9000).await.unwrap();
     let our = Identity {
         name: info.username.clone(),
-        address: info.address.clone(),
         networking_key: hex::encode(networking_keypair.public_key().as_ref()),
         ws_routing: if ip == "localhost" || !info.direct {
             None

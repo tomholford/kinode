@@ -211,7 +211,6 @@ async fn main() {
 
         let our_identity = Identity {
             name: username.clone(),
-            address: "0x0".into(), // TODO
             networking_key: hex::encode(networking_keypair.public_key().as_ref()),
             ws_routing: if onchain_id.ip_and_port > 0 {
                 let port = (onchain_id.ip_and_port & 0xFFFF) as u16;
@@ -316,7 +315,7 @@ async fn main() {
     let _ = print_sender
         .send(Printout {
             verbosity: 0,
-            content: format!("{}.. now online", our.name),
+            content: format!("{} now online", our.name),
         })
         .await;
     let _ = print_sender

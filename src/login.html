@@ -231,26 +231,27 @@
       </div>
     </div>
     <script>
-      const UQBAR_NETWORK_URL = 'https://chain-id.uqbar.network/uqbar-chain-id'
-      const UQBAR_EXPLORER_URL = `https://chain-id.uqbar.network/indexer`
-      const UQBAR_NETWORK_HEX = '0x7261627175'
-      const UQBAR_NETWORK_INT = 491260113269
+      const GOERLI_OPT_URL = 'https://goerli.optimism.io'
+      const GOERLI_OPT_EXPLORER_URL = `https://goerli-optimism.etherscan.io/`
+      const GOERLI_OPT_HEX = '0x1a4'
+      const GOERLI_OPT_INT = 420
       const CONNECTION_ERROR = 'There was an error connecting to your wallet. Please try again.'
+      
       async function loadWallet() {
         try {
           const accounts = await ethereum.request({ method: 'eth_requestAccounts' })
           const networkId = String(await window.ethereum.request({ method: 'net_version' }).catch(() => '0x1'))
 
-          if (networkId !== UQBAR_NETWORK_HEX && networkId !== UQBAR_NETWORK_INT) {
+          if (networkId !== GOERLI_OPT_HEX && networkId !== GOERLI_OPT_INT) {
             // await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x5' }] });
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
               params: [{
-                chainId: UQBAR_NETWORK_HEX,
-                chainName: 'Uqbar',
-                nativeCurrency: { name: 'ZIG', symbol: 'ZIG', decimals: 18 },
-                rpcUrls: [UQBAR_NETWORK_URL],
-                blockExplorerUrls: [UQBAR_EXPLORER_URL],
+                chainId: GOERLI_OPT_HEX,
+                chainName: 'Goerli Optimism',
+                nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                rpcUrls: [GOERLI_OPT_URL],
+                blockExplorerUrls: [GOERLI_OPT_EXPLORER_URL],
               }]
             })
           }

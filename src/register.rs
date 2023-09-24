@@ -9,7 +9,6 @@ use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};

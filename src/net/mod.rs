@@ -480,7 +480,7 @@ async fn handle_incoming_message(
             })
             .await;
     } else {
-        // available commands: "peers", "QnsUpdate" (see pqi_indexer module)
+        // available commands: "peers", "QnsUpdate" (see qns_indexer module)
         let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
             let _ = print_tx
                 .send(Printout {
@@ -502,11 +502,11 @@ async fn handle_incoming_message(
                     .await;
             }
             NetActions::QnsUpdate(log) => {
-                if km.source.process != ProcessId::Name("pqi_indexer".to_string()) {
+                if km.source.process != ProcessId::Name("qns_indexer".to_string()) {
                     let _ = print_tx
                         .send(Printout {
                             verbosity: 0,
-                            content: "net: only pqi_indexer can update pqi".into(),
+                            content: "net: only qns_indexer can update pqi".into(),
                         })
                         .await;
                     return;

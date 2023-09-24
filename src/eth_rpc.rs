@@ -68,7 +68,6 @@ pub async fn eth_rpc(
         let print_tx = print_tx.clone();
 
         let KernelMessage {
-            id,
             source,
             rsvp,
             message:
@@ -204,7 +203,7 @@ pub async fn eth_rpc(
                 subscriptions.lock().await.insert(id, handle);
             }
             EthRpcAction::Unsubscribe(sub_id) => {
-                print_tx
+                let _ = print_tx
                     .send(Printout {
                         verbosity: 0,
                         content: format!("eth_rpc: unsubscribing from {}", sub_id),
@@ -214,7 +213,7 @@ pub async fn eth_rpc(
                 if let Some(handle) = subscriptions.lock().await.remove(&sub_id) {
                     handle.abort();
                 } else {
-                    print_tx
+                    let _ = print_tx
                         .send(Printout {
                             verbosity: 0,
                             content: format!("eth_rpc: no task found with id {}", sub_id),

@@ -43,7 +43,7 @@ sol! {
 
 impl UqProcess for Component {
     fn init(our: Address) {
-        bindings::print_to_terminal(0, "pqi_indexer: start");
+        bindings::print_to_terminal(0, "qns_indexer: start");
 
         // TODO node might have to be a Vec<u8> or a FixedBytes<32> to String...
         // capitalization screws this up
@@ -81,19 +81,19 @@ impl UqProcess for Component {
                 None,
         );
 
-        bindings::print_to_terminal(0, "pqi_indexer: subscribed to events");
+        bindings::print_to_terminal(0, "qns_indexer: subscribed to events");
 
         loop {
             let Ok((source, message)) = receive() else {
-                print_to_terminal(0, "pqi_indexer: got network error");
+                print_to_terminal(0, "qns_indexer: got network error");
                 continue;
             };
             let Message::Request(request) = message else {
-                print_to_terminal(0, "pqi_indexer: got response");
+                print_to_terminal(0, "qns_indexer: got response");
                 continue;
             };
             let Ok(msg) = serde_json::from_str::<AllActions>(&request.ipc.unwrap_or_default()) else {
-                print_to_terminal(0, "pqi_indexer: got invalid message");
+                print_to_terminal(0, "qns_indexer: got invalid message");
                 continue;
             };
 
@@ -102,22 +102,22 @@ impl UqProcess for Component {
                 AllActions::EventSubscription(e) => {
                     match decode_hex(&e.topics[0].clone()) {
                         NodeRegistered::SIGNATURE_HASH => {
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: got NameRegistered event: {:?}", e).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: got NameRegistered event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
                             let decoded    = NodeRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let name = dnswire_decode(decoded.0); // TODO parse this into human readable name...
 
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE1: {:?}", node).as_str());
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name.to_string()).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
 
                             names.insert(node.to_string(), name);
                         }
                         WsChanged::SIGNATURE_HASH => {
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: got WsChanged event: {:?}", e).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: NODE2: {:?}", node.to_string()).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
                             let decoded     = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let public_key  = hex::encode(decoded.0);
                             let (ip, port)  = split_ip_and_port(decoded.1);
@@ -134,11 +134,11 @@ impl UqProcess for Component {
                                 .collect::<Vec<String>>();
 
                             let name = names.get(node).unwrap();
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: NAME: {:?}", name).as_str());
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: DECODED: {:?}", decoded).as_str());
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: PUB KEY: {:?}", public_key).as_str());
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: IP PORT: {:?} {:?}", ip, port).as_str());
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: ROUTERS: {:?}", routers).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: DECODED: {:?}", decoded).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: PUB KEY: {:?}", public_key).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: IP PORT: {:?} {:?}", ip, port).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: ROUTERS: {:?}", routers).as_str());
                             
                             let json_payload = json!({
                                 "QnsUpdate": {
@@ -158,7 +158,7 @@ impl UqProcess for Component {
                                 }
                             }).to_string();
 
-                            // bindings::print_to_terminal(0, format!("pqi_indexer: JSON {:?}", json_payload).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
                             
                             send_request(
                                 &Address{
@@ -176,7 +176,7 @@ impl UqProcess for Component {
                             );
                         }
                         _ => {
-                            bindings::print_to_terminal(0, format!("pqi_indexer: got unknown event: {:?}", e).as_str());
+                            bindings::print_to_terminal(0, format!("qns_indexer: got unknown event: {:?}", e).as_str());
                         }
                     }
                 }

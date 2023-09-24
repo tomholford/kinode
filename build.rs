@@ -39,7 +39,7 @@ fn main() {
         "http_bindings",
         "http_proxy",
         "apps_home",
-        "pqi_indexer",
+        "qns_indexer",
         "net_tester",
         "hi_lus_lus",
         "rpc",

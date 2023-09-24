@@ -6,7 +6,6 @@ use anyhow::Result;
 use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
 use ethers_providers::Ws;
 use lazy_static::__Deref;
-use reqwest;
 use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
@@ -190,7 +189,7 @@ async fn main() {
         let onchain_id = contract.ws(node_id).call().await.unwrap(); // TODO unwrap
 
         // double check that keys match on-chain information
-        if (onchain_id.public_key != networking_keypair.public_key().as_ref()) {
+        if onchain_id.public_key != networking_keypair.public_key().as_ref() {
             panic!("CRITICAL: your networking keys do not match what is on-chain.");
         }
 
@@ -206,7 +205,7 @@ async fn main() {
             })
             .collect();
 
-        if (onchain_id.routers != namehashed_routers) {
+        if onchain_id.routers != namehashed_routers {
             panic!("CRITICAL: your routing information does not match what is on-chain.");
         }
 
@@ -214,7 +213,7 @@ async fn main() {
             name: username.clone(),
             address: "0x0".into(), // TODO
             networking_key: hex::encode(networking_keypair.public_key().as_ref()),
-            ws_routing: if (onchain_id.ip_and_port > 0) {
+            ws_routing: if onchain_id.ip_and_port > 0 {
                 let port = (onchain_id.ip_and_port & 0xFFFF) as u16;
                 let ip_num = (onchain_id.ip_and_port >> 16) as u32;
                 let ip = format!(

@@ -44,7 +44,7 @@ pub struct Registration {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub name: String,
-    pub address: String,
+    pub address: String, // TODO get rid of this
     pub networking_key: String,
     pub ws_routing: Option<(String, u16)>,
     pub allowed_routers: Vec<String>,

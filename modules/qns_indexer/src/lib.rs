@@ -45,8 +45,6 @@ impl UqProcess for Component {
     fn init(our: Address) {
         bindings::print_to_terminal(0, "qns_indexer: start");
 
-        // TODO node might have to be a Vec<u8> or a FixedBytes<32> to String...
-        // capitalization screws this up
         let mut names: HashMap<String, String> = HashMap::new();
 
         let event_sub_res = send_request(
@@ -60,7 +58,6 @@ impl UqProcess for Component {
                     metadata: None,
                     ipc: Some(json!({
                         // TODO new deployments
-                        // QnsRegistry
                         "SubscribeEvents": {
                             "addresses": [
                                 // QNSRegistry on goerli opt
@@ -106,7 +103,7 @@ impl UqProcess for Component {
 
                             let node       = &e.topics[1];
                             let decoded    = NodeRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
-                            let name = dnswire_decode(decoded.0); // TODO parse this into human readable name...
+                            let name = dnswire_decode(decoded.0);
 
                             // bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
@@ -242,5 +239,12 @@ fn dnswire_decode(wire_format_bytes: Vec<u8>) -> String {
 
     let flat: Vec<_> = result.into_iter().flatten().collect();
 
-    String::from_utf8(flat).unwrap()
+    let name = String::from_utf8(flat).unwrap();
+
+    // Remove the trailing '.' if it exists (it should always exist)
+    if name.ends_with('.') {
+        name[0..name.len()-1].to_string()
+    } else {
+        name
+    }
 }

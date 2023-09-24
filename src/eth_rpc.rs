@@ -54,7 +54,6 @@ pub async fn eth_rpc(
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
 
-    // TODO generate subscription IDs and put into here, create a cancel message
     // TODO maybe don't need to do Arc Mutex
     let subscriptions = Arc::new(Mutex::new(HashMap::<
         u64,
@@ -107,11 +106,6 @@ pub async fn eth_rpc(
 
         match action {
             EthRpcAction::SubscribeEvents(sub) => {
-                // print_tx.send(Printout {
-                //     verbosity: 0,
-                //     content: format!("eth_rpc: target: {:?}", target.clone()),
-                // }).await;
-
                 let id: u64 = rand::random();
                 send_to_loop
                     .send(KernelMessage {
@@ -119,8 +113,8 @@ pub async fn eth_rpc(
                         source: Address {
                             node: our.clone(),
                             process: ProcessId::Name("eth_rpc".into()),
-                        }, // TODO?
-                        target: target.clone(), // TODO?
+                        },
+                        target: target.clone(),
                         rsvp: None,
                         message: Message::Response((
                             Ok(Response {
@@ -172,10 +166,6 @@ pub async fn eth_rpc(
                     };
 
                     while let Some(event) = stream.next().await {
-                        // print_tx.send(Printout {
-                        //     verbosity: 0,
-                        //     content: format!("eth_rpc: got event: {:?}", event),
-                        // }).await;
                         send_to_loop.send(
                             KernelMessage {
                                 id: rand::random(),

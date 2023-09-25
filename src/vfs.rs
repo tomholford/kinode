@@ -801,8 +801,7 @@ async fn match_request(
                         .await;
                     let write_response = recv_response.recv().await.unwrap();
                     let KernelMessage { message, .. } = write_response;
-                    let Message::Response((Response { ipc, metadata: _ }, None)) = message
-                    else {
+                    let Message::Response((Response { ipc, metadata: _ }, None)) = message else {
                         panic!("")
                     };
                     let Some(ipc) = ipc else {
@@ -1247,8 +1246,7 @@ async fn match_request(
                             let KernelMessage {
                                 message, payload, ..
                             } = read_response;
-                            let Message::Response((Response { ipc, metadata: _ }, None)) =
-                                message
+                            let Message::Response((Response { ipc, metadata: _ }, None)) = message
                             else {
                                 panic!("")
                             };

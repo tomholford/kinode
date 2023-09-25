@@ -144,7 +144,12 @@ async fn handle_message(
         rsvp: None,
         message: Message::Response((
             Response {
-                ipc: Some(serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Ok(http_client_response)).unwrap()),
+                ipc: Some(
+                    serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Ok(
+                        http_client_response,
+                    ))
+                    .unwrap(),
+                ),
                 metadata: None,
             },
             None,
@@ -214,7 +219,12 @@ fn make_error_message(
         rsvp: None,
         message: Message::Response((
             Response {
-                ipc: Some(serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Err(error)).unwrap()), //  TODO: handle error?
+                ipc: Some(
+                    serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Err(
+                        error,
+                    ))
+                    .unwrap(),
+                ), //  TODO: handle error?
                 metadata: None,
             },
             None,

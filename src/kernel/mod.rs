@@ -384,8 +384,7 @@ impl UqProcessImports for ProcessWasi {
     /// the incoming message can be a Request or a Response, or an Error of the Network variety.
     async fn receive(
         &mut self,
-    ) -> Result<Result<(wit::Address, wit::Message), (wit::SendError, Option<wit::Context>)>>
-    {
+    ) -> Result<Result<(wit::Address, wit::Message), (wit::SendError, Option<wit::Context>)>> {
         Ok(self.process.get_next_message_for_process().await)
     }
 
@@ -609,17 +608,19 @@ impl Process {
         let source = self.metadata.our.clone();
         // if request chooses to inherit context, match id to prompting_message
         // otherwise, id is generated randomly
-        let request_id: u64 =
-            if request.inherit && request.expects_response.is_none() && self.prompting_message.is_some() {
-                self.prompting_message.as_ref().unwrap().id
-            } else {
-                loop {
-                    let id = rand::random();
-                    if !self.contexts.contains_key(&id) {
-                        break id;
-                    }
+        let request_id: u64 = if request.inherit
+            && request.expects_response.is_none()
+            && self.prompting_message.is_some()
+        {
+            self.prompting_message.as_ref().unwrap().id
+        } else {
+            loop {
+                let id = rand::random();
+                if !self.contexts.contains_key(&id) {
+                    break id;
                 }
-            };
+            }
+        };
 
         // rsvp is set if there was a Request expecting Response
         // followed by inheriting Request(s) not expecting Response;

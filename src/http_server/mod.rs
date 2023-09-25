@@ -217,7 +217,7 @@ async fn http_handle_messages(
             let Ok(res) = json else {
                 return Err(HttpServerError::BadJson {
                     json: response.ipc.unwrap_or_default(),
-                    error: json.err().unwrap().to_string()
+                    error: json.err().unwrap().to_string(),
                 });
             };
 

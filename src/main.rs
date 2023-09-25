@@ -64,7 +64,8 @@ async fn main() {
     }
     // read PKI from HTTP endpoint served by RPC
     // TODO this is so incredibly bad, lol, lmao
-    let mut rpc_url = "wss://opt-goerli.g.alchemy.com/v2/_2PaX5PomxANZXpqLTaadDLbbAgTgauL".to_string();
+    let mut rpc_url =
+        "wss://opt-goerli.g.alchemy.com/v2/_2PaX5PomxANZXpqLTaadDLbbAgTgauL".to_string();
 
     for (i, arg) in args.iter().enumerate() {
         if arg == "--rpc" {

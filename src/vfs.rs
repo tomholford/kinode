@@ -1,12 +1,6 @@
-use bytes::Bytes;
-use http::Uri;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
-use sha2::Sha256;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::Mutex;
 
 use crate::types::*;
@@ -372,7 +366,7 @@ pub async fn vfs(
                     ..
                 }) = message.clone()
                 else {
-                    println!("vfs: {}", message);
+                    //  println!("vfs: {}", message);
                     continue;
                     // return Err(FileSystemError::BadJson {
                     //     json: "".into(),
@@ -681,7 +675,7 @@ async fn match_request(
                     })
                     .await;
             }
-
+            send_to_persist.send(true).await.unwrap();
             (
                 Some(serde_json::to_string(&VfsResponse::New { identifier }).unwrap()),
                 None,

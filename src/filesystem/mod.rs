@@ -1,11 +1,12 @@
-/// log structured filesystem
-use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use tokio::fs;
-use tokio::time::{interval, Duration};
-
 use crate::filesystem::manifest::{FileIdentifier, Manifest};
 use crate::types::*;
+/// log structured filesystem
+use anyhow::Result;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::fs;
+use tokio::sync::Mutex;
+use tokio::time::{interval, Duration};
 mod manifest;
 
 const CHUNK_SIZE: usize = 262144; // 256kb
@@ -221,6 +222,12 @@ pub async fn fs_sender(
     send_to_terminal: PrintSender,
     mut recv_in_fs: MessageReceiver,
 ) -> Result<()> {
+    //  process queues for consistency
+    //  todo: use file_identifier for moar concurrency!
+    let process_queues = Arc::new(Mutex::new(
+        HashMap::<ProcessId, VecDeque<KernelMessage>>::new(),
+    ));
+
     //  interval for deleting/(flushing), don't want to run immediately upon bootup.
     let mut interval = interval(Duration::from_secs(60));
     let mut first_open = true;
@@ -242,26 +249,48 @@ pub async fn fs_sender(
 
             let our_name = our_name.clone();
             let source = kernel_message.source.clone();
-            let id = kernel_message.id;
             let send_to_loop = send_to_loop.clone();
             let send_to_terminal = send_to_terminal.clone();
 
-            tokio::spawn(async move {
-                if let Err(e) = handle_request(
-                    our_name.clone(),
-                    kernel_message,
-                    manifest_clone,
-                    send_to_loop.clone(),
-                    send_to_terminal,
-                )
-                .await
-                {
-                    send_to_loop
-                        .send(make_error_message(our_name.into(), id, source, e))
+            let mut process_lock = process_queues.lock().await;
+
+            if let Some(queue) = process_lock.get_mut(&source.process) {
+                queue.push_back(kernel_message.clone());
+            } else {
+                let mut new_queue = VecDeque::new();
+                new_queue.push_back(kernel_message.clone());
+                process_lock.insert(source.process.clone(), new_queue);
+
+                // clone Arc for thread
+                let process_lock_clone = process_queues.clone();
+
+                tokio::spawn(async move {
+                    let mut process_lock = process_lock_clone.lock().await;
+
+                    while let Some(km) = process_lock.get_mut(&source.process).and_then(|q| q.pop_front()) {
+                        if let Err(e) = handle_request(
+                            our_name.clone(),
+                            km.clone(),
+                            manifest_clone.clone(),
+                            send_to_loop.clone(),
+                            send_to_terminal.clone(),
+                        )
                         .await
-                        .unwrap();
-                }
-            });
+                        {
+                            send_to_loop
+                                .send(make_error_message(our_name.clone(), km.id, km.source.clone(), e))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    // Remove the process entry if no more tasks are left
+                    if let Some(queue) = process_lock.get(&source.process) {
+                        if queue.is_empty() {
+                            process_lock.remove(&source.process);
+                        }
+                    }
+                });
+            }
             }
             _ = interval.tick() => {
                 if !first_open {

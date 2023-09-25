@@ -232,7 +232,7 @@ pub async fn handle_ws_register(
             rsvp: None,
             message: Message::Request(Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(serde_json::json!(parsed_msg).to_string()),
                 metadata: None,
             }),
@@ -278,7 +278,7 @@ pub async fn handle_ws_message(
         rsvp: None,
         message: Message::Request(Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: None,
             metadata: None,
         }),
@@ -323,7 +323,7 @@ pub async fn handle_encrypted_ws_message(
         rsvp: None,
         message: Message::Request(Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(
                 serde_json::json!({
                     "DecryptAndForwardAction": {
@@ -372,7 +372,7 @@ pub async fn proxy_ws_message(
         rsvp: None,
         message: Message::Request(Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(serde_json::json!(parsed_msg).to_string()),
             metadata: None,
         }),
@@ -420,7 +420,7 @@ pub async fn send_ws_disconnect(
         rsvp: None,
         message: Message::Request(Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(
                 serde_json::json!({
                     "WsProxyDisconnect": {
@@ -456,10 +456,10 @@ pub fn make_error_message(
         target,
         rsvp: None,
         message: Message::Response((
-            Err(UqbarError {
-                kind: error.kind().into(),
-                message: Some(serde_json::to_string(&error).unwrap()),
-            }),
+            Response {
+                ipc: Some(serde_json::to_string(&error).unwrap()),
+                metadata: None,
+            },
             None,
         )),
         payload: None,

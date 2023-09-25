@@ -57,7 +57,7 @@ pub struct Payload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub inherit: bool,
-    pub expects_response: bool,
+    pub expects_response: Option<u64>,
     pub ipc: Option<String>,      // JSON-string
     pub metadata: Option<String>, // JSON-string
 }
@@ -71,7 +71,7 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     Request(Request),
-    Response((Result<Response, UqbarError>, Option<Context>)),
+    Response((Response, Option<Context>)),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -88,21 +88,15 @@ pub struct SignedCapability {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UqbarError {
-    pub kind: String,
-    pub message: Option<String>, // JSON-string
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NetworkError {
-    pub kind: NetworkErrorKind,
+pub struct SendError {
+    pub kind: SendErrorKind,
     pub target: Address,
     pub message: Message,
     pub payload: Option<Payload>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum NetworkErrorKind {
+pub enum SendErrorKind {
     Offline,
     Timeout,
 }
@@ -181,20 +175,6 @@ pub fn en_wit_response(response: Response) -> wit::Response {
     wit::Response {
         ipc: response.ipc,
         metadata: response.metadata,
-    }
-}
-
-pub fn de_wit_uqbar_error(wit: wit::UqbarError) -> UqbarError {
-    UqbarError {
-        kind: wit.kind,
-        message: wit.message,
-    }
-}
-
-pub fn en_wit_uqbar_error(error: UqbarError) -> wit::UqbarError {
-    wit::UqbarError {
-        kind: error.kind,
-        message: error.message,
     }
 }
 

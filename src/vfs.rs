@@ -110,10 +110,10 @@ fn make_error_message(
         target: source,
         rsvp: None,
         message: Message::Response((
-            Err(UqbarError {
-                kind: error.kind().into(),
-                message: Some(serde_json::to_string(&error).unwrap()), //  TODO: handle error?
-            }),
+            Response {
+                ipc: Some(serde_json::to_string(&error).unwrap()), //  TODO: handle error?
+                metadata: None,
+            },
             None,
         )),
         payload: None,
@@ -152,7 +152,7 @@ async fn persist_state(our_node: String, send_to_loop: &MessageSender, state: &I
             rsvp: None,
             message: Message::Request(Request {
                 inherit: true,
-                expects_response: true,
+                expects_response: Some(5), // TODO evaluate
                 ipc: Some(serde_json::to_string(&FsAction::SetState).unwrap()),
                 metadata: None,
             }),
@@ -241,7 +241,7 @@ async fn load_state_from_reboot(
             rsvp: None,
             message: Message::Request(Request {
                 inherit: true,
-                expects_response: true,
+                expects_response: Some(5), // TODO evaluate
                 ipc: Some(serde_json::to_string(&FsAction::GetState).unwrap()),
                 metadata: None,
             }),
@@ -257,7 +257,7 @@ async fn load_state_from_reboot(
     let KernelMessage {
         message, payload, ..
     } = km;
-    let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
+    let Message::Response((Response { ipc, metadata: _ }, None)) = message else {
         return false;
     };
     let Some(ipc) = ipc else {
@@ -518,7 +518,7 @@ async fn handle_request(
     our_name: String,
     id: u64,
     source: Address,
-    expects_response: bool,
+    expects_response: Option<u64>,
     rsvp: Rsvp,
     request: VfsRequest,
     metadata: Option<String>,
@@ -606,7 +606,7 @@ async fn handle_request(
     .await?;
 
     //  TODO: properly handle rsvp
-    if expects_response {
+    if expects_response.is_some() {
         let response = KernelMessage {
             id,
             source: Address {
@@ -618,7 +618,7 @@ async fn handle_request(
                 process: source.process.clone(),
             },
             rsvp,
-            message: Message::Response((Ok(Response { ipc, metadata }), None)),
+            message: Message::Response((Response { ipc, metadata }, None)),
             payload: match bytes {
                 Some(bytes) => Some(Payload {
                     mime: Some("application/octet-stream".into()),
@@ -666,7 +666,7 @@ async fn match_request(
                         rsvp: None,
                         message: Message::Request(Request {
                             inherit: false,
-                            expects_response: false,
+                            expects_response: None,
                             ipc: Some(
                                 serde_json::to_string(&KernelCommand::GrantCapability {
                                     to_process: source.process.clone(),
@@ -791,7 +791,7 @@ async fn match_request(
                             rsvp: None,
                             message: Message::Request(Request {
                                 inherit: true,
-                                expects_response: true,
+                                expects_response: Some(5), // TODO evaluate
                                 ipc: Some(serde_json::to_string(&FsAction::Write).unwrap()),
                                 metadata: None,
                             }),
@@ -801,7 +801,7 @@ async fn match_request(
                         .await;
                     let write_response = recv_response.recv().await.unwrap();
                     let KernelMessage { message, .. } = write_response;
-                    let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message
+                    let Message::Response((Response { ipc, metadata: _ }, None)) = message
                     else {
                         panic!("")
                     };
@@ -1089,7 +1089,7 @@ async fn match_request(
                     rsvp: None,
                     message: Message::Request(Request {
                         inherit: true,
-                        expects_response: true,
+                        expects_response: Some(5), // TODO evaluate
                         ipc: Some(
                             serde_json::to_string(&FsAction::WriteOffset((file_hash, offset)))
                                 .unwrap(),
@@ -1230,7 +1230,7 @@ async fn match_request(
                                     rsvp: None,
                                     message: Message::Request(Request {
                                         inherit: true,
-                                        expects_response: true,
+                                        expects_response: Some(5), // TODO evaluate
                                         ipc: Some(
                                             serde_json::to_string(&FsAction::Read(
                                                 file_hash.clone(),
@@ -1247,7 +1247,7 @@ async fn match_request(
                             let KernelMessage {
                                 message, payload, ..
                             } = read_response;
-                            let Message::Response((Ok(Response { ipc, metadata: _ }), None)) =
+                            let Message::Response((Response { ipc, metadata: _ }, None)) =
                                 message
                             else {
                                 panic!("")
@@ -1312,7 +1312,7 @@ async fn match_request(
                     rsvp: None,
                     message: Message::Request(Request {
                         inherit: true,
-                        expects_response: true,
+                        expects_response: Some(5), // TODO evaluate
                         ipc: Some(
                             serde_json::to_string(&FsAction::ReadChunk(ReadChunkRequest {
                                 file: file_hash.clone(),
@@ -1331,7 +1331,7 @@ async fn match_request(
             let KernelMessage {
                 message, payload, ..
             } = read_response;
-            let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
+            let Message::Response((Response { ipc, metadata: _ }, None)) = message else {
                 panic!("")
             };
             let Some(ipc) = ipc else {
@@ -1402,7 +1402,7 @@ async fn match_request(
                         rsvp: None,
                         message: Message::Request(Request {
                             inherit: true,
-                            expects_response: true,
+                            expects_response: Some(5), // TODO evaluate
                             ipc: Some(serde_json::to_string(&FsAction::Length(file_hash)).unwrap()),
                             metadata: None,
                         }),
@@ -1412,7 +1412,7 @@ async fn match_request(
                     .await;
                 let length_response = recv_response.recv().await.unwrap();
                 let KernelMessage { message, .. } = length_response;
-                let Message::Response((Ok(Response { ipc, metadata: _ }), None)) = message else {
+                let Message::Response((Response { ipc, metadata: _ }, None)) = message else {
                     panic!("")
                 };
                 let Some(ipc) = ipc else {

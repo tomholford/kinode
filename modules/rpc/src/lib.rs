@@ -65,7 +65,7 @@ impl Guest for Component {
             //     bindings_address.clone(),
             //     Request {
             //         inherit: false,
-            //         expects_response: false,
+            //         expects_response: None,
             //         ipc: Some(serde_json::json!({
             //             "action": "bind-app",
             //             "path": "/rpc",
@@ -81,7 +81,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/rpc/message",
@@ -174,7 +174,7 @@ impl Guest for Component {
                             },
                             &Request {
                                 inherit: false,
-                                expects_response: true,
+                                expects_response: Some(5), // TODO evaluate timeout
                                 ipc: body_json.ipc,
                                 metadata: body_json.metadata,
                             },
@@ -183,25 +183,10 @@ impl Guest for Component {
 
                         match result {
                             Ok((_source, message)) => {
-                                let Message::Response((response_result, _context)) = message else {
+                                let Message::Response((response, _context)) = message else {
                                     print_to_terminal(1, "rpc: got unexpected response to message");
                                     send_http_response(500, default_headers, "Invalid Internal Response".to_string().as_bytes().to_vec());
                                     continue;
-                                };
-
-                                let ipc = match response_result {
-                                    Ok(response) => {
-                                        match response.ipc {
-                                            Some(ipc) => ipc,
-                                            None => "".to_string(),
-                                        }
-                                    },
-                                    Err(error) => {
-                                        print_to_terminal(1, format!("rpc: got error response").as_str());
-                                        serde_json::json!({
-                                            "error": "Response Error",
-                                        }).to_string()
-                                    },
                                 };
 
                                 let (mime, data) = match get_payload() {
@@ -218,7 +203,7 @@ impl Guest for Component {
                                 };
 
                                 let body = serde_json::json!({
-                                    "ipc": ipc,
+                                    "ipc": response.ipc,
                                     "payload": {
                                         "mime": mime,
                                         "data": data,

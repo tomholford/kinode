@@ -71,7 +71,7 @@ fn generate_http_binding(
         add,
         Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(
                 serde_json::json!({
                     "action": "bind-app",
@@ -146,7 +146,7 @@ fn send_http_client_request(
         },
         &Request {
             inherit: false,
-            expects_response: true,
+            expects_response: Some(5), // TODO evaluate timeout
             ipc: Some(
                 serde_json::json!({
                     "method": method,
@@ -280,7 +280,7 @@ fn handle_telegram_update(
                             },
                             &Request {
                                 inherit: false,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(
                                     serde_json::json!({
                                         "EncryptAndForwardAction": {
@@ -329,7 +329,7 @@ fn handle_telegram_update(
                             },
                             &Request {
                                 inherit: false,
-                                expects_response: true,
+                                expects_response: Some(5), // TODO evaluate timeout
                                 ipc: Some(serde_json::json!({
                                     "method": "GET",
                                     "uri": format!("https://api.telegram.org/bot{}/getChatAdministrators", bot_data.token),
@@ -896,7 +896,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(5), // TODO evaluate timeout
                                                     ipc: Some(
                                                         serde_json::json!({
                                                             "action": "get_contact_info",
@@ -916,7 +916,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(5), // TODO evaluate timeout
                                                     ipc: Some(
                                                         serde_json::json!({
                                                             "action": "update_orgs",
@@ -1011,7 +1011,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(5), // TODO evaluate timeout
                                                     ipc: Some(serde_json::json!({
                                                         "method": "GET",
                                                         "uri": format!("https://api.telegram.org/bot{}/getChat", bot.token.clone()),
@@ -1156,7 +1156,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(5), // TODO evaluate timeout
                                                     ipc: Some(serde_json::json!({
                                                         "method": "GET",
                                                         "uri": format!("https://api.telegram.org/bot{}/getMe", token),

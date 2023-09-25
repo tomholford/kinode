@@ -86,7 +86,7 @@ impl Guest for Component {
             },
             &Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(
                     serde_json::json!({
                         "action": "bind-app",
@@ -162,41 +162,31 @@ impl Guest for Component {
             };
             let new_id_name = new_identity.name.clone();
             pki.insert(new_id_name.clone(), new_identity);
-            match process_lib::await_set_state(our.node.clone(), &pki) {
-                Err(e) => {
-                    print_to_terminal(0, &format!("persist: failed to set state: {:?}", e));
-                    failure(http_head);
-                }
-                Ok(_) => {
-                    print_to_terminal(
-                        0,
-                        &format!("sequencer: added PKI entry {}", new_id_name),
-                    );
-                    send_response(
-                        &Response {
-                            ipc: Some(
-                                serde_json::json!({
-                                    "action": "response",
-                                    "id": http_head["id"],
-                                    "status": 200,
-                                    "headers": {
-                                        "Content-Type": "application/json",
-                                    },
-                                })
-                                .to_string(),
-                            ),
-                            metadata: None,
-                        },
-                        Some(&Payload {
-                            mime: Some("application/json".into()),
-                            bytes: serde_json::to_string(&pki)
-                                .unwrap_or_default()
-                                .as_bytes()
-                                .to_vec(),
-                        }),
-                    );
-                }
-            }
+            process_lib::await_set_state(our.node.clone(), &pki);
+            print_to_terminal(0, &format!("sequencer: added PKI entry {}", new_id_name));
+            send_response(
+                &Response {
+                    ipc: Some(
+                        serde_json::json!({
+                            "action": "response",
+                            "id": http_head["id"],
+                            "status": 200,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
+                        })
+                        .to_string(),
+                    ),
+                    metadata: None,
+                },
+                Some(&Payload {
+                    mime: Some("application/json".into()),
+                    bytes: serde_json::to_string(&pki)
+                        .unwrap_or_default()
+                        .as_bytes()
+                        .to_vec(),
+                }),
+            );
         }
     }
 }

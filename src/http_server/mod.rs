@@ -52,7 +52,6 @@ pub async fn http_server(
                 let KernelMessage {
                     id,
                     source,
-                    rsvp,
                     message,
                     payload,
                     ..
@@ -211,95 +210,98 @@ async fn http_handle_messages(
         Message::Response((response, _context)) => {
             let mut senders = http_response_senders.lock().await;
 
-            match response {
-                Ok(Response { ipc, metadata: _ }) => {
-                    let Some(ref json) = ipc else {
-                        return Err(HttpServerError::NoJson);
-                    };
+            let json = serde_json::from_str::<Result<HttpResponse, String>>(
+                &response.ipc.clone().unwrap_or_default(),
+            );
 
+            let Ok(res) = json else {
+                return Err(HttpServerError::BadJson {
+                    json: response.ipc.unwrap_or_default(),
+                    error: json.err().unwrap().to_string()
+                });
+            };
+
+            match res {
+                Ok(mut request) => {
                     let Some(payload) = payload else {
                         return Err(HttpServerError::NoBytes);
                     };
 
                     let bytes = payload.bytes;
-
-                    if let Ok(mut request) = serde_json::from_str::<HttpResponse>(json) {
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 1,
+                            content: format!("ID: {}", id.to_string()),
+                        })
+                        .await;
+                    for (id, _) in senders.iter() {
                         let _ = print_tx
                             .send(Printout {
                                 verbosity: 1,
-                                content: format!("ID: {}", id.to_string()),
+                                content: format!("existing: {}", id.to_string()),
                             })
                             .await;
-                        for (id, _) in senders.iter() {
-                            let _ = print_tx
-                                .send(Printout {
-                                    verbosity: 1,
-                                    content: format!("existing: {}", id.to_string()),
-                                })
-                                .await;
-                        }
+                    }
 
-                        match senders.remove(&id) {
-                            Some((path, channel)) => {
-                                let segments: Vec<&str> = path
-                                    .split('/')
-                                    .filter(|&segment| !segment.is_empty())
-                                    .collect();
+                    match senders.remove(&id) {
+                        Some((path, channel)) => {
+                            let segments: Vec<&str> = path
+                                .split('/')
+                                .filter(|&segment| !segment.is_empty())
+                                .collect();
 
-                                // If we're getting back a /login from a proxy (or our own node), then we should generate a jwt from the secret + the name of the ship, and then attach it to a header
-                                if request.status < 400
-                                    && (segments.len() == 1 || segments.len() == 4)
-                                    && matches!(segments.last(), Some(&"login"))
-                                {
-                                    if let Some(auth_cookie) = request.headers.get("set-cookie") {
-                                        let mut ws_auth_username = our.clone();
-                                        if segments.len() == 4
-                                            && matches!(segments.get(0), Some(&"http-proxy"))
-                                            && matches!(segments.get(1), Some(&"serve"))
-                                        {
-                                            if let Some(segment) = segments.get(2) {
-                                                ws_auth_username = segment.to_string();
-                                            }
-                                        }
-                                        if let Some(token) = register::generate_jwt(
-                                            jwt_secret_bytes.to_vec().as_slice(),
-                                            ws_auth_username.clone(),
-                                        ) {
-                                            let auth_cookie_with_ws = format!(
-                                                "{}; uqbar-ws-auth_{}={};",
-                                                auth_cookie,
-                                                ws_auth_username.clone(),
-                                                token
-                                            );
-                                            request.headers.insert(
-                                                "set-cookie".to_string(),
-                                                auth_cookie_with_ws,
-                                            );
-                                            let _ = print_tx
-                                                .send(Printout {
-                                                    verbosity: 1,
-                                                    content: format!(
-                                                        "SET WS AUTH COOKIE WITH USERNAME: {}",
-                                                        ws_auth_username
-                                                    ),
-                                                })
-                                                .await;
+                            // If we're getting back a /login from a proxy (or our own node), then we should generate a jwt from the secret + the name of the ship, and then attach it to a header
+                            if request.status < 400
+                                && (segments.len() == 1 || segments.len() == 4)
+                                && matches!(segments.last(), Some(&"login"))
+                            {
+                                if let Some(auth_cookie) = request.headers.get("set-cookie") {
+                                    let mut ws_auth_username = our.clone();
+                                    if segments.len() == 4
+                                        && matches!(segments.get(0), Some(&"http-proxy"))
+                                        && matches!(segments.get(1), Some(&"serve"))
+                                    {
+                                        if let Some(segment) = segments.get(2) {
+                                            ws_auth_username = segment.to_string();
                                         }
                                     }
+                                    if let Some(token) = register::generate_jwt(
+                                        jwt_secret_bytes.to_vec().as_slice(),
+                                        ws_auth_username.clone(),
+                                    ) {
+                                        let auth_cookie_with_ws = format!(
+                                            "{}; uqbar-ws-auth_{}={};",
+                                            auth_cookie,
+                                            ws_auth_username.clone(),
+                                            token
+                                        );
+                                        request
+                                            .headers
+                                            .insert("set-cookie".to_string(), auth_cookie_with_ws);
+                                        let _ = print_tx
+                                            .send(Printout {
+                                                verbosity: 1,
+                                                content: format!(
+                                                    "SET WS AUTH COOKIE WITH USERNAME: {}",
+                                                    ws_auth_username
+                                                ),
+                                            })
+                                            .await;
+                                    }
                                 }
+                            }
 
-                                let _ = channel.send(HttpResponse {
-                                    status: request.status,
-                                    headers: request.headers,
-                                    body: Some(bytes),
-                                });
-                            }
-                            None => {
-                                panic!(
-                                    "http_server: inconsistent state, no key found for id {}",
-                                    id
-                                );
-                            }
+                            let _ = channel.send(HttpResponse {
+                                status: request.status,
+                                headers: request.headers,
+                                body: Some(bytes),
+                            });
+                        }
+                        None => {
+                            panic!(
+                                "http_server: inconsistent state, no key found for id {}",
+                                id
+                            );
                         }
                     }
                 }
@@ -382,7 +384,7 @@ async fn http_handle_messages(
                                             rsvp: None,
                                             message: Message::Request(Request {
                                                 inherit: false,
-                                                expects_response: false,
+                                                expects_response: None,
                                                 ipc: Some(serde_json::json!({ // this is the JSON to forward
                                                     "WebSocketPush": {
                                                         "target": {
@@ -459,7 +461,7 @@ async fn http_handle_messages(
                                     }),
                                     message: Message::Request(Request {
                                         inherit: false,
-                                        expects_response: false,
+                                        expects_response: None,
                                         ipc: Some(
                                             serde_json::json!({
                                                 "action": "set-jwt-secret"
@@ -690,7 +692,7 @@ async fn handler(
         }),
         message: Message::Request(Request {
             inherit: false,
-            expects_response: true,
+            expects_response: Some(30), // TODO evaluate timeout
             ipc: Some(
                 serde_json::json!({
                     "action": "request".to_string(),

@@ -107,7 +107,7 @@ impl Guest for Component {
             },
             &Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(serde_json::json!({
                     "ServerAction": {
                         "action": "get-jwt-secret",
@@ -335,7 +335,7 @@ impl Guest for Component {
                             },
                             &Request {
                                 inherit: true,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(serde_json::json!({
                                     "GetKeyAction": {
                                         "channel_id": channel_id,
@@ -443,7 +443,7 @@ impl Guest for Component {
                             },
                             &Request {
                                 inherit: true,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(serde_json::json!({
                                     "path": registered_path,
                                     "raw_path": path,

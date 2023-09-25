@@ -91,9 +91,12 @@ pub async fn networking(
                         .send((PeerMessage::Raw(km.clone()), Some(result_tx)));
                     drop(peers_read);
                     // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
+                    let peers = peers.clone();
                     let target = target.clone();
+                    let network_error_tx = network_error_tx.clone();
+                    let km = km.clone();
                     tokio::spawn(async move {
-                        match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
+                        match result_rx.await.unwrap_or(Err(SendErrorKind::Timeout)) {
                             Ok(_) => {
                                 // debugging stuff:
                                 // let end = std::time::Instant::now();
@@ -111,14 +114,14 @@ pub async fn networking(
                                 return
                             },
                             Err(e) => {
-                                if let NetworkErrorKind::Offline = e {
+                                if let SendErrorKind::Offline = e {
                                     let _ = peers.write().await.remove(&target);
                                 }
                                 let _ = network_error_tx
-                                    .send(WrappedNetworkError {
+                                    .send(WrappedSendError {
                                         id: km.id,
                                         source: km.source,
-                                        error: NetworkError {
+                                        error: SendError {
                                             kind: e,
                                             target: km.target,
                                             message: km.message,
@@ -143,15 +146,15 @@ pub async fn networking(
                         peers.clone(),
                         self_tx.clone(),
                         kernel_message_tx.clone(),
-                        km,
+                        km.clone(),
                     ).await;
                     match result {
                         Err(e) => {
                             let _ = network_error_tx
-                            .send(WrappedNetworkError {
+                            .send(WrappedSendError {
                                 id: km.id,
                                 source: km.source,
-                                error: NetworkError {
+                                error: SendError {
                                     kind: e,
                                     target: km.target,
                                     message: km.message,
@@ -183,13 +186,13 @@ async fn message_to_new_peer(
     self_tx: MessageSender,
     kernel_message_tx: MessageSender,
     km: KernelMessage,
-) -> Result<(), NetworkErrorKind> {
+) -> Result<(), SendErrorKind> {
     // println!("sending message to unknown peer\r");
     let target = &km.target.node;
     // search PKI for peer and attempt to create a connection, then resend
     let pki_read = pki.read().await;
     match pki_read.get(target) {
-        None => return Err(NetworkErrorKind::Offline),
+        None => return Err(SendErrorKind::Offline),
         Some(peer_id) => {
             let peer_id = peer_id.clone();
             drop(pki_read);
@@ -218,12 +221,12 @@ async fn message_to_new_peer(
                                 match self_tx.send(km).await {
                                     Ok(()) => return Ok(()),
                                     // this should never really be hit
-                                    Err(_) => return Err(NetworkErrorKind::Offline),
+                                    Err(_) => return Err(SendErrorKind::Offline),
                                 };
                             }
                         }
                     }
-                    return Err(NetworkErrorKind::Timeout);
+                    return Err(SendErrorKind::Timeout);
                 }
                 //
                 //  peer does not have direct routing info, need to use router
@@ -269,7 +272,7 @@ async fn message_to_new_peer(
                     //
                     // we tried all available routers and none of them worked!
                     //
-                    return Err(NetworkErrorKind::Offline);
+                    return Err(SendErrorKind::Offline);
                 }
             }
         }
@@ -436,13 +439,13 @@ async fn handle_incoming_message(
  *  networking utils
  */
 
-fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, NetworkErrorKind> {
+fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, SendErrorKind> {
     // if we have the same public IP as target, route locally,
     // otherwise they will appear offline due to loopback stuff
     let ip = if our_ip == ip { "localhost" } else { ip };
     match url::Url::parse(&format!("ws://{}:{}/ws", ip, port)) {
         Ok(v) => Ok(v),
-        Err(_) => Err(NetworkErrorKind::Offline),
+        Err(_) => Err(SendErrorKind::Offline),
     }
 }
 

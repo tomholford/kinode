@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::bindings::component::uq_process::types::*;
-use super::bindings::{Address, Payload, get_payload, send_request};
+use super::bindings::{get_payload, send_request, Address, Payload};
 
 impl PartialEq for ProcessId {
     fn eq(&self, other: &Self) -> bool {
@@ -35,12 +35,13 @@ pub fn send_and_await_response(
     ipc: Option<Json>,
     metadata: Option<Json>,
     payload: Option<&Payload>,
-) -> Result<(Address, Message), NetworkError> {
+    timeout: u64,
+) -> Result<(Address, Message), SendError> {
     super::bindings::send_and_await_response(
         target,
         &Request {
             inherit,
-            expects_response: true,
+            expects_response: Some(timeout),
             ipc,
             metadata,
         },
@@ -48,10 +49,7 @@ pub fn send_and_await_response(
     )
 }
 
-pub fn get_state(
-    our: String,
-) -> Option<Payload> {
-    //  Request/Response stays local -> no NetworkError
+pub fn get_state(our: String) -> Option<Payload> {
     let _ = send_and_await_response(
         &Address {
             node: our,
@@ -61,14 +59,12 @@ pub fn get_state(
         Some(serde_json::to_string(&FsAction::GetState).unwrap()),
         None,
         None,
+        5, // TODO evaluate timeout
     );
     get_payload()
 }
 
-pub fn set_state(
-    our: String,
-    bytes: Vec<u8>,
-) {
+pub fn set_state(our: String, bytes: Vec<u8>) {
     send_request(
         &Address {
             node: our,
@@ -76,26 +72,20 @@ pub fn set_state(
         },
         &Request {
             inherit: false,
-            expects_response: false,
+            expects_response: Some(5), // TODO evaluate timeout
             ipc: Some(serde_json::to_string(&FsAction::SetState).unwrap()),
             metadata: None,
         },
         None,
-        Some(&Payload {
-            mime: None,
-            bytes,
-        }),
+        Some(&Payload { mime: None, bytes }),
     );
 }
 
-pub fn await_set_state<T>(
-    our: String,
-    state: &T,
-) -> Result<(), UqbarError>
+pub fn await_set_state<T>(our: String, state: &T)
 where
     T: serde::Serialize,
 {
-    //  Request/Response stays local -> no NetworkError
+    //  Request/Response stays local -> no SendError
     let (_, response) = send_and_await_response(
         &Address {
             node: our,
@@ -108,25 +98,23 @@ where
             mime: None,
             bytes: bincode::serialize(state).unwrap(),
         }),
-    ).unwrap();
+        5, // TODO evaluate timeout
+    )
+    .unwrap();
     match response {
-        Message::Request(_) => panic!(""),
-        Message::Response((response, _context)) => {
-            match response {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
-            }
-        },
+        Message::Request(_) => panic!("got request from filesystem"),
+        Message::Response((response, _context)) => return,
     }
 }
 
 pub fn parse_message_ipc<T>(json_string: Option<String>) -> anyhow::Result<T>
 where
-    for<'a> T: serde::Deserialize<'a>
+    for<'a> T: serde::Deserialize<'a>,
 {
     let parsed: T = serde_json::from_str(
-        json_string.ok_or(anyhow::anyhow!("json payload empty"))?
-                   .as_str()
+        json_string
+            .ok_or(anyhow::anyhow!("json payload empty"))?
+            .as_str(),
     )?;
     Ok(parsed)
 }

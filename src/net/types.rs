@@ -8,7 +8,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 pub type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-pub type MessageResult = Result<Option<NetworkMessage>, NetworkErrorKind>;
+pub type MessageResult = Result<Option<NetworkMessage>, SendErrorKind>;
 pub type ErrorShuttle = Option<oneshot::Sender<MessageResult>>;
 
 /// stored in mapping by their username

@@ -81,12 +81,7 @@ impl Guest for Component {
             },
         }
 
-        match process_lib::await_set_state(our.node.clone(), &state) {
-            Ok(_) => {},
-            Err(e) => {
-                print_to_terminal(0, &format!("persist: failed to set state: {:?}", e))
-            },
-        }
+        process_lib::await_set_state(our.node.clone(), &state);
 
         loop {
             let Ok((_source, message)) = receive() else {
@@ -108,12 +103,7 @@ impl Guest for Component {
                         PersistRequest::Set { new } => {
                             print_to_terminal(1, "persist: got Set request");
                             state.val = Some(new);
-                            match process_lib::await_set_state(our.node.clone(), &state) {
-                                Ok(_) => {},
-                                Err(e) => {
-                                    print_to_terminal(0, &format!("persist: failed to set state: {:?}", e))
-                                },
-                            }
+                            process_lib::await_set_state(our.node.clone(), &state);
                             // let _ = process_lib::set_state(our.node.clone(), bincode::serialize(&state).unwrap());
                             print_to_terminal(1, "persist: done Set request");
                         },

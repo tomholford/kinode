@@ -21,10 +21,9 @@ pub async fn http_client(
             rsvp,
             message:
                 Message::Request(Request {
-                    inherit: _,
-                    expects_response: is_expecting_response,
+                    expects_response,
                     ipc: json,
-                    metadata: _,
+                    ..
                 }),
             payload,
             ..
@@ -43,7 +42,7 @@ pub async fn http_client(
                 send_to_loop.clone(),
                 id,
                 rsvp,
-                is_expecting_response,
+                expects_response,
                 source.clone(),
                 json,
                 {
@@ -72,13 +71,13 @@ async fn handle_message(
     send_to_loop: MessageSender,
     id: u64,
     rsvp: Option<Address>,
-    expects_response: bool,
+    expects_response: Option<u64>,
     source: Address,
     json: Option<String>,
     body: Option<Vec<u8>>,
     _print_tx: PrintSender,
 ) -> Result<(), HttpClientError> {
-    let target = if expects_response {
+    let target = if expects_response.is_some() {
         source.clone()
     } else {
         let Some(rsvp) = rsvp else {
@@ -144,10 +143,10 @@ async fn handle_message(
         target,
         rsvp: None,
         message: Message::Response((
-            Ok(Response {
-                ipc: Some(serde_json::to_string(&http_client_response).unwrap()),
+            Response {
+                ipc: Some(serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Ok(http_client_response)).unwrap()),
                 metadata: None,
-            }),
+            },
             None,
         )),
         payload: Some(Payload {
@@ -214,10 +213,10 @@ fn make_error_message(
         },
         rsvp: None,
         message: Message::Response((
-            Err(UqbarError {
-                kind: error.kind().into(),
-                message: Some(serde_json::to_string(&error).unwrap()), //  TODO: handle error?
-            }),
+            Response {
+                ipc: Some(serde_json::to_string::<Result<HttpClientResponse, HttpClientError>>(&Err(error)).unwrap()), //  TODO: handle error?
+                metadata: None,
+            },
             None,
         )),
         payload: None,

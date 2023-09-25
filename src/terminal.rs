@@ -598,7 +598,7 @@ pub async fn terminal(
                                             rsvp: None,
                                             message: Message::Request(Request {
                                                 inherit: false,
-                                                expects_response: false,
+                                                expects_response: None,
                                                 ipc: Some(command),
                                                 metadata: None,
                                             }),

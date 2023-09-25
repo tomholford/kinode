@@ -56,7 +56,7 @@ impl Guest for Component {
                         },
                         Request {
                             inherit: false,
-                            expects_response: false,
+                            expects_response: None,
                             ipc: Some(num.to_string()),
                             metadata: None,
                         },

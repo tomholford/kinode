@@ -49,7 +49,7 @@ impl Guest for Component {
                     },
                     &Request {
                         inherit: true,
-                        expects_response: false,
+                        expects_response: None,
                         ipc: Some(serde_json::to_string(&msg).unwrap()),
                         metadata: None,
                     },

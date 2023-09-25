@@ -16,7 +16,7 @@ fn generate_http_binding(add: Address, path: &str, authenticated: bool) -> (Addr
         add,
         Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(serde_json::json!({
                 "action": "bind-app",
                 "path": path,
@@ -95,7 +95,7 @@ impl Guest for Component {
                         },
                         &Request {
                             inherit: false,
-                            expects_response: true,
+                            expects_response: Some(5), // TODO evaluate timeout
                             ipc: Some(serde_json::json!({
                                 "method": "GET",
                                 "uri": PQI_ENDPOINT,
@@ -190,7 +190,7 @@ impl Guest for Component {
                                     },
                                     &Request {
                                         inherit: false,
-                                        expects_response: false,
+                                        expects_response: None,
                                         ipc: Some(serde_json::json!({
                                             "EncryptAndForwardAction": {
                                                 "channel_id": "apps_home",

@@ -499,7 +499,7 @@ async fn main() {
             rsvp: None,
             message: Message::Request(Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(serde_json::to_string(&KernelCommand::Shutdown).unwrap()),
                 metadata: None,
             }),

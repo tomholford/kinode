@@ -98,22 +98,22 @@ impl UqProcess for Component {
                 AllActions::EventSubscription(e) => {
                     match decode_hex(&e.topics[0].clone()) {
                         NodeRegistered::SIGNATURE_HASH => {
-                            bindings::print_to_terminal(0, format!("qns_indexer: got NodeRegistered event: {:?}", e).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: got NodeRegistered event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
                             let decoded    = NodeRegistered::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let name = dnswire_decode(decoded.0);
 
-                            bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
-                            bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
 
                             names.insert(node.to_string(), name);
                         }
                         WsChanged::SIGNATURE_HASH => {
-                            bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
 
                             let node       = &e.topics[1];
-                            bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
                             let decoded     = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let public_key  = hex::encode(decoded.0);
                             let (ip, port)  = split_ip_and_port(decoded.1);
@@ -154,7 +154,7 @@ impl UqProcess for Component {
                                 }
                             }).to_string();
 
-                            bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
+                            // bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
 
                             send_request(
                                 &Address{

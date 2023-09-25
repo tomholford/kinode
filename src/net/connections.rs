@@ -5,7 +5,6 @@ use aes_gcm::KeyInit;
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
-use ring::signature::KeyPair;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -158,15 +157,12 @@ pub async fn build_connection(
     mut websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) -> Result<JoinHandle<String>, NetworkErrorKind> {
-    println!("build_connection\r");
-    println!("our_id: {:?}\r", our);
-    println!("our_key: {:?}\r", keypair.as_ref().public_key().as_ref());
+    // println!("build_connection\r");
     let (cipher, nonce, their_id) = match target {
         Some(target) => {
             // we have target, we are initiating
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &target.name);
-            println!("our_handshake: {:?}\r", our_handshake);
             let _ = websocket
                 .send(tungstenite::Message::Text(
                     serde_json::to_string(&our_handshake).unwrap_or("".into()),
@@ -176,13 +172,11 @@ pub async fn build_connection(
                 Ok(h) => h,
                 Err(_) => return Err(NetworkErrorKind::Offline),
             };
-            println!("their_handshake: {:?}\r", their_handshake);
             let (their_ephemeral_pk, nonce) =
                 match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
                     Ok(v) => v,
                     Err(_) => return Err(NetworkErrorKind::Offline),
                 };
-            println!("validated handshake.\r");
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
             let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
             (cipher, nonce, target)
@@ -193,7 +187,6 @@ pub async fn build_connection(
                 Ok(h) => h,
                 Err(_) => return Err(NetworkErrorKind::Offline),
             };
-            println!("their_handshake: {:?}\r", their_handshake);
             let their_id = match pki.read().await.get(&their_handshake.from) {
                 Some(id) => id.clone(),
                 None => return Err(NetworkErrorKind::Offline),
@@ -208,7 +201,6 @@ pub async fn build_connection(
             };
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
-            println!("our_handshake: {:?}\r", our_handshake);
             let _ = websocket
                 .send(tungstenite::Message::Text(
                     serde_json::to_string(&our_handshake).unwrap_or("".into()),
@@ -219,8 +211,6 @@ pub async fn build_connection(
             (cipher, nonce, their_id)
         }
     };
-
-    println!("here1\r");
 
     // sender -> socket, socket -> handler
     let (sender_tx, sender_rx) = unbounded_channel::<(NetworkMessage, ErrorShuttle)>();

@@ -244,7 +244,7 @@ async fn connect_to_routers(
                 continue;
             } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
                 if let Some((ip, port)) = &router_id.ws_routing {
-                    println!("trying to connect to {router_name}\r");
+                    // println!("trying to connect to {router_name}\r");
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
                         if let Ok(Ok((websocket, _response))) =
                             timeout(TIMEOUT, connect_async(ws_url)).await

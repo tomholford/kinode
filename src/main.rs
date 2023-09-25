@@ -63,7 +63,17 @@ async fn main() {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let rpc_url = &args[2];
+    // TODO this is so incredibly bad, lol, lmao
+    let mut rpc_url = "wss://opt-goerli.g.alchemy.com/v2/_2PaX5PomxANZXpqLTaadDLbbAgTgauL".to_string();
+
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--rpc" {
+            // Check if the next argument exists and is not another flag
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                rpc_url = args[i + 1].clone();
+            }
+        }
+    }
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -175,7 +185,7 @@ async fn main() {
 
         // check if Identity for this username has correct networking keys,
         // if not, prompt user to reset them.
-        let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
+        let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url.clone()).await else {
             panic!("rpc: couldn't connect to blockchain wss endpoint");
         };
         let qns_address: EthAddress = QNS_ADDRESS.parse().unwrap();

@@ -5,11 +5,24 @@ use bindings::{print_to_terminal, receive, send_request, send_requests, UqProces
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use alloy_primitives::FixedBytes;
-use alloy_sol_types::{sol, SolEnum, SolType, SolCall, SolEvent};
+use alloy_sol_types::{sol, SolEvent};
 use hex;
 use std::collections::HashMap;
 
+mod process_lib;
+
 struct Component;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct State {
+    // namehash to human readable name
+    names: HashMap<String, String>,
+    // human readable name to most recent on-chain routing information as json
+    // NOTE: not every namehash will have a node registered
+    nodes: HashMap<String, String>,
+    // last block we read from
+    block: u64,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 enum AllActions {
@@ -41,11 +54,69 @@ sol! {
     event NodeRegistered(uint256 indexed node, bytes name);
 }
 
+fn subscribe_to_qns(from_block: u64) -> String {
+    json!({
+        "SubscribeEvents": {
+            "addresses": [
+                // QNSRegistry on goerli opt
+                "0xfd571a1a8Ba4bAe58f5729aF52E2ED7277ed3DF2",
+            ],
+            "from_block": from_block,
+            "to_block": null,
+            "events": [
+                "NodeRegistered(uint256,bytes)",
+                "WsChanged(uint256,uint96,bytes32,uint48,bytes32[])",
+            ],
+            "topic1": null,
+            "topic2": null,
+            "topic3": null,
+        }
+    }).to_string()
+}
+
 impl UqProcess for Component {
     fn init(our: Address) {
         bindings::print_to_terminal(0, "qns_indexer: start");
 
-        let mut names: HashMap<String, String> = HashMap::new();
+        let mut state: State = State {
+            names: HashMap::new(),
+            nodes: HashMap::new(),
+            block: 1,
+        };
+
+        // if we have state, load it in
+        match process_lib::get_state(our.node.clone()) {
+            None => {},
+            Some(p) => {
+                match bincode::deserialize::<State>(&p.bytes) {
+                    Err(e) => print_to_terminal(
+                        0,
+                        &format!("qns_indexer: failed to deserialize payload from fs: {}", e),
+                    ),
+                    Ok(s) => {
+                        state = s;
+                    },
+                }
+            },
+        }
+
+        // shove all state into net::net
+        for (_, ipc) in state.nodes.iter() {
+            send_request(
+                &Address{
+                    node: our.node.clone(),
+                    process: ProcessId::Name("net".to_string()),
+                },
+                &Request{
+                    inherit: false,
+                    expects_response: false,
+                    metadata: None,
+                    ipc: Some(ipc.to_string()),
+                },
+                None,
+                None,
+            );
+        }
 
         let event_sub_res = send_request(
                 &Address{
@@ -56,28 +127,12 @@ impl UqProcess for Component {
                     inherit: false, // TODO what
                     expects_response: true,
                     metadata: None,
-                    ipc: Some(json!({
-                        "SubscribeEvents": {
-                            "addresses": [
-                                // QNSRegistry on goerli opt
-                                "0xfd571a1a8Ba4bAe58f5729aF52E2ED7277ed3DF2",
-                            ],
-                            "from_block": 0,
-                            "to_block": null,
-                            "events": [
-                                "NodeRegistered(uint256,bytes)",
-                                "WsChanged(uint256,uint96,bytes32,uint48,bytes32[])",
-                            ],
-                            "topic1": null,
-                            "topic2": null,
-                            "topic3": null,
-                    }}).to_string()),
+                    // -1 because there could be other events in the last processed block
+                    ipc: Some(subscribe_to_qns(state.block - 1)),
                 },
                 None,
                 None,
         );
-
-        bindings::print_to_terminal(0, "qns_indexer: subscribed to events");
 
         loop {
             let Ok((source, message)) = receive() else {
@@ -85,7 +140,9 @@ impl UqProcess for Component {
                 continue;
             };
             let Message::Request(request) = message else {
-                print_to_terminal(0, "qns_indexer: got response");
+                // TODO we should store the subscription ID for eth_rpc
+                // incase we want to cancel/reset it
+                // print_to_terminal(0, "qns_indexer: got response");
                 continue;
             };
             let Ok(msg) = serde_json::from_str::<AllActions>(&request.ipc.unwrap_or_default()) else {
@@ -107,7 +164,8 @@ impl UqProcess for Component {
                             // bindings::print_to_terminal(0, format!("qns_indexer: NODE1: {:?}", node).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name.to_string()).as_str());
 
-                            names.insert(node.to_string(), name);
+                            state.names.insert(node.to_string(), name);
+                            state.block = hex_to_u64(&e.blockNumber).unwrap();
                         }
                         WsChanged::SIGNATURE_HASH => {
                             // bindings::print_to_terminal(0, format!("qns_indexer: got WsChanged event: {:?}", e).as_str());
@@ -122,14 +180,14 @@ impl UqProcess for Component {
                                 .iter()
                                 .map(|r| {
                                     let key = hex::encode(r);
-                                    match names.get(&key) {
+                                    match state.names.get(&key) {
                                         Some(name) => name.clone(),
                                         None => format!("0x{}", key), // TODO it should actually just panic here
                                     }
                                 })
                                 .collect::<Vec<String>>();
 
-                            let name = names.get(node).unwrap();
+                            let name = state.names.get(node).unwrap();
                             // bindings::print_to_terminal(0, format!("qns_indexer: NAME: {:?}", name).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: DECODED: {:?}", decoded).as_str());
                             // bindings::print_to_terminal(0, format!("qns_indexer: PUB KEY: {:?}", public_key).as_str());
@@ -154,7 +212,7 @@ impl UqProcess for Component {
                                 }
                             }).to_string();
 
-                            // bindings::print_to_terminal(0, format!("qns_indexer: JSON {:?}", json_payload).as_str());
+                            state.nodes.insert(name.clone(), json_payload.clone());
 
                             send_request(
                                 &Address{
@@ -177,6 +235,13 @@ impl UqProcess for Component {
                     }
                 }
             }
+
+            match process_lib::await_set_state(our.node.clone(), &state) {
+                Ok(_) => {},
+                Err(e) => {
+                    print_to_terminal(0, &format!("qns_indexer: failed to set state: {:?}", e))
+                },
+            };
         }
     }
 }

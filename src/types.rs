@@ -24,6 +24,9 @@ pub type PrintReceiver = tokio::sync::mpsc::Receiver<Printout>;
 pub type DebugSender = tokio::sync::mpsc::Sender<DebugCommand>;
 pub type DebugReceiver = tokio::sync::mpsc::Receiver<DebugCommand>;
 
+pub type CapMessageSender = tokio::sync::mpsc::UnboundedSender<CapMessage>;
+pub type CapMessageReceiver = tokio::sync::mpsc::UnboundedReceiver<CapMessage>;
+
 //
 // types used for UQI: uqbar's identity system
 //
@@ -132,16 +135,14 @@ pub enum Message {
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct Capability {
     pub issuer: Address,
-    pub label: String,
-    pub params: Option<String>, // JSON-string
+    pub params: String, // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignedCapability {
     pub issuer: Address,
-    pub label: String,
-    pub params: Option<String>, // JSON-string
-    pub signature: Vec<u8>,     // signed by the kernel, so we can verify that the kernel issued it
+    pub params: String,     // JSON-string
+    pub signature: Vec<u8>, // signed by the kernel, so we can verify that the kernel issued it
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +172,16 @@ pub enum OnPanic {
     Requests(Vec<(Address, Request, Option<Payload>)>),
 }
 
+impl OnPanic {
+    pub fn is_restart(&self) -> bool {
+        match self {
+            OnPanic::None => false,
+            OnPanic::Restart => true,
+            OnPanic::Requests(_) => false,
+        }
+    }
+}
+
 //
 // kernel types that runtime modules use
 //
@@ -190,6 +201,7 @@ pub struct KernelMessage {
     pub rsvp: Rsvp,
     pub message: Message,
     pub payload: Option<Payload>,
+    pub signed_capabilities: Option<Vec<SignedCapability>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -255,17 +267,59 @@ pub enum KernelCommand {
     RebootProcess {
         // kernel only
         process_id: ProcessId,
-        wasm_bytes_handle: u128,
-        on_panic: OnPanic,
-        initial_capabilities: HashSet<Capability>,
+        persisted: PersistedProcess,
     },
     Shutdown,
+    // capabilities creation
+    GrantCapability {
+        to_process: ProcessId,
+        params: String, // JSON-string
+    },
+}
+
+pub enum CapMessage {
+    Add {
+        on: ProcessId,
+        cap: Capability,
+    },
+    Drop {
+        // not used yet!
+        on: ProcessId,
+        cap: Capability,
+    },
+    Has {
+        // a bool is given in response here
+        on: ProcessId,
+        cap: Capability,
+        responder: tokio::sync::oneshot::Sender<bool>,
+    },
+    GetAll {
+        on: ProcessId,
+        responder: tokio::sync::oneshot::Sender<HashSet<Capability>>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KernelResponse {
     StartedProcess(ProcessMetadata),
     KilledProcess(ProcessId),
+}
+
+pub type ProcessMap = HashMap<ProcessId, PersistedProcess>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedProcess {
+    pub wasm_bytes_handle: u128,
+    pub on_panic: OnPanic,
+    pub capabilities: HashSet<Capability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessContext {
+    // store ultimate in order to set prompting message if needed
+    pub prompting_message: Option<KernelMessage>,
+    // can be empty if a request doesn't set context, but still needs to inherit
+    pub context: Option<Context>,
 }
 
 //
@@ -308,6 +362,23 @@ pub enum FsResponse {
     Length(u64),
     GetState,
     SetState,
+}
+
+impl VfsError {
+    pub fn kind(&self) -> &str {
+        match *self {
+            VfsError::BadIdentifier => "BadIdentifier",
+            VfsError::BadDescriptor => "BadDescriptor",
+            VfsError::NoCap => "NoCap",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsError {
+    BadIdentifier,
+    BadDescriptor,
+    NoCap,
 }
 
 impl FileSystemError {
@@ -455,6 +526,109 @@ pub enum FileSystemEntryType {
     Dir,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsRequest {
+    New {
+        identifier: String,
+    },
+    Add {
+        identifier: String,
+        full_path: String,
+        entry_type: AddEntryType,
+    },
+    Rename {
+        identifier: String,
+        full_path: String,
+        new_full_path: String,
+    },
+    Delete {
+        identifier: String,
+        full_path: String,
+    },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
+    GetPath {
+        identifier: String,
+        hash: u128,
+    },
+    GetEntry {
+        identifier: String,
+        full_path: String,
+    },
+    GetFileChunk {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    GetEntryLength {
+        identifier: String,
+        full_path: String,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AddEntryType {
+    Dir,
+    NewFile, //  add a new file to fs and add name in vfs
+    ExistingFile { hash: u128 }, //  link an existing file in fs to a new name in vfs
+             //  ...  //  symlinks?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum GetEntryType {
+    Dir,
+    File,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum VfsResponse {
+    New {
+        identifier: String,
+    },
+    Add {
+        identifier: String,
+        full_path: String,
+    },
+    Rename {
+        identifier: String,
+        new_full_path: String,
+    },
+    Delete {
+        identifier: String,
+        full_path: String,
+    },
+    GetPath {
+        identifier: String,
+        hash: u128,
+        full_path: Option<String>,
+    },
+    GetEntry {
+        identifier: String,
+        full_path: String,
+        children: Vec<String>,
+    },
+    GetFileChunk {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+        length: u64,
+    },
+    WriteOffset {
+        identifier: String,
+        full_path: String,
+        offset: u64,
+    },
+    GetEntryLength {
+        identifier: String,
+        full_path: String,
+        length: u64,
+    },
+}
+
 //
 // http_client.rs types
 //
@@ -464,7 +638,6 @@ pub struct HttpClientRequest {
     pub uri: String,
     pub method: String,
     pub headers: HashMap<String, String>,
-    pub body: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

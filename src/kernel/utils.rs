@@ -133,7 +133,6 @@ pub fn en_wit_payload(payload: Option<t::Payload>) -> Option<wit::Payload> {
 pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> t::SignedCapability {
     t::SignedCapability {
         issuer: de_wit_address(wit.issuer),
-        label: wit.label,
         params: wit.params,
         signature: wit.signature,
     }
@@ -142,7 +141,6 @@ pub fn de_wit_signed_capability(wit: wit::SignedCapability) -> t::SignedCapabili
 pub fn en_wit_signed_capability(cap: t::SignedCapability) -> wit::SignedCapability {
     wit::SignedCapability {
         issuer: en_wit_address(cap.issuer),
-        label: cap.label,
         params: cap.params,
         signature: cap.signature,
     }

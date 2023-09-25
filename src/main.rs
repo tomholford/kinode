@@ -121,7 +121,7 @@ async fn main() {
 
     // NOTE: when we log in, we MUST check the PKI to make sure our
     // information matches what we think it should be. this includes
-    // username, address, networking key, and routing info.
+    // username, networking key, and routing info.
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
     let http_server_port = http_server::find_open_port(8080).await.unwrap();
@@ -139,14 +139,11 @@ async fn main() {
             bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap())
                 .unwrap();
 
-        println!("username: {:?}", username);
-        println!("routers: {:?}", routers);
-
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
             format!("http://localhost:{}/login", http_server_port),
             format!(
-                "Welcome back, {}. Click here to log in to your node.",
+                "Welcome back, {}, Click here to log in to your node.",
                 username
             ),
         );
@@ -178,20 +175,13 @@ async fn main() {
 
         // check if Identity for this username has correct networking keys,
         // if not, prompt user to reset them.
-        // TODO this should be read and filled in from chain
-        //
         let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
-            panic!("eth_rpc: couldn't connect to ws endpoint");
+            panic!("rpc: couldn't connect to blockchain wss endpoint");
         };
         let qns_address: EthAddress = QNS_ADDRESS.parse().unwrap();
         let contract = QNSRegistry::new(qns_address, ws_rpc.into());
         let node_id: U256 = namehash(&username).as_bytes().into();
         let onchain_id = contract.ws(node_id).call().await.unwrap(); // TODO unwrap
-
-        // double check that keys match on-chain information
-        if onchain_id.public_key != networking_keypair.public_key().as_ref() {
-            panic!("CRITICAL: your networking keys do not match what is on-chain.");
-        }
 
         // double check that routers match on-chain information
         let namehashed_routers: Vec<[u8; 32]> = routers
@@ -205,8 +195,17 @@ async fn main() {
             })
             .collect();
 
-        if onchain_id.routers != namehashed_routers {
-            panic!("CRITICAL: your routing information does not match what is on-chain.");
+        // double check that keys match on-chain information
+        if (
+            onchain_id.routers != namehashed_routers ||
+            onchain_id.public_key != networking_keypair.public_key().as_ref()
+            // || (onchain_id.ip_and_port > 0 && onchain_id.ip_and_port != combineIpAndPort(
+            //     our_ip.clone(),
+            //     http_server_port,
+            // ))
+        ){
+            panic!("CRITICAL: your routing information does not match on-chain records");
+            // serve a reset page
         }
 
         let our_identity = Identity {

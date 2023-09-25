@@ -208,7 +208,7 @@ pub async fn build_connection(
             };
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
-                println!("our_handshake: {:?}\r", our_handshake);
+            println!("our_handshake: {:?}\r", our_handshake);
             let _ = websocket
                 .send(tungstenite::Message::Text(
                     serde_json::to_string(&our_handshake).unwrap_or("".into()),

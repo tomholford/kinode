@@ -1,8 +1,8 @@
 /// log structured filesystem
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use tokio::fs;
 use tokio::time::{interval, Duration};
-use tokio::{fs, runtime};
 
 use crate::filesystem::manifest::{FileIdentifier, Manifest};
 use crate::types::*;
@@ -127,42 +127,44 @@ pub async fn bootstrap(
         let hash: [u8; 32] = hash_bytes(&wasm_bytes);
 
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
-            process_map.insert(
-                ProcessId::Name(process_name),
-                PersistedProcess {
-                    wasm_bytes_handle: id,
-                    on_panic: OnPanic::Restart,
-                    capabilities: special_capabilities.clone(),
-                },
-            );
+            let entry =
+                process_map
+                    .entry(ProcessId::Name(process_name))
+                    .or_insert(PersistedProcess {
+                        wasm_bytes_handle: id,
+                        on_panic: OnPanic::Restart,
+                        capabilities: HashSet::new(),
+                    });
+            entry.capabilities.extend(special_capabilities.clone());
         } else {
             //  FsAction::Write
             let file = FileIdentifier::new_uuid();
 
             let _ = manifest.write(&file, &wasm_bytes).await;
+            let id = file.to_uuid().unwrap();
 
-            //  doublecheck.
-            process_map.insert(
-                ProcessId::Name(process_name),
-                PersistedProcess {
-                    wasm_bytes_handle: file.to_uuid().unwrap(),
-                    on_panic: OnPanic::Restart,
-                    capabilities: special_capabilities.clone(),
-                },
-            );
+            let entry =
+                process_map
+                    .entry(ProcessId::Name(process_name))
+                    .or_insert(PersistedProcess {
+                        wasm_bytes_handle: id,
+                        on_panic: OnPanic::Restart,
+                        capabilities: HashSet::new(),
+                    });
+            entry.capabilities.extend(special_capabilities.clone());
         }
     }
 
     // finally, save runtime modules in state map as well, somewhat fakely
     for runtime_module in RUNTIME_MODULES {
-        process_map.insert(
-            ProcessId::Name(runtime_module.into()),
-            PersistedProcess {
+        let entry = process_map
+            .entry(ProcessId::Name(runtime_module.into()))
+            .or_insert(PersistedProcess {
                 wasm_bytes_handle: 0,
                 on_panic: OnPanic::Restart,
-                capabilities: special_capabilities.clone(),
-            },
-        );
+                capabilities: HashSet::new(),
+            });
+        entry.capabilities.extend(special_capabilities.clone());
     }
 
     // save kernel process state. FsAction::SetState(kernel)

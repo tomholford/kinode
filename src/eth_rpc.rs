@@ -102,7 +102,7 @@ pub async fn eth_rpc(
                         EthRpcError::NoRsvp,
                     ))
                     .await
-                .unwrap();
+                    .unwrap();
                 continue;
             };
             rsvp.clone()
@@ -251,12 +251,7 @@ pub async fn eth_rpc(
 //  helpers
 //
 
-fn make_error_message(
-    our: String,
-    id: u64,
-    source: Address,
-    error: EthRpcError,
-) -> KernelMessage {
+fn make_error_message(our: String, id: u64, source: Address, error: EthRpcError) -> KernelMessage {
     KernelMessage {
         id,
         source: Address {

@@ -197,13 +197,13 @@ async fn main() {
 
         // double check that keys match on-chain information
         if (
-            onchain_id.routers != namehashed_routers ||
-            onchain_id.public_key != networking_keypair.public_key().as_ref()
+            onchain_id.routers != namehashed_routers
+                || onchain_id.public_key != networking_keypair.public_key().as_ref()
             // || (onchain_id.ip_and_port > 0 && onchain_id.ip_and_port != combineIpAndPort(
             //     our_ip.clone(),
             //     http_server_port,
             // ))
-        ){
+        ) {
             panic!("CRITICAL: your routing information does not match on-chain records");
             // serve a reset page
         }

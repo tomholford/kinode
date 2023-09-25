@@ -211,7 +211,7 @@ async fn main() {
 
         let our_identity = Identity {
             name: username.clone(),
-            networking_key: hex::encode(networking_keypair.public_key().as_ref()),
+            networking_key: format!("0x{}", hex::encode(networking_keypair.public_key().as_ref())),
             ws_routing: if onchain_id.ip_and_port > 0 {
                 let port = (onchain_id.ip_and_port & 0xFFFF) as u16;
                 let ip_num = (onchain_id.ip_and_port >> 16) as u32;

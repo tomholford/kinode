@@ -13,13 +13,7 @@ const CHUNK_SIZE: usize = 262144; // 256kb
 pub async fn bootstrap(
     our_name: String,
     home_directory_path: String,
-) -> Result<
-    (
-        HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
-        Manifest,
-    ),
-    FileSystemError,
-> {
+) -> Result<(ProcessMap, Manifest), FileSystemError> {
     // fs bootstrapping, create home_directory, fs directory inside it, manifest + log if none.
     if let Err(e) = create_dir_if_dne(&home_directory_path).await {
         panic!("{}", e);
@@ -62,7 +56,7 @@ pub async fn bootstrap(
     // serialize it to a ProcessHandles from process id to JoinHandle
 
     let kernel_process_id = FileIdentifier::Process(ProcessId::Name("kernel".into()));
-    let mut state_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)> = HashMap::new();
+    let mut process_map: ProcessMap = HashMap::new();
 
     // get current processes' wasm_bytes handles. GetState(kernel)
     match manifest.read(&kernel_process_id, None, None).await {
@@ -70,7 +64,7 @@ pub async fn bootstrap(
             //  first time!
         }
         Ok(bytes) => {
-            state_map = bincode::deserialize(&bytes).expect("state map deserialization error!");
+            process_map = bincode::deserialize(&bytes).expect("state map deserialization error!");
         }
     }
 
@@ -128,21 +122,18 @@ pub async fn bootstrap(
         params: "\"network\"".into(),
     });
 
-    let mut special_on_panics: HashMap<String, OnPanic> = HashMap::new();
-    special_on_panics.insert("terminal".into(), OnPanic::Restart);
-
-    // for a module in /modules, put its bytes into filesystem, add to state_map
+    // for a module in /modules, put its bytes into filesystem, add to process_map
     for (process_name, wasm_bytes) in names_and_bytes {
         let hash: [u8; 32] = hash_bytes(&wasm_bytes);
 
-        let on_panic = special_on_panics
-            .get(&process_name)
-            .unwrap_or(&OnPanic::None);
-
         if let Some(id) = manifest.get_uuid_by_hash(&hash).await {
-            state_map.insert(
+            process_map.insert(
                 ProcessId::Name(process_name),
-                (id, on_panic.clone(), special_capabilities.clone()),
+                PersistedProcess {
+                    wasm_bytes_handle: id,
+                    on_panic: OnPanic::Restart,
+                    capabilities: special_capabilities.clone(),
+                },
             );
         } else {
             //  FsAction::Write
@@ -151,37 +142,41 @@ pub async fn bootstrap(
             let _ = manifest.write(&file, &wasm_bytes).await;
 
             //  doublecheck.
-            state_map.insert(
+            process_map.insert(
                 ProcessId::Name(process_name),
-                (
-                    file.to_uuid().unwrap(),
-                    on_panic.clone(),
-                    special_capabilities.clone(),
-                ),
+                PersistedProcess {
+                    wasm_bytes_handle: file.to_uuid().unwrap(),
+                    on_panic: OnPanic::Restart,
+                    capabilities: special_capabilities.clone(),
+                },
             );
         }
     }
 
-    // finally, save runtime modules in state map as well
+    // finally, save runtime modules in state map as well, somewhat fakely
     for runtime_module in RUNTIME_MODULES {
-        state_map.insert(
+        process_map.insert(
             ProcessId::Name(runtime_module.into()),
-            (0, OnPanic::None, special_capabilities.clone()),
+            PersistedProcess {
+                wasm_bytes_handle: 0,
+                on_panic: OnPanic::Restart,
+                capabilities: special_capabilities.clone(),
+            },
         );
     }
 
     // save kernel process state. FsAction::SetState(kernel)
-    let serialized_state_map =
-        bincode::serialize(&state_map).expect("state map serialization error!");
-    let state_map_hash: [u8; 32] = hash_bytes(&serialized_state_map);
+    let serialized_process_map =
+        bincode::serialize(&process_map).expect("state map serialization error!");
+    let process_map_hash: [u8; 32] = hash_bytes(&serialized_process_map);
 
-    if manifest.get_by_hash(&state_map_hash).await.is_none() {
+    if manifest.get_by_hash(&process_map_hash).await.is_none() {
         let _ = manifest
-            .write(&kernel_process_id, &serialized_state_map)
+            .write(&kernel_process_id, &serialized_process_map)
             .await;
     }
 
-    Ok((state_map, manifest))
+    Ok((process_map, manifest))
 }
 
 async fn get_processes_from_directories() -> Vec<(String, Vec<u8>)> {

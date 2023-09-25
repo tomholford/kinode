@@ -274,13 +274,10 @@ async fn load_state_from_reboot(
     return true;
 }
 
-fn build_state_for_initial_boot(
-    process_map: &HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
-    identifier_to_vfs: &mut IdentifierToVfs,
-) {
+fn build_state_for_initial_boot(process_map: &ProcessMap, identifier_to_vfs: &mut IdentifierToVfs) {
     //  add wasm bytes to each process' vfs and to terminal's vfs
     let mut terminal_vfs = Vfs::new();
-    for (process_id, (hash, _, _)) in process_map.iter() {
+    for (process_id, persisted) in process_map.iter() {
         let mut vfs = Vfs::new();
         let ProcessId::Name(id) = process_id else {
             println!("vfs: initial boot skip adding bytes for {:?}", process_id);
@@ -288,7 +285,9 @@ fn build_state_for_initial_boot(
         };
         let name = format!("{}.wasm", id);
         let full_path = format!("/{}", name);
-        let key = Key::File { id: hash.clone() };
+        let key = Key::File {
+            id: persisted.wasm_bytes_handle.clone(),
+        };
         let entry_type = EntryType::File {
             parent: Key::Dir { id: 0 },
         };
@@ -311,7 +310,7 @@ fn build_state_for_initial_boot(
 
 pub async fn vfs(
     our_node: String,
-    process_map: HashMap<ProcessId, (u128, OnPanic, HashSet<Capability>)>,
+    process_map: ProcessMap,
     send_to_loop: MessageSender,
     send_to_terminal: PrintSender,
     mut recv_from_loop: MessageReceiver,

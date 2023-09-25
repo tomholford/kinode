@@ -172,6 +172,16 @@ pub enum OnPanic {
     Requests(Vec<(Address, Request, Option<Payload>)>),
 }
 
+impl OnPanic {
+    pub fn is_restart(&self) -> bool {
+        match self {
+            OnPanic::None => false,
+            OnPanic::Restart => true,
+            OnPanic::Requests(_) => false,
+        }
+    }
+}
+
 //
 // kernel types that runtime modules use
 //
@@ -257,9 +267,7 @@ pub enum KernelCommand {
     RebootProcess {
         // kernel only
         process_id: ProcessId,
-        wasm_bytes_handle: u128,
-        on_panic: OnPanic,
-        initial_capabilities: HashSet<Capability>,
+        persisted: PersistedProcess,
     },
     Shutdown,
     // capabilities creation
@@ -295,6 +303,23 @@ pub enum CapMessage {
 pub enum KernelResponse {
     StartedProcess(ProcessMetadata),
     KilledProcess(ProcessId),
+}
+
+pub type ProcessMap = HashMap<ProcessId, PersistedProcess>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedProcess {
+    pub wasm_bytes_handle: u128,
+    pub on_panic: OnPanic,
+    pub capabilities: HashSet<Capability>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProcessContext {
+    // store ultimate in order to set prompting message if needed
+    pub prompting_message: Option<KernelMessage>,
+    // can be empty if a request doesn't set context, but still needs to inherit
+    pub context: Option<Context>,
 }
 
 //

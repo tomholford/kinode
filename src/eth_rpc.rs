@@ -28,16 +28,20 @@ struct EthEventSubscription {
     topic3: Option<U256>,
 }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum EthRpcError {
-    #[error("eth_rpc: error {error}")]
-    Error { error: String },
-    // TODO fill these out
+    NoRsvp,
+    BadJson,
+    NoJson,
+    EventSubscriptionFailed,
 }
 impl EthRpcError {
     pub fn kind(&self) -> &str {
         match *self {
-            EthRpcError::Error { .. } => "error",
+            EthRpcError::NoRsvp { .. } => "NoRsvp",
+            EthRpcError::BadJson { .. } => "BapJson",
+            EthRpcError::NoJson { .. } => "NoJson",
+            EthRpcError::EventSubscriptionFailed { .. } => "EventSubscriptionFailed",
         }
     }
 }
@@ -49,7 +53,6 @@ pub async fn eth_rpc(
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
 ) -> Result<()> {
-    // TODO swap panics for errors
     let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
         panic!("eth_rpc: couldn't connect to ws endpoint");
     };
@@ -67,8 +70,9 @@ pub async fn eth_rpc(
         let print_tx = print_tx.clone();
 
         let KernelMessage {
+            id,
             source,
-            rsvp,
+            ref rsvp,
             message:
                 Message::Request(Request {
                     inherit: _,
@@ -79,7 +83,8 @@ pub async fn eth_rpc(
             ..
         } = message
         else {
-            panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse message: {:?}", wm) });
+            panic!("eth_rpc: bad message");
+            continue;
         };
 
         let target = if is_expecting_response {
@@ -89,7 +94,16 @@ pub async fn eth_rpc(
             }
         } else {
             let Some(rsvp) = rsvp else {
-                panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: got request with no RSVP: {:?}", wm)});
+                send_to_loop
+                    .send(make_error_message(
+                        our.clone(),
+                        id.clone(),
+                        source.clone(),
+                        EthRpcError::NoRsvp,
+                    ))
+                    .await
+                .unwrap();
+                continue;
             };
             rsvp.clone()
         };
@@ -97,11 +111,29 @@ pub async fn eth_rpc(
         // let call_data = content.payload.bytes.content.clone().unwrap_or(vec![]);
 
         let Some(json) = json.clone() else {
-            panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: request must have JSON payload, got: {:?}", wm) });
+            send_to_loop
+                .send(make_error_message(
+                    our.clone(),
+                    id.clone(),
+                    source.clone(),
+                    EthRpcError::NoJson,
+                ))
+                .await
+                .unwrap();
+            continue;
         };
 
         let Ok(action) = serde_json::from_str::<EthRpcAction>(&json) else {
-            panic!("foo"); // return Err(EthRpcError::Error { error: format!("eth_rpc: couldn't parse json: {:?}", json) });
+            send_to_loop
+                .send(make_error_message(
+                    our.clone(),
+                    id.clone(),
+                    source.clone(),
+                    EthRpcError::BadJson,
+                ))
+                .await
+                .unwrap();
+            continue;
         };
 
         match action {
@@ -160,9 +192,7 @@ pub async fn eth_rpc(
 
                 let handle = tokio::task::spawn(async move {
                     let Ok(mut stream) = ws_rpc.subscribe_logs(&filter).await else {
-                        return Err(EthRpcError::Error {
-                            error: format!("eth_rpc: couldn't create event subscription"),
-                        });
+                        return Err(EthRpcError::EventSubscriptionFailed);
                     };
 
                     while let Some(event) = stream.next().await {
@@ -220,38 +250,29 @@ pub async fn eth_rpc(
 //
 //  helpers
 //
-// fn make_error_message(
-//     our: String,
-//     id: u64,
-//     source_process: String,
-//     error: EthRpcError,
-// ) -> WrappedMessage {
-//     WrappedMessage {
-//         id,
-//         target: Address {
-//             node: our.clone(),
-//             process: source_process,
-//         },
-//         rsvp: None,
-//         message: Err(UqbarError {
-//             source: Address {
-//                 node: our,
-//                 process: "filesystem".into(),
-//             },
-//             timestamp: get_current_unix_time().unwrap(),  //  TODO: handle error?
-//             content: UqbarErrorContent {
-//                 kind: error.kind().into(),
-//                 // message: format!("{}", error),
-//                 message: serde_json::to_value(error).unwrap(),  //  TODO: handle error?
-//                 context: serde_json::to_value("").unwrap(),
-//             },
-//         }),
-//     }
-// }
 
-// fn get_current_unix_time() -> anyhow::Result<u64> {
-//     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-//         Ok(t) => Ok(t.as_secs()),
-//         Err(e) => Err(e.into()),
-//     }
-// }
+fn make_error_message(
+    our: String,
+    id: u64,
+    source: Address,
+    error: EthRpcError,
+) -> KernelMessage {
+    KernelMessage {
+        id,
+        source: Address {
+            node: our.clone(),
+            process: ProcessId::Name("eth_rpc".into()),
+        },
+        target: source,
+        rsvp: None,
+        message: Message::Response((
+            Err(UqbarError {
+                kind: error.kind().into(),
+                message: Some(serde_json::to_string(&error).unwrap()),
+            }),
+            None,
+        )),
+        payload: None,
+        signed_capabilities: None,
+    }
+}

@@ -601,13 +601,18 @@ fn validate_handshake(
 ) -> Result<(Arc<PublicKey<Secp256k1>>, Arc<Nonce>), String> {
     let their_networking_key = signature::UnparsedPublicKey::new(
         &signature::ED25519,
-        hex::decode(strip_0x(&their_id.networking_key))
-            .map_err(|_| "failed to decode networking key")?,
+        hex::decode(strip_0x(&their_id.networking_key)).map_err(|_| {
+            format!(
+                "failed to decode networking key: {}",
+                their_id.networking_key
+            )
+        })?,
     );
 
     if !(their_networking_key
         .verify(
-            &serde_json::to_vec(&their_id).map_err(|_| "failed to serialize their identity")?,
+            &serde_json::to_vec(their_id)
+                .map_err(|_| format!("failed to serialize their identity: {:?}", their_id))?,
             &handshake.id_signature,
         )
         .is_ok()
@@ -664,8 +669,6 @@ fn make_secret_and_handshake(
             format!("0x{}", hex::encode(result))
         })
         .collect();
-
-    println!("{:?}\r", our_onchain_id);
 
     let signed_id = keypair
         .sign(&serde_json::to_vec(&our_onchain_id).unwrap_or(vec![]))

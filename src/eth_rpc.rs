@@ -148,7 +148,10 @@ pub async fn eth_rpc(
                         rsvp: None,
                         message: Message::Response((
                             Response {
-                                ipc: Some(serde_json::to_string::<Result<u64, EthRpcError>>(&Ok(id)).unwrap()),
+                                ipc: Some(
+                                    serde_json::to_string::<Result<u64, EthRpcError>>(&Ok(id))
+                                        .unwrap(),
+                                ),
                                 metadata: None,
                             },
                             None,

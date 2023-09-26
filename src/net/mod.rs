@@ -238,7 +238,6 @@ async fn message_to_new_peer(
                             // use response handshake to generate a peer
                             // then send the original message to that peer.
                             // TODO
-
                         } else if let Some(router_id) = pki.read().await.get(&router) {
                             if let Some((ip, port)) = &router_id.ws_routing {
                                 // println!("trying to connect to {router_name}\r");

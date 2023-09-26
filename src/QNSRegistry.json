@@ -1,10 +1,5 @@
 [
     {
-        "inputs": [],
-        "name": "MustChooseStaticOrRouted",
-        "type": "error"
-    },
-    {
         "anonymous": false,
         "inputs": [
             {
@@ -136,9 +131,9 @@
             },
             {
                 "indexed": true,
-                "internalType": "uint32",
+                "internalType": "uint96",
                 "name": "protocols",
-                "type": "uint32"
+                "type": "uint96"
             },
             {
                 "indexed": false,
@@ -148,9 +143,15 @@
             },
             {
                 "indexed": false,
-                "internalType": "uint48",
-                "name": "ipAndPort",
-                "type": "uint48"
+                "internalType": "uint32",
+                "name": "ip",
+                "type": "uint32"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint16",
+                "name": "port",
+                "type": "uint16"
             },
             {
                 "indexed": false,
@@ -165,30 +166,6 @@
     {
         "inputs": [
             {
-                "internalType": "bytes",
-                "name": "fqdn",
-                "type": "bytes"
-            }
-        ],
-        "name": "_getNodeAndParent",
-        "outputs": [
-            {
-                "internalType": "uint256",
-                "name": "node",
-                "type": "uint256"
-            },
-            {
-                "internalType": "uint256",
-                "name": "parentNode",
-                "type": "uint256"
-            }
-        ],
-        "stateMutability": "pure",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {
                 "internalType": "uint256",
                 "name": "node",
                 "type": "uint256"
@@ -199,7 +176,7 @@
                 "type": "uint32"
             }
         ],
-        "name": "clearProtocol",
+        "name": "clearProtocols",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
@@ -266,9 +243,9 @@
                 "type": "address"
             },
             {
-                "internalType": "uint32",
+                "internalType": "uint96",
                 "name": "protocols",
-                "type": "uint32"
+                "type": "uint96"
             }
         ],
         "stateMutability": "view",
@@ -295,7 +272,7 @@
                 "type": "bytes"
             },
             {
-                "internalType": "address",
+                "internalType": "contract IQNSNFT",
                 "name": "nft",
                 "type": "address"
             }
@@ -426,9 +403,14 @@
                         "type": "bytes32"
                     },
                     {
-                        "internalType": "uint48",
-                        "name": "ipAndPort",
-                        "type": "uint48"
+                        "internalType": "uint32",
+                        "name": "ip",
+                        "type": "uint32"
+                    },
+                    {
+                        "internalType": "uint16",
+                        "name": "port",
+                        "type": "uint16"
                     },
                     {
                         "internalType": "bytes32[]",

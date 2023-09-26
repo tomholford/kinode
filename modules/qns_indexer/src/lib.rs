@@ -47,7 +47,8 @@ sol! {
         uint256 indexed node,
         uint96 indexed protocols,
         bytes32 publicKey,
-        uint48 ipAndPort,
+        uint32 ip,
+        uint16 port,
         bytes32[] routers
     );
 
@@ -58,14 +59,14 @@ fn subscribe_to_qns(from_block: u64) -> String {
     json!({
         "SubscribeEvents": {
             "addresses": [
-                // QNSRegistry on goerli opt
-                "0xfd571a1a8Ba4bAe58f5729aF52E2ED7277ed3DF2",
+                // QNSRegistry on sepolia
+                "0x9e5ed0e7873E0d7f10eEb6dE72E87fE087A12776",
             ],
             "from_block": from_block,
             "to_block": null,
             "events": [
                 "NodeRegistered(uint256,bytes)",
-                "WsChanged(uint256,uint96,bytes32,uint48,bytes32[])",
+                "WsChanged(uint256,uint96,bytes32,uint32,uint16,bytes32[])",
             ],
             "topic1": null,
             "topic2": null,
@@ -174,8 +175,9 @@ impl UqProcess for Component {
                             // bindings::print_to_terminal(0, format!("qns_indexer: NODE2: {:?}", node.to_string()).as_str());
                             let decoded     = WsChanged::decode_data(&decode_hex_to_vec(&e.data), true).unwrap();
                             let public_key  = hex::encode(decoded.0);
-                            let (ip, port)  = split_ip_and_port(decoded.1);
-                            let routers_raw = decoded.2;
+                            let ip = decoded.1;
+                            let port = decoded.2;
+                            let routers_raw = decoded.3;
                             let routers: Vec<String> = routers_raw
                                 .iter()
                                 .map(|r| {
@@ -279,12 +281,6 @@ fn hex_to_u64(hex: &str) -> Result<u64, std::num::ParseIntError> {
         hex
     };
     u64::from_str_radix(without_prefix, 16)
-}
-
-fn split_ip_and_port(combined: u64) -> (u32, u16) {
-    let port = (combined & 0xFFFF) as u16;              // Extract the last 16 bits
-    let ip = (combined >> 16) as u32;                   // Right shift to get the first 32 bits
-    (ip, port)
 }
 
 fn dnswire_decode(wire_format_bytes: Vec<u8>) -> String {

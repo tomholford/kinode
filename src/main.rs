@@ -41,7 +41,7 @@ const ETH_RPC_CHANNEL_CAPACITY: usize = 32;
 const VFS_CHANNEL_CAPACITY: usize = 1_000;
 const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 
-const QNS_ADDRESS: &str = "0xfd571a1a8Ba4bAe58f5729aF52E2ED7277ed3DF2";
+const QNS_SEPOLIA_ADDRESS: &str = "0x9e5ed0e7873E0d7f10eEb6dE72E87fE087A12776";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -65,7 +65,7 @@ async fn main() {
     // read PKI from HTTP endpoint served by RPC
     // TODO this is so incredibly bad, lol, lmao
     let mut rpc_url =
-        "wss://opt-goerli.g.alchemy.com/v2/_2PaX5PomxANZXpqLTaadDLbbAgTgauL".to_string();
+        "wss://eth-sepolia.g.alchemy.com/v2/W0nka5SiRCHASxyF6jzJ7HkQaMfnq4Mh".to_string();
 
     for (i, arg) in args.iter().enumerate() {
         if arg == "--rpc" {
@@ -174,7 +174,9 @@ async fn main() {
                 key,
                 jwt_secret,
                 http_server_port,
-                &username
+                &username,
+                our_ip.clone(),
+                routers.clone(),
             ) => panic!("login failed"),
             (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
@@ -189,7 +191,7 @@ async fn main() {
         let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url.clone()).await else {
             panic!("rpc: couldn't connect to blockchain wss endpoint");
         };
-        let qns_address: EthAddress = QNS_ADDRESS.parse().unwrap();
+        let qns_address: EthAddress = QNS_SEPOLIA_ADDRESS.parse().unwrap();
         let contract = QNSRegistry::new(qns_address, ws_rpc.into());
         let node_id: U256 = namehash(&username).as_bytes().into();
         let onchain_id = contract.ws(node_id).call().await.unwrap(); // TODO unwrap
@@ -216,7 +218,6 @@ async fn main() {
             // ))
         ) {
             panic!("CRITICAL: your routing information does not match on-chain records");
-            // serve a reset page
         }
 
         let our_identity = Identity {
@@ -225,17 +226,15 @@ async fn main() {
                 "0x{}",
                 hex::encode(networking_keypair.public_key().as_ref())
             ),
-            ws_routing: if onchain_id.ip_and_port > 0 {
-                let port = (onchain_id.ip_and_port & 0xFFFF) as u16;
-                let ip_num = (onchain_id.ip_and_port >> 16) as u32;
+            ws_routing: if onchain_id.ip > 0 && onchain_id.port > 0 {
                 let ip = format!(
                     "{}.{}.{}.{}",
-                    (ip_num >> 24) & 0xFF,
-                    (ip_num >> 16) & 0xFF,
-                    (ip_num >> 8) & 0xFF,
-                    ip_num & 0xFF
+                    (onchain_id.ip >> 24) & 0xFF,
+                    (onchain_id.ip >> 16) & 0xFF,
+                    (onchain_id.ip >> 8) & 0xFF,
+                    onchain_id.ip & 0xFF
                 );
-                Some((ip, port))
+                Some((ip, onchain_id.port))
             } else {
                 None
             },

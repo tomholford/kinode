@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use thiserror::Error;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,7 +83,6 @@ pub async fn eth_rpc(
         } = message
         else {
             panic!("eth_rpc: bad message");
-            continue;
         };
 
         let target = if is_expecting_response {

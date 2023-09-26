@@ -371,13 +371,12 @@ async fn message_to_peer(
     } else {
         drop(peers_write);
     }
-    println!("sending message to unknown peer\r");
+    // println!("sending message to unknown peer\r");
     // search PKI for peer and attempt to create a connection, then resend
     let pki_read = pki.read().await;
     match pki_read.get(target) {
         // peer does not exist in PKI!
         None => {
-            println!("not in PKI: {}\r", target);
             return Err(NetworkErrorKind::Offline);
         }
         // peer exists in PKI
@@ -427,7 +426,6 @@ async fn message_to_peer(
                 //  peer does not have direct routing info, need to use router
                 //
                 None => {
-                    println!("trying to build routed connection\r");
                     let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
                     while let Some(router) = routers_to_try.pop_front() {
                         // decode router namehash

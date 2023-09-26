@@ -665,6 +665,8 @@ fn make_secret_and_handshake(
         })
         .collect();
 
+    println!("{:?}\r", our_onchain_id);
+
     let signed_id = keypair
         .sign(&serde_json::to_vec(&our_onchain_id).unwrap_or(vec![]))
         .as_ref()

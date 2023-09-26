@@ -82,9 +82,9 @@ pub enum NetActions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QnsUpdate {
-    pub name: String,
+    pub name: String, // actual username / domain name
     pub owner: String,
-    pub node: String,
+    pub node: String, // hex namehash of node
     pub public_key: String,
     pub ip: String,
     pub port: u16,
@@ -100,8 +100,11 @@ pub async fn networking(
     print_tx: PrintSender,
     mut message_rx: MessageReceiver,
 ) -> Result<()> {
+    // TODO persist this here
     let pki: OnchainPKI = Arc::new(RwLock::new(HashMap::new()));
+    // mapping from QNS namehash to username
     let names: PKINames = Arc::new(RwLock::new(HashMap::new()));
+
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
     let keypair = keypair.clone();
 
@@ -191,6 +194,7 @@ async fn sender(
         keypair.clone(),
         pki.clone(),
         peers.clone(),
+        names.clone(),
         km.clone(),
         kernel_message_tx.clone(),
     )
@@ -336,6 +340,7 @@ async fn message_to_peer(
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
+    names: PKINames,
     km: KernelMessage,
     kernel_message_tx: MessageSender,
 ) -> Result<(), NetworkErrorKind> {
@@ -366,12 +371,13 @@ async fn message_to_peer(
     } else {
         drop(peers_write);
     }
-    // println!("sending message to unknown peer\r");
+    println!("sending message to unknown peer\r");
     // search PKI for peer and attempt to create a connection, then resend
     let pki_read = pki.read().await;
     match pki_read.get(target) {
         // peer does not exist in PKI!
         None => {
+            println!("not in PKI: {}\r", target);
             return Err(NetworkErrorKind::Offline);
         }
         // peer exists in PKI
@@ -408,6 +414,7 @@ async fn message_to_peer(
                                 keypair.clone(),
                                 pki.clone(),
                                 peers,
+                                names,
                                 km,
                                 kernel_message_tx,
                             )
@@ -420,8 +427,14 @@ async fn message_to_peer(
                 //  peer does not have direct routing info, need to use router
                 //
                 None => {
+                    println!("trying to build routed connection\r");
                     let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
                     while let Some(router) = routers_to_try.pop_front() {
+                        // decode router namehash
+                        let router = match names.read().await.get(&router) {
+                            None => continue,
+                            Some(router) => router.clone(),
+                        };
                         if router == our.name {
                             continue;
                         }
@@ -543,7 +556,7 @@ async fn handle_incoming_message(
                         let _ = pki.write().await.insert(
                             log.name.clone(),
                             Identity {
-                                name: log.name,
+                                name: log.name.clone(),
                                 networking_key: log.public_key,
                                 ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
                                     None
@@ -553,6 +566,7 @@ async fn handle_incoming_message(
                                 allowed_routers: log.routers,
                             },
                         );
+                        let _ = names.write().await.insert(log.node, log.name);
                     }
                 }
             }

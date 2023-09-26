@@ -47,3 +47,19 @@ pub struct Handshake {
     pub ephemeral_public_key_signature: Vec<u8>,
     pub nonce: Vec<u8>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NetActions {
+    QnsUpdate(QnsUpdate),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QnsUpdate {
+    pub name: String, // actual username / domain name
+    pub owner: String,
+    pub node: String, // hex namehash of node
+    pub public_key: String,
+    pub ip: String,
+    pub port: u16,
+    pub routers: Vec<String>,
+}

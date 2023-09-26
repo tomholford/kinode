@@ -3,22 +3,23 @@ use aes_gcm::{
     Aes256Gcm, Key,
 };
 use anyhow::Result;
+use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
+use ethers_providers::Ws;
 use lazy_static::__Deref;
-use reqwest;
 use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
-use std::collections::HashMap;
 use std::env;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 use tokio::{fs, time::timeout};
 
 use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
 mod encryptor;
+mod eth_rpc;
 mod filesystem;
 mod http_client;
 mod http_server;
@@ -36,42 +37,17 @@ const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
+const ETH_RPC_CHANNEL_CAPACITY: usize = 32;
 const VFS_CHANNEL_CAPACITY: usize = 1_000;
 const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
+
+const QNS_SEPOLIA_ADDRESS: &str = "0x9e5ed0e7873E0d7f10eEb6dE72E87fE087A12776";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
-async fn indexing(
-    blockchain_url: String,
-    pki: OnchainPKI,
-    _print_sender: PrintSender,
-) -> Result<()> {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-    loop {
-        interval.tick().await;
-        let response = match reqwest::get(&blockchain_url).await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    response
-                } else {
-                    continue;
-                }
-            }
-            Err(_) => continue,
-        };
-        let json = match response.json::<serde_json::Value>().await {
-            Ok(json) => json,
-            Err(_) => continue,
-        };
-        let mut pki = pki.write().await;
-        *pki = match serde_json::from_value::<HashMap<String, Identity>>(json) {
-            Ok(pki) => pki,
-            Err(_) => continue,
-        };
-    }
-}
+abigen!(QNSRegistry, "src/QNSRegistry.json");
 
 #[tokio::main]
 async fn main() {
@@ -87,8 +63,18 @@ async fn main() {
         panic!("failed to create home directory: {:?}", e);
     }
     // read PKI from HTTP endpoint served by RPC
-    let blockchain_url = &args[2];
-    // let blockchain_url = "http://147.135.114.167:8083/sequencer/blockchain.json";
+    // TODO this is so incredibly bad, lol, lmao
+    let mut rpc_url =
+        "wss://eth-sepolia.g.alchemy.com/v2/W0nka5SiRCHASxyF6jzJ7HkQaMfnq4Mh".to_string();
+
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "--rpc" {
+            // Check if the next argument exists and is not another flag
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                rpc_url = args[i + 1].clone();
+            }
+        }
+    }
 
     // kernel receives system messages via this channel, all other modules send messages
     let (kernel_message_sender, kernel_message_receiver): (MessageSender, MessageReceiver) =
@@ -111,6 +97,8 @@ async fn main() {
     let (http_server_sender, http_server_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CHANNEL_CAPACITY);
     // http client performs http requests on behalf of processes
+    let (eth_rpc_sender, eth_rpc_receiver): (MessageSender, MessageReceiver) =
+        mpsc::channel(ETH_RPC_CHANNEL_CAPACITY);
     let (http_client_sender, http_client_receiver): (MessageSender, MessageReceiver) =
         mpsc::channel(HTTP_CLIENT_CHANNEL_CAPACITY);
     // vfs maintains metadata about files in fs for processes
@@ -122,28 +110,6 @@ async fn main() {
     // terminal receives prints via this channel, all other modules send prints
     let (print_sender, print_receiver): (PrintSender, PrintReceiver) =
         mpsc::channel(TERMINAL_CHANNEL_CAPACITY);
-
-    let (pki, local): (OnchainPKI, bool) = 'get_chain: {
-        if let Ok(response) = reqwest::get(blockchain_url).await {
-            if response.status().is_success() {
-                if let Ok(pki) = response.json::<HashMap<String, Identity>>().await {
-                    break 'get_chain (Arc::new(RwLock::new(pki)), false);
-                }
-            }
-        }
-        println!(
-            "\x1b[38;5;196mfailed to fetch PKI from {}, falling back to local blockchain.json\x1b[0m",
-            blockchain_url
-        );
-        let blockchain = std::fs::File::open("blockchain.json").unwrap();
-        let json: serde_json::Value = serde_json::from_reader(blockchain).unwrap();
-        (
-            Arc::new(RwLock::new(
-                serde_json::from_value::<HashMap<String, Identity>>(json).unwrap(),
-            )),
-            true,
-        )
-    };
 
     println!("finding public IP address...");
     let our_ip = {
@@ -166,7 +132,7 @@ async fn main() {
 
     // NOTE: when we log in, we MUST check the PKI to make sure our
     // information matches what we think it should be. this includes
-    // username, address, networking key, and routing info.
+    // username, networking key, and routing info.
     // if any do not match, we should prompt user to create a "transaction"
     // that updates their PKI info on-chain.
     let http_server_port = http_server::find_open_port(8080).await.unwrap();
@@ -180,14 +146,15 @@ async fn main() {
     ) = if keyfile.is_ok() {
         // LOGIN flow
         // get username, keyfile, and jwt_secret from disk
-        let (username, key, jwt_secret) =
-            bincode::deserialize::<(String, Vec<u8>, Vec<u8>)>(&keyfile.unwrap()).unwrap();
+        let (username, routers, key, jwt_secret) =
+            bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap())
+                .unwrap();
 
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
             format!("http://localhost:{}/login", http_server_port),
             format!(
-                "Welcome back, {}. Click here to log in to your node.",
+                "Welcome back, {}, Click here to log in to your node.",
                 username
             ),
         );
@@ -207,7 +174,7 @@ async fn main() {
                 key,
                 jwt_secret,
                 http_server_port,
-                &username
+                &username,
             ) => panic!("login failed"),
             (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
@@ -218,14 +185,58 @@ async fn main() {
         };
 
         // check if Identity for this username has correct networking keys,
-        // if not, prompt user to reset them. TODO
-        let pki_read = pki.read().await;
-        let our_identity = match pki_read.get(&username) {
-            Some(identity) => identity,
-            None => panic!(
-                "TODO prompt registration: no identity found for username {}",
-                username
+        // if not, prompt user to reset them.
+        let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url.clone()).await else {
+            panic!("rpc: couldn't connect to blockchain wss endpoint");
+        };
+        let qns_address: EthAddress = QNS_SEPOLIA_ADDRESS.parse().unwrap();
+        let contract = QNSRegistry::new(qns_address, ws_rpc.into());
+        let node_id: U256 = namehash(&username).as_bytes().into();
+        let onchain_id = contract.ws(node_id).call().await.unwrap(); // TODO unwrap
+
+        // double check that routers match on-chain information
+        let namehashed_routers: Vec<[u8; 32]> = routers
+            .clone()
+            .into_iter()
+            .map(|name| {
+                let hash = namehash(&name);
+                let mut result = [0u8; 32];
+                result.copy_from_slice(hash.as_bytes());
+                result
+            })
+            .collect();
+
+        // double check that keys match on-chain information
+        if (
+            onchain_id.routers != namehashed_routers
+                || onchain_id.public_key != networking_keypair.public_key().as_ref()
+            // || (onchain_id.ip_and_port > 0 && onchain_id.ip_and_port != combineIpAndPort(
+            //     our_ip.clone(),
+            //     http_server_port,
+            // ))
+        ) {
+            panic!("CRITICAL: your routing information does not match on-chain records");
+        }
+
+        let our_identity = Identity {
+            name: username.clone(),
+            networking_key: format!(
+                "0x{}",
+                hex::encode(networking_keypair.public_key().as_ref())
             ),
+            ws_routing: if onchain_id.ip > 0 && onchain_id.port > 0 {
+                let ip = format!(
+                    "{}.{}.{}.{}",
+                    (onchain_id.ip >> 24) & 0xFF,
+                    (onchain_id.ip >> 16) & 0xFF,
+                    (onchain_id.ip >> 8) & 0xFF,
+                    onchain_id.ip & 0xFF
+                );
+                Some((ip, onchain_id.port))
+            } else {
+                None
+            },
+            allowed_routers: routers,
         };
 
         (our_identity.clone(), networking_keypair, jwt_secret_bytes)
@@ -244,16 +255,16 @@ async fn main() {
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(Registration, Document, Vec<u8>, String)>(1);
-        let (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = tokio::select! {
-            _ = register::register(tx, kill_rx, http_server_port, http_server_port, pki.clone())
+        let (tx, mut rx) = mpsc::channel::<(Identity, String, Document, Vec<u8>)>(1);
+        let (our, password, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
+            _ = register::register(tx, kill_rx, our_ip.clone(), http_server_port, http_server_port)
                 => panic!("registration failed"),
-            (registration, serialized_networking_keypair, jwt_secret_bytes, signature) = async {
+            (our, password, serialized_networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("registration failed")
-            } => (registration, serialized_networking_keypair, jwt_secret_bytes, signature),
+            } => (our, password, serialized_networking_keypair, jwt_secret_bytes),
         };
 
         println!("generating disk encryption keys...");
@@ -262,7 +273,7 @@ async fn main() {
             PBKDF2_ALG,
             NonZeroU32::new(ITERATIONS).unwrap(),
             DISK_KEY_SALT,
-            registration.password.as_bytes(),
+            password.as_bytes(),
             &mut disk_key,
         );
         println!(
@@ -272,69 +283,18 @@ async fn main() {
         let key = Key::<Aes256Gcm>::from_slice(&disk_key);
         let cipher = Aes256Gcm::new(&key);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-        let ciphertext: Vec<u8> = cipher
+        let keyciphertext: Vec<u8> = cipher
             .encrypt(&nonce, serialized_networking_keypair.as_ref())
             .unwrap();
-        let networking_keypair =
-            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
         let jwtciphertext: Vec<u8> = cipher.encrypt(&nonce, jwt_secret_bytes.as_ref()).unwrap();
 
-        // TODO: if IP is localhost, assign a router...
-        let hex_pubkey = hex::encode(networking_keypair.public_key().as_ref());
-        let ws_port = http_server::find_open_port(9000).await.unwrap();
-        let our = Identity {
-            name: registration.username.clone(),
-            address: registration.address.clone(),
-            networking_key: hex_pubkey.clone(),
-            ws_routing: if our_ip == "localhost" || !registration.direct {
-                None
-            } else {
-                Some((our_ip.clone(), ws_port))
-            },
-            allowed_routers: if our_ip == "localhost" || !registration.direct {
-                // vec!["rolr1".into(), "rolr2".into(), "rolr3".into()]
-                vec!["tester4".into()]
-            } else {
-                vec![]
-            },
-        };
-
-        let id_transaction = IdentityTransaction {
-            from: registration.address.clone(),
-            signature: Some(signature),
-            to: "0x0".into(),
-            town_id: 0,
-            calldata: our.clone(),
-            nonce: "0".into(),
-        };
-
-        // make POST
-        if !local {
-            let response = reqwest::Client::new()
-                .post(blockchain_url)
-                .body(bincode::serialize(&id_transaction).unwrap())
-                .send()
-                .await
-                .unwrap();
-
-            assert!(response.status().is_success());
-        } else {
-            pki.write().await.insert(our.name.clone(), our.clone());
-            fs::write(
-                "blockchain.json",
-                serde_json::to_string(&*pki.read().await).unwrap(),
-            )
-            .await
-            .unwrap();
-        }
-        println!("\"posting\" \"transaction\" to \"blockchain\"...");
-        std::thread::sleep(std::time::Duration::from_secs(5));
         fs::write(
             format!("{}/.network.keys", home_directory_path),
             bincode::serialize(&(
-                registration.username.clone(),
-                [nonce.deref().to_vec(), ciphertext].concat(),
+                our.name.clone(),
+                our.allowed_routers.clone(),
+                [nonce.deref().to_vec(), keyciphertext].concat(),
                 [nonce.deref().to_vec(), jwtciphertext].concat(),
             ))
             .unwrap(),
@@ -342,8 +302,11 @@ async fn main() {
         .await
         .unwrap();
 
+        let networking_keypair =
+            signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+
         println!("registration complete!");
-        (our, networking_keypair, jwt_secret_bytes)
+        (our, networking_keypair, jwt_secret_bytes.to_vec())
     };
     //  bootstrap FS.
     let _ = print_sender
@@ -362,7 +325,7 @@ async fn main() {
     let _ = print_sender
         .send(Printout {
             verbosity: 0,
-            content: format!("{}.. now online", our.name),
+            content: format!("{} now online", our.name),
         })
         .await;
     let _ = print_sender
@@ -397,6 +360,7 @@ async fn main() {
         fs_message_sender,
         http_server_sender,
         http_client_sender,
+        eth_rpc_sender,
         vfs_message_sender,
         encryptor_sender,
     ));
@@ -404,17 +368,11 @@ async fn main() {
         our.clone(),
         our_ip,
         networking_keypair_arc.clone(),
-        pki.clone(),
         net_message_sender.clone(),
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),
         net_message_receiver,
-    ));
-    tasks.spawn(indexing(
-        blockchain_url.clone(),
-        pki.clone(),
-        print_sender.clone(),
     ));
     tasks.spawn(filesystem::fs_sender(
         our.name.clone(),
@@ -435,6 +393,13 @@ async fn main() {
         our.name.clone(),
         kernel_message_sender.clone(),
         http_client_receiver,
+        print_sender.clone(),
+    ));
+    tasks.spawn(eth_rpc::eth_rpc(
+        our.name.clone(),
+        rpc_url.clone(),
+        kernel_message_sender.clone(),
+        eth_rpc_receiver,
         print_sender.clone(),
     ));
     tasks.spawn(vfs::vfs(

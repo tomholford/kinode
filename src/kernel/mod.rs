@@ -1355,6 +1355,7 @@ async fn make_event_loop(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_eth_rpc: t::MessageSender,
     send_to_vfs: t::MessageSender,
     send_to_encryptor: t::MessageSender,
     send_to_terminal: t::PrintSender,
@@ -1362,6 +1363,10 @@ async fn make_event_loop(
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
     Box::pin(async move {
         let mut senders: Senders = HashMap::new();
+        senders.insert(
+            t::ProcessId::Name("eth_rpc".into()),
+            ProcessSender::Runtime(send_to_eth_rpc),
+        );
         senders.insert(
             t::ProcessId::Name("filesystem".into()),
             ProcessSender::Runtime(send_to_fs),
@@ -1698,6 +1703,7 @@ pub async fn kernel(
     send_to_fs: t::MessageSender,
     send_to_http_server: t::MessageSender,
     send_to_http_client: t::MessageSender,
+    send_to_eth_rpc: t::MessageSender,
     send_to_vfs: t::MessageSender,
     send_to_encryptor: t::MessageSender,
 ) -> Result<()> {
@@ -1724,6 +1730,7 @@ pub async fn kernel(
             send_to_fs,
             send_to_http_server,
             send_to_http_client,
+            send_to_eth_rpc,
             send_to_vfs,
             send_to_encryptor,
             send_to_terminal,

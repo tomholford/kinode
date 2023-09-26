@@ -39,7 +39,10 @@ pub async fn build_connection(
             let (their_ephemeral_pk, nonce) =
                 match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
                     Ok(v) => v,
-                    Err(_) => return Err(SendErrorKind::Offline),
+                    Err(e) => {
+                        println!("handshake validation failed: {}\r", e);
+                        return Err(NetworkErrorKind::Offline);
+                    }
                 };
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
             let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
@@ -61,7 +64,10 @@ pub async fn build_connection(
                 their_handshake.nonce.clone(),
             ) {
                 Ok(v) => v,
-                Err(_) => return Err(SendErrorKind::Offline),
+                Err(e) => {
+                    println!("handshake validation failed: {}\r", e);
+                    return Err(NetworkErrorKind::Offline);
+                }
             };
             let (ephemeral_secret, our_handshake) =
                 make_secret_and_handshake(&our, keypair.clone(), &their_id.name);

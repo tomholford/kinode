@@ -52,6 +52,7 @@ warp = "0.3.5"
 wasmtime = "12.0.1"
 wasmtime-wasi = "12.0.1"
 blake3 = "1.4.1"
+ethers-providers = "2.0.9"
 num-traits = "0.2"
 generic-array = "0.14"
 # For use with https://github.com/tokio-rs/console

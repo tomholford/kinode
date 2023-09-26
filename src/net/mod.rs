@@ -5,7 +5,10 @@ use aes_gcm_siv::Nonce;
 use anyhow::Result;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
-use ethers::prelude::k256::{self, Secp256k1};
+use ethers::prelude::{
+    k256::{self, Secp256k1},
+    namehash,
+};
 use futures::StreamExt;
 use ring::signature::{self, Ed25519KeyPair};
 use std::collections::VecDeque;
@@ -21,11 +24,26 @@ mod types;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NetActions {
+    QnsUpdate(QnsUpdate),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QnsUpdate {
+    pub name: String,
+    pub owner: String,
+    pub node: String,
+    pub public_key: String,
+    pub ip: String,
+    pub port: u16,
+    pub routers: Vec<String>,
+}
+
 pub async fn networking(
     our: Identity,
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
-    pki: OnchainPKI,
     self_tx: MessageSender,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
@@ -33,6 +51,9 @@ pub async fn networking(
     mut message_rx: MessageReceiver,
 ) -> Result<()> {
     // TODO: persist this if we shutdown gracefully
+    let pki: OnchainPKI = Arc::new(RwLock::new(HashMap::new()));
+
+    let names: PKINames = Arc::new(RwLock::new(HashMap::new()));
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
 
     let listener = match &our.ws_routing {
@@ -74,7 +95,14 @@ pub async fn networking(
                 // end debugging stuff
                 let target = &km.target.node;
                 if target == &our.name {
-                    handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
+                    handle_incoming_message(
+                        &our,
+                        km,
+                        peers.clone(),
+                        pki.clone(),
+                        names.clone(),
+                        print_tx.clone()
+                    ).await;
                     continue;
                 }
                 let peers_read = peers.read().await;
@@ -400,6 +428,8 @@ async fn handle_incoming_message(
     our: &Identity,
     km: KernelMessage,
     peers: Peers,
+    pki: OnchainPKI,
+    names: PKINames,
     print_tx: PrintSender,
 ) {
     let data = match km.message {
@@ -418,8 +448,9 @@ async fn handle_incoming_message(
             })
             .await;
     } else {
-        // available commands: "peers"
-        match data.as_str() {
+        // available commands: "peers", "QnsUpdate" (see qns_indexer module)
+        // first parse as raw string, then deserialize to NetActions object
+        match data.as_ref() {
             "peers" => {
                 let peer_read = peers.read().await;
                 let _ = print_tx
@@ -429,13 +460,67 @@ async fn handle_incoming_message(
                     })
                     .await;
             }
-            _ => {
+            "pki" => {
+                let pki_read = pki.read().await;
                 let _ = print_tx
                     .send(Printout {
-                        verbosity: 1,
-                        content: "ws: got unknown command".into(),
+                        verbosity: 0,
+                        content: format!("{:?}", pki_read),
                     })
                     .await;
+            }
+            "names" => {
+                let names_read = names.read().await;
+                let _ = print_tx
+                    .send(Printout {
+                        verbosity: 0,
+                        content: format!("{:?}", names_read),
+                    })
+                    .await;
+            }
+            _ => {
+                let Ok(act) = serde_json::from_str::<NetActions>(&data) else {
+                    let _ = print_tx
+                        .send(Printout {
+                            verbosity: 0,
+                            content: "net: got unknown command".into(),
+                        })
+                        .await;
+                    return;
+                };
+                match act {
+                    NetActions::QnsUpdate(log) => {
+                        if km.source.process != ProcessId::Name("qns_indexer".to_string()) {
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 0,
+                                    content: "net: only qns_indexer can update qns data".into(),
+                                })
+                                .await;
+                            return;
+                        }
+                        let _ = print_tx
+                            .send(Printout {
+                                verbosity: 0, // TODO 1
+                                content: format!("net: got QNS update for {}", log.name),
+                            })
+                            .await;
+
+                        let _ = pki.write().await.insert(
+                            log.name.clone(),
+                            Identity {
+                                name: log.name,
+                                networking_key: log.public_key,
+                                ws_routing: if log.ip == "0.0.0.0".to_string() || log.port == 0 {
+                                    None
+                                } else {
+                                    Some((log.ip, log.port))
+                                },
+                                allowed_routers: log.routers,
+                            },
+                        );
+                    }
+                }
             }
         }
     }
@@ -482,12 +567,18 @@ fn validate_handshake(
 ) -> Result<(Arc<PublicKey<Secp256k1>>, Arc<Nonce>), String> {
     let their_networking_key = signature::UnparsedPublicKey::new(
         &signature::ED25519,
-        hex::decode(&their_id.networking_key).map_err(|_| "failed to decode networking key")?,
+        hex::decode(strip_0x(&their_id.networking_key)).map_err(|_| {
+            format!(
+                "failed to decode networking key: {}",
+                their_id.networking_key
+            )
+        })?,
     );
 
     if !(their_networking_key
         .verify(
-            &serde_json::to_vec(&their_id).map_err(|_| "failed to serialize their identity")?,
+            &serde_json::to_vec(their_id)
+                .map_err(|_| format!("failed to serialize their identity: {:?}", their_id))?,
             &handshake.id_signature,
         )
         .is_ok()
@@ -530,8 +621,23 @@ fn make_secret_and_handshake(
         .sign(&ephemeral_public_key.to_sec1_bytes())
         .as_ref()
         .to_vec();
+    // before signing our identity, convert router names to namehashes
+    // to match the exact onchain representation of our identity
+    let mut our_onchain_id = our.clone();
+    our_onchain_id.allowed_routers = our
+        .allowed_routers
+        .clone()
+        .into_iter()
+        .map(|name| {
+            let hash = namehash(&name);
+            let mut result = [0u8; 32];
+            result.copy_from_slice(hash.as_bytes());
+            format!("0x{}", hex::encode(result))
+        })
+        .collect();
+
     let signed_id = keypair
-        .sign(&serde_json::to_vec(our).unwrap_or(vec![]))
+        .sign(&serde_json::to_vec(&our_onchain_id).unwrap_or(vec![]))
         .as_ref()
         .to_vec();
 
@@ -549,4 +655,12 @@ fn make_secret_and_handshake(
     };
 
     (ephemeral_secret, handshake)
+}
+
+fn strip_0x(s: &str) -> String {
+    if s.starts_with("0x") {
+        s[2..].to_string()
+    } else {
+        s.to_string()
+    }
 }

@@ -223,21 +223,7 @@
           <label for="password">Password</label>
         </div>
         <input autofocus type="password" id="password" required minlength="6" name="password" placeholder="Min 6 characters" />
-        <a class="forgot-password" href="#" onclick="toggleForgotPasswordForm()">Forgot password</a>
         <button type="submit">Login</button>
-      </form>
-
-      <form id="reset-password-form" class="col" style="display: none;">
-        <div class="row label-row">
-          <label for="password">New Password</label>
-        </div>
-        <input autofocus type="password" id="new-password" required minlength="6" name="new-password" placeholder="Min 6 characters" />
-        <div class="row label-row">
-          <label for="confirm-password">Confirm Password</label>
-        </div>
-        <input type="password" id="confirm-password" required minlength="6" name="confirm-password" placeholder="Min 6 characters" oninput="clearPasswordCheck()" />
-        <a  class="forgot-password" href="#" onclick="toggleForgotPasswordForm()">Go back</a>
-        <button type="submit">Sign & Submit</button>
       </form>
       <div id="loading" class="col">
         <h3>Initiating session...</h3>
@@ -245,26 +231,27 @@
       </div>
     </div>
     <script>
-      const UQBAR_NETWORK_URL = 'https://chain-id.uqbar.network/uqbar-chain-id'
-      const UQBAR_EXPLORER_URL = `https://chain-id.uqbar.network/indexer`
-      const UQBAR_NETWORK_HEX = '0x7261627175'
-      const UQBAR_NETWORK_INT = 491260113269
+      const GOERLI_OPT_URL = 'https://goerli.optimism.io'
+      const GOERLI_OPT_EXPLORER_URL = `https://goerli-optimism.etherscan.io/`
+      const GOERLI_OPT_HEX = '0x1a4'
+      const GOERLI_OPT_INT = 420
       const CONNECTION_ERROR = 'There was an error connecting to your wallet. Please try again.'
+      
       async function loadWallet() {
         try {
           const accounts = await ethereum.request({ method: 'eth_requestAccounts' })
           const networkId = String(await window.ethereum.request({ method: 'net_version' }).catch(() => '0x1'))
 
-          if (networkId !== UQBAR_NETWORK_HEX && networkId !== UQBAR_NETWORK_INT) {
+          if (networkId !== GOERLI_OPT_HEX && networkId !== GOERLI_OPT_INT) {
             // await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x5' }] });
             await window.ethereum.request({
               method: 'wallet_addEthereumChain',
               params: [{
-                chainId: UQBAR_NETWORK_HEX,
-                chainName: 'Uqbar',
-                nativeCurrency: { name: 'ZIG', symbol: 'ZIG', decimals: 18 },
-                rpcUrls: [UQBAR_NETWORK_URL],
-                blockExplorerUrls: [UQBAR_EXPLORER_URL],
+                chainId: GOERLI_OPT_HEX,
+                chainName: 'Goerli Optimism',
+                nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                rpcUrls: [GOERLI_OPT_URL],
+                blockExplorerUrls: [GOERLI_OPT_EXPLORER_URL],
               }]
             })
           }
@@ -310,35 +297,9 @@
               pwInput.focus()
             }
           } else {
-            window.alert('Your on-chain registration must be updated on this node. Please sign the message to continue.')
-            const address = await loadWallet().catch(() => null)
-            if (!address) {
-              window.alert('There was an error connecting to your wallet. Please try again.')
-              document.getElementById('login-form').style.display = 'block'
-              return false
-            }
-            const message = await result.text()
-            const signature = await ethereum.request({ method: 'personal_sign', params: [message, address, message] }).catch(() => null)
-            if (!signature) {
-              window.alert('There was an error signing the message. Please try again.')
-              document.getElementById('login-form').style.display = 'block'
-              return false
-            }
-            const loginResult = await fetch('/login', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(signature)
-            })
-
-            const interval = setInterval(async () => {
-              const homepageResult = await fetch('/')
-              if (homepageResult.status < 400) {
-                clearInterval(interval)
-                window.location.replace('/')
-              }
-            }, 2000);
+            window.alert('Your on-chain registration and networking are out of sync. Your node is broken!')
+            // TODO need to handle the password reset case where they need to setWsRecord on chain...
           }
-
         } catch (err) {
           console.error(err)
           document.getElementById('loading').style.display = 'none'
@@ -348,73 +309,8 @@
         }
       }
 
-      async function resetPassword(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!checkPassword()) {
-          return false
-        }
-
-        try {
-          document.getElementById('loading').style.display = 'flex'
-          document.getElementById('login-form').style.display = 'none'
-          const address = await loadWallet()
-          const newPassword = document.querySelector('input[name="new-password]').value
-          // const nftContract = document.querySelector('input[name="nft-contract"]').value
-          // const nftId = document.querySelector('input[name="nft-id"]').value
-          // const uqName = document.querySelector('input[name="uq-name"]').value
-          // const message = `Set Uqbar ID
-// Contract: ${nftContract}
-// ID: ${nftId}`
-          const resetMessage = `Reset Password`
-          const signature = await ethereum.request({ method: 'personal_sign', params: [resetMessage, address, resetMessage] })
-          const result = await fetch('/reset-password', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ signature, message, password: newPassword })
-          })
-
-          if (result.status === 200) {
-            window.alert('Your on-chain registration must be updated on this node. Please sign the message to continue.')
-            const registrationMessage = await result.text()
-            const signature = await ethereum.request({ method: 'personal_sign', params: [registrationMessage, address, registrationMessage] })
-            await fetch('/reset-password', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(signature)
-            })
-          }
-
-          const interval = setInterval(async () => {
-              const homepageResult = await fetch('/')
-              if (homepageResult.status < 400) {
-                clearInterval(interval)
-                window.location.replace('/')
-              }
-            }, 2000);
-        } catch (err) {
-          console.error(err)
-          window.alert(CONNECTION_ERROR)
-        } finally {
-          return false
-        }
-      }
-
-      function toggleForgotPasswordForm() {
-        const loginForm = document.getElementById('login-form')
-        const resetPasswordForm = document.getElementById('reset-password-form')
-        loginForm.style.display = loginForm.style.display === 'none' ? 'block' : 'none'
-        resetPasswordForm.style.display = resetPasswordForm.style.display === 'none' ? 'block' : 'none'
-        loginForm.style.display === 'none' ?
-          resetPasswordForm.querySelector('input[name="password"]').focus() :
-          loginForm.querySelector('input[name="password"]').focus()
-      }
-
       const form = document.getElementById('login-form')
       form.addEventListener('submit', login)
-
-      const resetPasswordForm = document.getElementById('reset-password-form')
-      resetPasswordForm.addEventListener('submit', resetPassword)
 
       document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('loading').style.display = 'none'

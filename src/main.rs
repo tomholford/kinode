@@ -256,7 +256,7 @@ async fn main() {
         }
 
         let (tx, mut rx) = mpsc::channel::<(Identity, String, Document, Vec<u8>)>(1);
-        let (our, password, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
+        let (mut our, password, serialized_networking_keypair, jwt_secret_bytes) = tokio::select! {
             _ = register::register(tx, kill_rx, our_ip.clone(), http_server_port, http_server_port)
                 => panic!("registration failed"),
             (our, password, serialized_networking_keypair, jwt_secret_bytes) = async {
@@ -304,6 +304,9 @@ async fn main() {
 
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+
+        // TODO fix register frontend so this isn't necessary
+        our.networking_key = format!("0x{}", our.networking_key);
 
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes.to_vec())

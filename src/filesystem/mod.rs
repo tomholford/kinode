@@ -78,7 +78,7 @@ pub async fn bootstrap(
     // this can be easily changed in the future.
     // they are also given access to all runtime modules by name
     let names_and_bytes = get_processes_from_directories().await;
-    const RUNTIME_MODULES: [&str; 8] = [
+    const RUNTIME_MODULES: [&str; 9] = [
         "filesystem",
         "http_server",
         "http_client",
@@ -87,6 +87,7 @@ pub async fn bootstrap(
         "net",
         "vfs",
         "kernel",
+        "eth_rpc",
     ];
 
     let mut special_capabilities: HashSet<Capability> = HashSet::new();

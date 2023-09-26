@@ -9,6 +9,7 @@ use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
+use serde_json::json;
 use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -18,9 +19,10 @@ use warp::{
     Filter, Rejection, Reply,
 };
 
+use crate::http_server;
 use crate::types::*;
 
-type RegistrationSender = mpsc::Sender<(Registration, Document, Vec<u8>, String)>;
+type RegistrationSender = mpsc::Sender<(Identity, String, Document, Vec<u8>)>;
 
 static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 pub const ITERATIONS: u32 = 1_000_000;
@@ -47,123 +49,49 @@ pub fn generate_jwt(jwt_secret_bytes: &[u8], username: String) -> Option<String>
 pub async fn register(
     tx: RegistrationSender,
     kill_rx: oneshot::Receiver<bool>,
+    ip: String,
     port: u16,
     redir_port: u16,
-    pki: OnchainPKI,
 ) {
-    const REGISTER_PAGE: &str = include_str!("register.html");
-
-    let registration = Arc::new(Mutex::new(None));
+    let our = Arc::new(Mutex::new(None));
+    let pw = Arc::new(Mutex::new(None));
     let networking_keypair = Arc::new(Mutex::new(None));
-    let jwt_secret = Arc::new(Mutex::new(None));
+    let seed = SystemRandom::new();
 
-    let registration_post = registration.clone();
+    let our_post = our.clone();
+    let pw_post = pw.clone();
     let networking_keypair_post = networking_keypair.clone();
-    let jwt_secret_post = jwt_secret.clone();
+    let seed_post = seed.clone();
 
-    let check_address_route = warp::path!("check-address" / String).and_then({
-        let pki = pki.clone();
-        move |address: String| {
-            let pki = pki.clone();
-            async move {
-                let pki_read = pki.read().await;
+    let static_files = warp::path("static").and(warp::fs::dir("./src/register_app/static/"));
+    let react_app = warp::path("register")
+        .and(warp::get())
+        .and(warp::fs::file("./src/register_app/index.html"));
 
-                let mut usernames: Vec<String> = Vec::new();
+    let api = warp::path("get-ws-info").and(
+        // 1. Get uqname (already on chain) and return networking information
+        warp::post()
+            .and(warp::body::content_length_limit(1024 * 16))
+            .and(warp::body::json())
+            .and(warp::any().map(move || ip.clone()))
+            .and(warp::any().map(move || our_post.clone()))
+            .and(warp::any().map(move || pw_post.clone()))
+            .and(warp::any().map(move || seed_post.clone()))
+            .and(warp::any().map(move || networking_keypair_post.clone()))
+            .and_then(handle_post)
+            // 2. trigger for finalizing registration once on-chain actions are done
+            .or(warp::put()
+                .and(warp::body::content_length_limit(1024 * 16))
+                .and(warp::any().map(move || tx.clone()))
+                .and(warp::any().map(move || our.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || pw.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || seed.clone()))
+                .and(warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()))
+                .and(warp::any().map(move || redir_port))
+                .and_then(handle_put)),
+    );
 
-                for (username, identity) in pki_read.iter() {
-                    if identity.address == address {
-                        usernames.push(username.to_string());
-                    }
-                }
-
-                if !usernames.is_empty() {
-                    Ok::<_, Rejection>(warp::reply::with_status(
-                        usernames.join(","),
-                        warp::http::StatusCode::OK,
-                    ))
-                } else {
-                    Ok::<_, Rejection>(warp::reply::with_status(
-                        "Not taken".to_string(),
-                        warp::http::StatusCode::NO_CONTENT,
-                    ))
-                }
-            }
-        }
-    });
-
-    let check_username_route = warp::path!("check-username" / String).and_then({
-        let pki = pki.clone();
-        move |username: String| {
-            let pki = pki.clone();
-            async move {
-                let pki_read = pki.read().await;
-
-                let reply = match pki_read.get(&username) {
-                    Some(_) => warp::reply::with_status(
-                        "Conflict".to_string(),
-                        warp::http::StatusCode::CONFLICT,
-                    ),
-                    None => warp::reply::with_status(
-                        "Not taken".to_string(),
-                        warp::http::StatusCode::NO_CONTENT,
-                    ),
-                };
-                Ok::<_, Rejection>(reply)
-            }
-        }
-    });
-
-    let routes = warp::path("register")
-        .and(
-            // 1. serve register.html right here
-            warp::get()
-                .map(move || warp::reply::html(REGISTER_PAGE))
-                // 2. await a single POST
-                //    - username
-                //    - password
-                //    - address (wallet)
-                .or(warp::post()
-                    .and(warp::body::content_length_limit(1024 * 16))
-                    .and(warp::body::json())
-                    .map(move |info: Registration| {
-                        // Process the data from the POST request here and store it
-                        *registration_post.lock().unwrap() = Some(info);
-
-                        // this will be replaced with the key manager module
-                        let seed = SystemRandom::new();
-                        let serialized_keypair =
-                            signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
-                        let keypair =
-                            signature::Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref())
-                                .unwrap();
-
-                        let public_key = hex::encode(keypair.public_key().as_ref());
-                        *networking_keypair_post.lock().unwrap() = Some(serialized_keypair);
-
-                        // Generate the jwt_secret
-                        let mut jwt_secret = [0u8; 32];
-                        ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
-                        *jwt_secret_post.lock().unwrap() = Some(jwt_secret);
-
-                        // Return a response to the POST request containing new networking key to be signed
-                        warp::reply::html(public_key)
-                    }))
-                // 4. await a PUT
-                //    - signature string
-                .or(warp::put()
-                    .and(warp::body::content_length_limit(1024 * 16))
-                    .and(warp::body::json())
-                    .and(warp::any().map(move || tx.clone()))
-                    .and(warp::any().map(move || registration.lock().unwrap().take().unwrap()))
-                    .and(
-                        warp::any().map(move || networking_keypair.lock().unwrap().take().unwrap()),
-                    )
-                    .and(warp::any().map(move || jwt_secret.lock().unwrap().take().unwrap()))
-                    .and(warp::any().map(move || redir_port))
-                    .and_then(handle_put)),
-        )
-        .or(check_address_route)
-        .or(check_username_route);
+    let routes = static_files.or(react_app).or(api);
 
     let _ = open::that(format!("http://localhost:{}/register", port));
     warp::serve(routes)
@@ -174,20 +102,67 @@ pub async fn register(
         .await;
 }
 
+async fn handle_post(
+    info: Registration,
+    ip: String,
+    our_post: Arc<Mutex<Option<Identity>>>,
+    pw_post: Arc<Mutex<Option<String>>>,
+    seed: SystemRandom,
+    networking_keypair_post: Arc<Mutex<Option<Document>>>,
+) -> Result<impl Reply, Rejection> {
+    // 1. Generate networking keys
+
+    let serialized_networking_keypair = signature::Ed25519KeyPair::generate_pkcs8(&seed).unwrap();
+
+    let networking_keypair =
+        signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
+
+    *networking_keypair_post.lock().unwrap() = Some(serialized_networking_keypair);
+
+    // 2. generate ws and routing information
+    // TODO: if IP is localhost, assign a router...
+    let ws_port = http_server::find_open_port(9000).await.unwrap();
+    let our = Identity {
+        name: info.username.clone(),
+        networking_key: hex::encode(networking_keypair.public_key().as_ref()),
+        ws_routing: if ip == "localhost" || !info.direct {
+            None
+        } else {
+            Some((ip.clone(), ws_port))
+        },
+        allowed_routers: if ip == "localhost" || !info.direct {
+            vec![
+                "uqbar-router-1.uq".into(), // "0x8d9e54427c50660c6d4802f63edca86a9ca5fd6a78070c4635950e9d149ed441".into(),
+                "uqbar-router-2.uq".into(), // "0x06d331ed65843ecf0860c73292005d8103af20820546b2f8f9007d01f60595b1".into(),
+                "uqbar-router-3.uq".into(), // "0xe6ab611eb62e8aee0460295667f8179cda4315982717db4b0b3da6022deecac1".into(),
+            ]
+        } else {
+            vec![]
+        },
+    };
+    *our_post.lock().unwrap() = Some(our.clone());
+    *pw_post.lock().unwrap() = Some(info.password);
+    // Return a response containing all networking information
+    Ok(warp::reply::json(&our))
+}
+
 async fn handle_put(
-    signature: String,
     sender: RegistrationSender,
-    registration: Registration,
+    our: Identity,
+    pw: String,
+    seed: SystemRandom,
     networking_keypair: Document,
-    jwt_secret_bytes: [u8; 32],
     _redir_port: u16,
 ) -> Result<impl Reply, Rejection> {
-    let token = match generate_jwt(&jwt_secret_bytes, registration.username.clone()) {
+    let mut jwt_secret = [0u8; 32];
+    ring::rand::SecureRandom::fill(&seed, &mut jwt_secret).unwrap();
+
+    let token = match generate_jwt(&jwt_secret, our.name.clone()) {
         Some(token) => token,
         None => return Err(warp::reject()),
     };
-    let cookie_value = format!("uqbar-auth_{}={};", &registration.username, &token);
-    let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &registration.username, &token);
+    let cookie_value = format!("uqbar-auth_{}={};", &our.name, &token);
+    let ws_cookie_value = format!("uqbar-ws-auth_{}={};", &our.name, &token);
 
     let mut response = warp::reply::html("Success".to_string()).into_response();
 
@@ -196,12 +171,7 @@ async fn handle_put(
     headers.append(SET_COOKIE, HeaderValue::from_str(&ws_cookie_value).unwrap());
 
     sender
-        .send((
-            registration,
-            networking_keypair,
-            jwt_secret_bytes.to_vec(),
-            signature,
-        ))
+        .send((our, pw, networking_keypair, jwt_secret.to_vec()))
         .await
         .unwrap();
     Ok(response)

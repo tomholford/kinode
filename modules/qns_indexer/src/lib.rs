@@ -110,7 +110,7 @@ impl UqProcess for Component {
                 },
                 &Request{
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     metadata: None,
                     ipc: Some(ipc.to_string()),
                 },
@@ -126,7 +126,7 @@ impl UqProcess for Component {
                 },
                 &Request{
                     inherit: false, // TODO what
-                    expects_response: true,
+                    expects_response: Some(5), // TODO evaluate
                     metadata: None,
                     // -1 because there could be other events in the last processed block
                     ipc: Some(subscribe_to_qns(state.block - 1)),
@@ -223,7 +223,7 @@ impl UqProcess for Component {
                                 },
                                 &Request{
                                     inherit: false,
-                                    expects_response: false,
+                                    expects_response: None,
                                     metadata: None,
                                     ipc: Some(json_payload),
                                 },
@@ -238,12 +238,7 @@ impl UqProcess for Component {
                 }
             }
 
-            match process_lib::await_set_state(our.node.clone(), &state) {
-                Ok(_) => {},
-                Err(e) => {
-                    print_to_terminal(0, &format!("qns_indexer: failed to set state: {:?}", e))
-                },
-            };
+            process_lib::await_set_state(our.node.clone(), &state);
         }
     }
 }

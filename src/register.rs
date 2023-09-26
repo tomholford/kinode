@@ -177,7 +177,7 @@ async fn handle_put(
     Ok(response)
 }
 
-// Serve the login page, just get a password
+/// Serve the login page, just get a password
 pub async fn login(
     tx: mpsc::Sender<(signature::Ed25519KeyPair, Vec<u8>)>,
     kill_rx: oneshot::Receiver<bool>,
@@ -185,49 +185,29 @@ pub async fn login(
     jwt_secret_file: Vec<u8>,
     port: u16,
     username: &str,
-    our_ip: String,
-    routers: Vec<String>,
 ) {
-    let username_login = username.to_string();
-    let keyfile_login = keyfile.clone();
-    let username_update = username.to_string();
-    let keyfile_update = keyfile.clone();
-
-    let static_files = warp::path("static").and(warp::fs::dir("./src/login_app/static/"));
-    let react_app = warp::path("login")
-        .and(warp::get())
-        .and(warp::fs::file("./src/login_app/index.html"));
-
-    // A. standard login OR
-    let login_api = warp::path("login").and(
-        warp::post()
-            .and(warp::body::content_length_limit(1024 * 16))
-            .and(warp::body::json())
-            .and(warp::any().map(move || keyfile_login.clone()))
-            .and(warp::any().map(move || jwt_secret_file.clone()))
-            .and(warp::any().map(move || username_login.clone()))
-            .and(warp::any().map(move || tx.clone()))
-            .and_then(handle_login_api_post),
-    );
-    // B. decrypt and reset networking information
-    let update_api = warp::path("update").and(
-        // 1. decrypt .network.keys
-        warp::post()
-            .and(warp::body::content_length_limit(1024 * 16))
-            .and(warp::body::json())
-            .and(warp::any().map(move || keyfile_update.clone()))
-            .and(warp::any().map(move || username_update.clone()))
-            .and(warp::any().map(move || our_ip.clone()))
-            .and(warp::any().map(move || port.clone()))
-            .and(warp::any().map(move || routers.clone()))
-            .and_then(handle_update_api_post), // .or(warp::put()
-                                               //     // TODO fill this out
-                                               //     // .and()
-                                               //     .and_then(handle_update_api_put)
-                                               // ),
-    );
-
-    let routes = static_files.or(react_app).or(login_api).or(update_api);
+    let username = username.to_string();
+    let login_page_content = include_str!("login.html");
+    let personalized_login_page = login_page_content.replace("${our}", username.as_str());
+    let redirect_to_login =
+        warp::path::end().map(|| warp::redirect(warp::http::Uri::from_static("/login")));
+    let routes = warp::path("login")
+        .and(
+            // 1. serve login.html right here
+            warp::get()
+                .map(move || warp::reply::html(personalized_login_page.clone()))
+                // 2. await a single POST
+                //    - password
+                .or(warp::post()
+                    .and(warp::body::content_length_limit(1024 * 16))
+                    .and(warp::body::json())
+                    .and(warp::any().map(move || keyfile.clone()))
+                    .and(warp::any().map(move || jwt_secret_file.clone()))
+                    .and(warp::any().map(move || username.clone()))
+                    .and(warp::any().map(move || tx.clone()))
+                    .and_then(handle_password)),
+        )
+        .or(redirect_to_login);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)
@@ -238,7 +218,7 @@ pub async fn login(
         .await;
 }
 
-async fn handle_login_api_post(
+async fn handle_password(
     password: serde_json::Value,
     keyfile: Vec<u8>,
     jwt_secret_file: Vec<u8>,
@@ -307,61 +287,3 @@ async fn handle_login_api_post(
     // TODO unhappy paths where key has changed / can't be decrypted
     Ok(response)
 }
-
-async fn handle_update_api_post(
-    password: serde_json::Value,
-    keyfile: Vec<u8>,
-    username: String,
-    our_ip: String,
-    port: u16,
-    routers: Vec<String>,
-) -> Result<impl Reply, Rejection> {
-    // TODO decrypt keys and send them back in POST -
-    let password = match password["password"].as_str() {
-        Some(p) => p,
-        None => return Err(warp::reject()),
-    };
-    // use password to decrypt networking keys
-    println!("decrypting saved networking key...");
-    let nonce = digest::generic_array::GenericArray::from_slice(&keyfile[..12]);
-
-    let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
-    pbkdf2::derive(
-        PBKDF2_ALG,
-        NonZeroU32::new(ITERATIONS).unwrap(),
-        DISK_KEY_SALT,
-        password.as_bytes(),
-        &mut disk_key,
-    );
-    let key = Key::<Aes256Gcm>::from_slice(&disk_key);
-    let cipher = Aes256Gcm::new(&key);
-    let pkcs8_string: Vec<u8> = match cipher.decrypt(nonce, &keyfile[12..]) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("failed to decrypt networking keys: {}", e);
-            return Err(warp::reject());
-        }
-    };
-    let networking_keypair = match signature::Ed25519KeyPair::from_pkcs8(&pkcs8_string) {
-        Ok(k) => k,
-        Err(_) => return Err(warp::reject()),
-    };
-
-    Ok(warp::reply::json(&json!({
-        "qnsName": username,
-        "publicKey": format!("0x{}", hex::encode(networking_keypair.public_key().as_ref())),
-        "routers": routers,
-        "ip": if our_ip.clone() == "localhost" {
-            "0.0.0.0".to_string()
-        } else { our_ip.clone() },
-        "port": if our_ip.clone() == "localhost" { 0 } else { port },
-    })))
-    // the frontend will send the tx and then send the correct data to handle_update_api_put
-}
-
-// async fn handle_update_api_put(
-//     // TODO
-// ) -> Result<impl Reply, Rejection> {
-//     // TODO verify onchain information and update network.keys
-//     Err(warp::reject())
-// }

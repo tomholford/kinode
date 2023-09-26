@@ -175,8 +175,6 @@ async fn main() {
                 jwt_secret,
                 http_server_port,
                 &username,
-                our_ip.clone(),
-                routers.clone(),
             ) => panic!("login failed"),
             (networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {

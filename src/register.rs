@@ -9,6 +9,7 @@ use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::rand::SystemRandom;
 use ring::signature::{self, KeyPair};
+use serde_json::json;
 use sha2::Sha256;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
@@ -17,7 +18,6 @@ use warp::{
     http::header::{HeaderValue, SET_COOKIE},
     Filter, Rejection, Reply,
 };
-use serde_json::json;
 
 use crate::http_server;
 use crate::types::*;
@@ -207,8 +207,8 @@ pub async fn login(
             .and(warp::any().map(move || jwt_secret_file.clone()))
             .and(warp::any().map(move || username_login.clone()))
             .and(warp::any().map(move || tx.clone()))
-            .and_then(handle_login_api_post)
-        );
+            .and_then(handle_login_api_post),
+    );
     // B. decrypt and reset networking information
     let update_api = warp::path("update").and(
         // 1. decrypt .network.keys
@@ -220,18 +220,14 @@ pub async fn login(
             .and(warp::any().map(move || our_ip.clone()))
             .and(warp::any().map(move || port.clone()))
             .and(warp::any().map(move || routers.clone()))
-            .and_then(handle_update_api_post)
-            // .or(warp::put()
-            //     // TODO fill this out
-            //     // .and()
-            //     .and_then(handle_update_api_put)
-            // ),
-        );
-        
-    let routes = static_files
-        .or(react_app)
-        .or(login_api)
-        .or(update_api);
+            .and_then(handle_update_api_post), // .or(warp::put()
+                                               //     // TODO fill this out
+                                               //     // .and()
+                                               //     .and_then(handle_update_api_put)
+                                               // ),
+    );
+
+    let routes = static_files.or(react_app).or(login_api).or(update_api);
 
     let _ = open::that(format!("http://localhost:{}/login", port));
     warp::serve(routes)

@@ -52,7 +52,7 @@ impl Guest for Component {
                 continue;
             };
             let Message::Request(request) = message else {
-                print_to_terminal(0, "apps_home: got unexpected message");
+                print_to_terminal(0, &format!("apps_home: got unexpected message: {:?}", message));
                 continue;
             };
 

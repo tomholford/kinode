@@ -260,11 +260,9 @@ async fn load_state_from_reboot(
     let Message::Response((Response { ipc, metadata: _ }, None)) = message else {
         return false;
     };
-    let Some(ipc) = ipc else {
-        panic!("");
-    };
-    let FsResponse::GetState = serde_json::from_str(&ipc).unwrap() else {
-        panic!("");
+    let Ok(Ok(FsResponse::GetState)) =
+        serde_json::from_str::<Result<FsResponse, FileSystemError>>(&ipc.unwrap_or_default()) else {
+        return false;
     };
     let Some(payload) = payload else {
         panic!("");
@@ -1253,7 +1251,7 @@ async fn match_request(
                             let Some(ipc) = ipc else {
                                 panic!("");
                             };
-                            let FsResponse::Read(read_hash) = serde_json::from_str(&ipc).unwrap()
+                            let Ok(FsResponse::Read(read_hash)) = serde_json::from_str::<Result<FsResponse, FileSystemError>>(&ipc).unwrap()
                             else {
                                 panic!("");
                             };
@@ -1335,7 +1333,7 @@ async fn match_request(
             let Some(ipc) = ipc else {
                 panic!("");
             };
-            let FsResponse::ReadChunk(read_hash) = serde_json::from_str(&ipc).unwrap() else {
+            let Ok(FsResponse::ReadChunk(read_hash)) = serde_json::from_str::<Result<FsResponse, FileSystemError>>(&ipc).unwrap() else {
                 panic!("");
             };
             assert_eq!(file_hash, read_hash);
@@ -1416,7 +1414,7 @@ async fn match_request(
                 let Some(ipc) = ipc else {
                     panic!("");
                 };
-                let FsResponse::Length(length) = serde_json::from_str(&ipc).unwrap() else {
+                let Ok(FsResponse::Length(length)) = serde_json::from_str::<Result<FsResponse, FileSystemError>>(&ipc).unwrap() else {
                     panic!("");
                 };
 

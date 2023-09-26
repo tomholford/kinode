@@ -12,15 +12,18 @@ use std::collections::VecDeque;
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
-use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
+
+use self::connections::create_new_peer;
 
 mod connections;
 mod types;
 
+/// 5 second timeout used during connection establishment, as a practicality.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Entry point from the main kernel task. Runs forever, spawns listener and sender tasks.
 pub async fn networking(
     our: Identity,
     our_ip: String,
@@ -33,8 +36,13 @@ pub async fn networking(
     mut message_rx: MessageReceiver,
 ) -> Result<()> {
     // TODO: persist this if we shutdown gracefully
+    let keys: PeerKeys = Arc::new(RwLock::new(HashMap::new()));
+
+    // this only lives during a given run of the kernel
     let peers: Peers = Arc::new(RwLock::new(HashMap::new()));
 
+    // listener task either kickstarts our networking by establishing active connections
+    // with one or more routers, or spawns a websocket listener if we are a direct node.
     let listener = match &our.ws_routing {
         None => {
             // indirect node: connect to router(s)
@@ -74,6 +82,8 @@ pub async fn networking(
                 // end debugging stuff
                 let target = &km.target.node;
                 if target == &our.name {
+                    // if the message is for us, it's either a protocol-level "hello" message,
+                    // or a debugging command issued from our terminal. handle it here:
                     handle_incoming_message(&our, km, peers.clone(), print_tx.clone()).await;
                     continue;
                 }
@@ -83,15 +93,15 @@ pub async fn networking(
                     let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                     let _ = peer
                         .sender
-                        .send((NetworkMessage::Raw(km.clone()), Some(result_tx)));
+                        .send((PeerMessage::Raw(km.clone()), Some(result_tx)));
                     drop(peers_read);
                     // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
                     let peers = peers.clone();
                     let target = target.clone();
                     let network_error_tx = network_error_tx.clone();
-                    // let print_tx = print_tx.clone();
+                    let km = km.clone();
                     tokio::spawn(async move {
-                        match result_rx.await.unwrap_or(Err(SendErrorKind::Timeout)) {
+                        match result_rx.await.unwrap_or(Err(SendErrorKind::Offline)) {
                             Ok(_) => {
                                 // debugging stuff:
                                 // let end = std::time::Instant::now();
@@ -109,14 +119,12 @@ pub async fn networking(
                                 return
                             },
                             Err(e) => {
-                                if let SendErrorKind::Offline = e {
-                                    let _ = peers.write().await.remove(&target);
-                                }
+                                let _ = peers.write().await.remove(&target);
                                 let _ = network_error_tx
-                                    .send(WrappedSendError{
+                                    .send(WrappedSendError {
                                         id: km.id,
                                         source: km.source,
-                                        error: SendError{
+                                        error: SendError {
                                             kind: e,
                                             target: km.target,
                                             message: km.message,
@@ -130,56 +138,100 @@ pub async fn networking(
                     });
                 } else {
                     drop(peers_read);
-                    message_to_new_peer(
+
+                    if let Some((secret, nonce)) = keys.read().await.get(target) {
+                        let result = message_to_keyed_peer(
+                            our.clone(),
+                            our_ip.clone(),
+                            keypair.clone(),
+                            pki.clone(),
+                            peers.clone(),
+                            keys.clone(),
+                            self_tx.clone(),
+                            kernel_message_tx.clone(),
+                            km.clone(),
+                        ).await;
+                        match result {
+                            Err(e) => {
+                                let _ = network_error_tx
+                                .send(WrappedSendError {
+                                    id: km.id,
+                                    source: km.source,
+                                    error: SendError {
+                                        kind: e,
+                                        target: km.target,
+                                        message: km.message,
+                                        payload: km.payload,
+                                    },
+                                })
+                                .await;
+                            }
+                            Ok(()) => {
+                                // TODO: save peer in peers map
+                            }
+                        }
+                    }
+
+                    // sending a message to a peer for which we don't have active networking info.
+                    // this means that we need to search the PKI for the peer, and then attempt to
+                    // exchange handshakes with them.
+                    let result = message_to_new_peer(
                         our.clone(),
                         our_ip.clone(),
                         keypair.clone(),
                         pki.clone(),
                         peers.clone(),
+                        keys.clone(),
                         self_tx.clone(),
                         kernel_message_tx.clone(),
-                        network_error_tx.clone(),
-                        km,
+                        km.clone(),
                     ).await;
+                    match result {
+                        Err(e) => {
+                            let _ = network_error_tx
+                            .send(WrappedSendError {
+                                id: km.id,
+                                source: km.source,
+                                error: SendError {
+                                    kind: e,
+                                    target: km.target,
+                                    message: km.message,
+                                    payload: km.payload,
+                                },
+                            })
+                            .await;
+                        }
+                        Ok(()) => {
+                            // TODO: save peer in peers map
+                        }
+                    }
                 }
             }
         } => Err(anyhow::anyhow!("sender died")),
     }
 }
 
+/// Given a username, find a peer in the PKI and attempt to exchange handshakes with them.
+/// If successful, send the original message to the peer and save them in our Peers mapping.
+/// If a username doesn't exist to our knowledge, or we can't find a route to exchange
+/// handshakes on, we return an Offline error.
 async fn message_to_new_peer(
     our: Identity,
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     peers: Peers,
+    keys: PeerKeys,
     self_tx: MessageSender,
     kernel_message_tx: MessageSender,
-    network_error_tx: NetworkErrorSender,
     km: KernelMessage,
-) {
-    let target = &km.target.node;
+) -> Result<(), SendErrorKind> {
     // println!("sending message to unknown peer\r");
+    let target = &km.target.node;
     // search PKI for peer and attempt to create a connection, then resend
     let pki_read = pki.read().await;
     match pki_read.get(target) {
-        // peer does not exist in PKI!
-        None => {
-            let _ = network_error_tx
-                .send(WrappedSendError {
-                    id: km.id,
-                    source: km.source,
-                    error: SendError {
-                        kind: SendErrorKind::Offline,
-                        target: km.target,
-                        message: km.message,
-                        payload: km.payload,
-                    },
-                })
-                .await;
-            return;
-        }
-        // peer exists in PKI
+        None => return Err(SendErrorKind::Offline),
         Some(peer_id) => {
             let peer_id = peer_id.clone();
             drop(pki_read);
@@ -189,40 +241,37 @@ async fn message_to_new_peer(
                 //
                 Some((ip, port)) => {
                     if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        // if we can't connect in 5s, peer is offline
                         if let Ok(Ok((websocket, _response))) =
                             timeout(TIMEOUT, connect_async(ws_url)).await
                         {
-                            let conn = build_connection(
+                            let first_message = if let Some((secret, nonce)) = keys.read().await.get(target) {
+                                None
+                            } else {
+                                let (ephemeral_secret, handshake) =
+                                    make_secret_and_handshake(&our, keypair.clone(), target);
+                                Some(PeerMessage::Net(NetworkMessage::Handshake(
+                                    handshake,
+                                )))
+                            }
+                            if let Ok(conn_sender) = build_connection(
                                 our.clone(),
                                 keypair.clone(),
-                                Some(peer_id.clone()),
-                                None,
+                                first_message,
                                 pki.clone(),
                                 peers.clone(),
                                 websocket,
                                 kernel_message_tx.clone(),
                             )
-                            .await;
-                            if !conn.is_err() {
-                                // try to resend, now that conn is open
-                                let _ = self_tx.send(km).await;
-                                return;
+                            .await
+                            {
+                                if let Ok(peer) = create_new_peer(our, peer_id, conn_sender).await {
+                                    peers.write().await.insert(peer.identity.name.clone(), peer);
+                                    return Ok(());
+                                }
                             }
                         }
                     }
-                    let _ = network_error_tx
-                        .send(WrappedSendError {
-                            id: km.id,
-                            source: km.source,
-                            error: SendError {
-                                kind: SendErrorKind::Offline,
-                                target: km.target,
-                                message: km.message,
-                                payload: km.payload,
-                            },
-                        })
-                        .await;
+                    return Err(SendErrorKind::Offline);
                 }
                 //
                 //  peer does not have direct routing info, need to use router
@@ -238,7 +287,7 @@ async fn message_to_new_peer(
                             // use response handshake to generate a peer
                             // then send the original message to that peer.
                             // TODO
-
+                            unimplemented!()
                         } else if let Some(router_id) = pki.read().await.get(&router) {
                             if let Some((ip, port)) = &router_id.ws_routing {
                                 // println!("trying to connect to {router_name}\r");
@@ -246,11 +295,19 @@ async fn message_to_new_peer(
                                     if let Ok(Ok((websocket, _response))) =
                                         timeout(TIMEOUT, connect_async(ws_url)).await
                                     {
-                                        if let Ok(_) = build_connection(
+                                        let (ephemeral_secret, handshake) =
+                                            make_secret_and_handshake(
+                                                &our,
+                                                keypair.clone(),
+                                                &router,
+                                            );
+
+                                        if let Ok(router_conn_sender) = build_connection(
                                             our.clone(),
                                             keypair.clone(),
-                                            Some(router_id.clone()),
-                                            None,
+                                            Some(PeerMessage::Net(NetworkMessage::Handshake(
+                                                handshake,
+                                            ))),
                                             pki.clone(),
                                             peers.clone(),
                                             websocket,
@@ -268,26 +325,14 @@ async fn message_to_new_peer(
                     //
                     // we tried all available routers and none of them worked!
                     //
-                    let _ = network_error_tx
-                        .send(WrappedSendError {
-                            id: km.id,
-                            source: km.source,
-                            error: SendError {
-                                kind: SendErrorKind::Offline,
-                                target: km.target,
-                                message: km.message,
-                                payload: km.payload,
-                            },
-                        })
-                        .await;
-                    return;
+                    return Err(SendErrorKind::Offline);
                 }
             }
         }
     }
 }
 
-/// only used if indirect. should live forever unless we can't connect to any routers
+/// Only used if an indirect node.
 async fn connect_to_routers(
     our: Identity,
     keypair: Arc<Ed25519KeyPair>,
@@ -297,69 +342,57 @@ async fn connect_to_routers(
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    let mut routers = JoinSet::<Result<String, tokio::task::JoinError>>::new();
+    for router_name in &our.allowed_routers {
+        if let Some(router_peer) = peers.read().await.get(router_name) {
+            // we have this router as a peer already, all we need to do is open
+            // a connection and give it to the peer entry.
 
-    loop {
-        for router_name in &our.allowed_routers {
-            if peers.read().await.contains_key(router_name) {
-                continue;
-            } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
-                if let Some((ip, port)) = &router_id.ws_routing {
-                    // println!("trying to connect to {router_name}\r");
-                    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        if let Ok(Ok((websocket, _response))) =
-                            timeout(TIMEOUT, connect_async(ws_url)).await
+            unimplemented!()
+        } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
+            if let Some((ip, port)) = &router_id.ws_routing {
+                // println!("trying to connect to {router_name}\r");
+                if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
+                    if let Ok(Ok((websocket, _response))) =
+                        timeout(TIMEOUT, connect_async(ws_url)).await
+                    {
+                        let (ephemeral_secret, handshake) =
+                            make_secret_and_handshake(&our, keypair.clone(), router_name);
+
+                        // this is a real and functional router! woohoo
+                        if let Ok(conn_sender) = build_connection(
+                            our.clone(),
+                            keypair.clone(),
+                            // there is an initial message: our handshake!
+                            Some(PeerMessage::Net(NetworkMessage::Handshake(handshake))),
+                            pki.clone(),
+                            peers.clone(),
+                            websocket,
+                            kernel_message_tx.clone(),
+                        )
+                        .await
                         {
-                            // this is a real and functional router! woohoo
-                            if let Ok(active_conn) = build_connection(
-                                our.clone(),
-                                keypair.clone(),
-                                Some(router_id.clone()),
-                                None,
-                                pki.clone(),
-                                peers.clone(),
-                                websocket,
-                                kernel_message_tx.clone(),
-                            )
-                            .await
+                            if let Ok(peer) =
+                                create_new_peer(our.clone(), router_id.clone(), conn_sender).await
                             {
+                                peers.write().await.insert(peer.identity.name.clone(), peer);
                                 let _ = print_tx
                                     .send(Printout {
                                         verbosity: 0,
-                                        content: format!("(re)connected to router: {router_name}"),
+                                        content: format!("connected to router: {router_name}"),
                                     })
                                     .await;
-                                routers.spawn(active_conn);
-                                continue;
                             }
                         }
                     }
                 }
-                let _ = print_tx
-                    .send(Printout {
-                        verbosity: 0,
-                        content: format!("failed to connect to router: {router_name}"),
-                    })
-                    .await;
             }
-        }
-        if let Some(Ok(Ok(dead_router))) = routers.join_next().await {
-            let _ = print_tx
-                .send(Printout {
-                    verbosity: 0,
-                    content: format!("lost connection to router: {dead_router}"),
-                })
-                .await;
-            peers.write().await.remove(&dead_router);
-            continue;
         }
         let _ = print_tx
             .send(Printout {
                 verbosity: 0,
-                content: format!("offline! couldn't connect to any routers. trying again..."),
+                content: format!("failed to connect to router: {router_name}"),
             })
             .await;
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
@@ -382,8 +415,7 @@ async fn receive_incoming_connections(
                 tokio::spawn(build_connection(
                     our.clone(),
                     keypair.clone(),
-                    None,
-                    None,
+                    None, // no known target / initial message
                     pki.clone(),
                     peers.clone(),
                     websocket,
@@ -396,7 +428,7 @@ async fn receive_incoming_connections(
     }
 }
 
-/// net module only handles requests, will never return a response
+/// `net` module only handles requests, and will never return a response
 async fn handle_incoming_message(
     our: &Identity,
     km: KernelMessage,

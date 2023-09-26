@@ -41,7 +41,7 @@ pub async fn build_connection(
                     Ok(v) => v,
                     Err(e) => {
                         println!("handshake validation failed: {}\r", e);
-                        return Err(NetworkErrorKind::Offline);
+                        return Err(SendErrorKind::Offline);
                     }
                 };
             let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
@@ -66,7 +66,7 @@ pub async fn build_connection(
                 Ok(v) => v,
                 Err(e) => {
                     println!("handshake validation failed: {}\r", e);
-                    return Err(NetworkErrorKind::Offline);
+                    return Err(SendErrorKind::Offline);
                 }
             };
             let (ephemeral_secret, our_handshake) =

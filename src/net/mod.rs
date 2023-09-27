@@ -1,4 +1,4 @@
-use crate::net::connections::{build_connection, create_new_peer};
+use crate::net::connections::*;
 use crate::net::types::*;
 use crate::types::*;
 use aes_gcm_siv::Nonce;
@@ -62,13 +62,14 @@ pub async fn networking(
                 keypair.clone(),
                 *port,
                 pki.clone(),
+                keys.clone(),
                 peers.clone(),
                 kernel_message_tx.clone(),
             ))
         }
     };
 
-    tokio::join!(listener, async {
+    let _ = tokio::join!(listener, async {
         while let Some(km) = message_rx.recv().await {
             // got a message from kernel to send out over the network
             let target = &km.target.node;
@@ -94,7 +95,7 @@ pub async fn networking(
                 let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                 let _ = peer
                     .sender
-                    .send((PeerMessage::Raw(km.clone()), Some(result_tx)));
+                    .send((PeerMessage::Raw(km.clone()), result_tx));
                 // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
                 tokio::spawn(wait_for_ack(
                     km.clone(),
@@ -140,15 +141,25 @@ pub async fn networking(
                     //
                     unimplemented!();
                 }
-                continue;
             }
+            //
             // sending a message to a peer for which we don't have active networking info.
             // this means that we need to search the PKI for the peer, and then attempt to
             // exchange handshakes with them.
-            unimplemented!();
-            continue;
+            //
+            if peer_id.ws_routing.is_some() {
+                //
+                // we can establish a connection directly with this peer, then do a handshake
+                //
+                unimplemented!();
+            } else {
+                //
+                // need to find a router that will connect to this peer, then do a handshake
+                //
+                unimplemented!();
+            }
         }
-    },);
+    });
     Err(anyhow::anyhow!("networking task exited"))
 }
 
@@ -195,126 +206,6 @@ async fn wait_for_ack(
     }
 }
 
-/// Given a username, find a peer in the PKI and attempt to exchange handshakes with them.
-/// If successful, send the original message to the peer and save them in our Peers mapping.
-/// If a username doesn't exist to our knowledge, or we can't find a route to exchange
-/// handshakes on, we return an Offline error.
-async fn message_to_new_peer(
-    our: Identity,
-    our_ip: String,
-    keypair: Arc<Ed25519KeyPair>,
-    pki: OnchainPKI,
-    peers: Peers,
-    keys: PeerKeys,
-    self_tx: MessageSender,
-    kernel_message_tx: MessageSender,
-    km: KernelMessage,
-) -> Result<(), SendErrorKind> {
-    // println!("sending message to unknown peer\r");
-    let target = &km.target.node;
-    // search PKI for peer and attempt to create a connection, then resend
-    let pki_read = pki.read().await;
-    match pki_read.get(target) {
-        None => return Err(SendErrorKind::Offline),
-        Some(peer_id) => {
-            let peer_id = peer_id.clone();
-            drop(pki_read);
-            match &peer_id.ws_routing {
-                //
-                //  can connect directly to peer
-                //
-                Some((ip, port)) => {
-                    if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                        if let Ok(Ok((websocket, _response))) =
-                            timeout(TIMEOUT, connect_async(ws_url)).await
-                        {
-                            let first_message =
-                                if let Some((secret, nonce)) = keys.read().await.get(target) {
-                                    None
-                                } else {
-                                    let (ephemeral_secret, handshake) =
-                                        make_secret_and_handshake(&our, keypair.clone(), target);
-                                    Some(PeerMessage::Net(NetworkMessage::Handshake(handshake)))
-                                };
-                            if let Ok(conn_sender) = build_connection(
-                                our.clone(),
-                                keypair.clone(),
-                                first_message,
-                                pki.clone(),
-                                peers.clone(),
-                                websocket,
-                                kernel_message_tx.clone(),
-                            )
-                            .await
-                            {
-                                if let Ok(peer) = create_new_peer(our, peer_id, conn_sender).await {
-                                    peers.write().await.insert(peer.identity.name.clone(), peer);
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                    return Err(SendErrorKind::Offline);
-                }
-                //
-                //  peer does not have direct routing info, need to use router
-                //
-                None => {
-                    let mut routers_to_try = VecDeque::from(peer_id.allowed_routers.clone());
-                    while let Some(router) = routers_to_try.pop_front() {
-                        if router == our.name {
-                            continue;
-                        }
-                        if let Some(router_peer) = peers.read().await.get(&router) {
-                            // use the router peer connection to send a handshake.
-                            // use response handshake to generate a peer
-                            // then send the original message to that peer.
-                            // TODO
-                            unimplemented!()
-                        } else if let Some(router_id) = pki.read().await.get(&router) {
-                            if let Some((ip, port)) = &router_id.ws_routing {
-                                // println!("trying to connect to {router_name}\r");
-                                if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                                    if let Ok(Ok((websocket, _response))) =
-                                        timeout(TIMEOUT, connect_async(ws_url)).await
-                                    {
-                                        let (ephemeral_secret, handshake) =
-                                            make_secret_and_handshake(
-                                                &our,
-                                                keypair.clone(),
-                                                &router,
-                                            );
-
-                                        if let Ok(router_conn_sender) = build_connection(
-                                            our.clone(),
-                                            keypair.clone(),
-                                            Some(PeerMessage::Net(NetworkMessage::Handshake(
-                                                handshake,
-                                            ))),
-                                            pki.clone(),
-                                            peers.clone(),
-                                            websocket,
-                                            kernel_message_tx.clone(),
-                                        )
-                                        .await
-                                        {
-                                            routers_to_try.push_front(router);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    //
-                    // we tried all available routers and none of them worked!
-                    //
-                    return Err(SendErrorKind::Offline);
-                }
-            }
-        }
-    }
-}
-
 /// Only used if an indirect node.
 async fn connect_to_routers(
     our: Identity,
@@ -326,50 +217,8 @@ async fn connect_to_routers(
     print_tx: PrintSender,
 ) {
     for router_name in &our.allowed_routers {
-        if let Some(router_peer) = peers.read().await.get(router_name) {
-            // we have this router as a peer already, all we need to do is open
-            // a connection and give it to the peer entry.
+        unimplemented!();
 
-            unimplemented!()
-        } else if let Some(router_id) = pki.read().await.get(router_name).clone() {
-            if let Some((ip, port)) = &router_id.ws_routing {
-                // println!("trying to connect to {router_name}\r");
-                if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                    if let Ok(Ok((websocket, _response))) =
-                        timeout(TIMEOUT, connect_async(ws_url)).await
-                    {
-                        let (ephemeral_secret, handshake) =
-                            make_secret_and_handshake(&our, keypair.clone(), router_name);
-
-                        // this is a real and functional router! woohoo
-                        if let Ok(conn_sender) = build_connection(
-                            our.clone(),
-                            keypair.clone(),
-                            // there is an initial message: our handshake!
-                            Some(PeerMessage::Net(NetworkMessage::Handshake(handshake))),
-                            pki.clone(),
-                            peers.clone(),
-                            websocket,
-                            kernel_message_tx.clone(),
-                        )
-                        .await
-                        {
-                            if let Ok(peer) =
-                                create_new_peer(our.clone(), router_id.clone(), conn_sender).await
-                            {
-                                peers.write().await.insert(peer.identity.name.clone(), peer);
-                                let _ = print_tx
-                                    .send(Printout {
-                                        verbosity: 0,
-                                        content: format!("connected to router: {router_name}"),
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
         let _ = print_tx
             .send(Printout {
                 verbosity: 0,
@@ -385,6 +234,7 @@ async fn receive_incoming_connections(
     keypair: Arc<Ed25519KeyPair>,
     port: u16,
     pki: OnchainPKI,
+    keys: PeerKeys,
     peers: Peers,
     kernel_message_tx: MessageSender,
 ) {
@@ -395,14 +245,13 @@ async fn receive_incoming_connections(
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
-                tokio::spawn(build_connection(
+                tokio::spawn(maintain_connection(
                     our.clone(),
                     keypair.clone(),
-                    None, // no known target / initial message
                     pki.clone(),
+                    keys.clone(),
                     peers.clone(),
                     websocket,
-                    kernel_message_tx.clone(),
                 ));
             }
             // ignore connections we failed to accept
@@ -614,6 +463,7 @@ fn make_secret_and_handshake(
     let nonce = iv.to_vec();
 
     let handshake = Handshake {
+        id: 0, // TODO
         from: our.name.clone(),
         target: target.to_string(),
         id_signature: signed_id,

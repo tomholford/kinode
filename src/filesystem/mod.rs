@@ -138,6 +138,7 @@ pub async fn bootstrap(
                         capabilities: HashSet::new(),
                     });
             entry.capabilities.extend(special_capabilities.clone());
+            entry.wasm_bytes_handle = id;
         } else {
             //  FsAction::Write
             let file = FileIdentifier::new_uuid();
@@ -154,6 +155,7 @@ pub async fn bootstrap(
                         capabilities: HashSet::new(),
                     });
             entry.capabilities.extend(special_capabilities.clone());
+            entry.wasm_bytes_handle = id;
         }
     }
 

@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-pub type PeerKeys = Arc<RwLock<HashMap<String, (SharedSecret<Secp256k1>, Nonce)>>>;
+pub type PeerKeys = Arc<RwLock<HashMap<String, (Identity, Arc<SharedSecret<Secp256k1>>, Nonce)>>>;
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 pub type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub type MessageResult = Result<Option<NetworkMessage>, SendErrorKind>;

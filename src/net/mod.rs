@@ -87,12 +87,12 @@ pub async fn networking(
                 .await;
                 continue;
             }
+            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
             let peers_read = peers.read().await;
             if let Some(peer) = peers_read.get(target) {
                 //
                 // we have the target as an active peer, meaning we can send the message directly
                 //
-                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                 let _ = peer.sender.send((PeerMessage::Raw(km.clone()), result_tx));
                 // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
                 tokio::spawn(wait_for_ack(
@@ -105,34 +105,45 @@ pub async fn networking(
                 continue;
             }
             drop(peers_read);
-            let Some(peer_id) = pki.read().await.get(target).cloned() else {
-                // this target cannot be found in the PKI!
-                // throw an Offline error.
-                let _ = network_error_tx
-                    .send(WrappedSendError {
-                        id: km.id,
-                        source: km.source,
-                        error: SendError {
-                            kind: SendErrorKind::Offline,
-                            target: km.target,
-                            message: km.message,
-                            payload: km.payload,
-                        },
-                    })
-                    .await;
-                continue;
-            };
-            if let Some((secret, nonce)) = keys.read().await.get(target) {
+            if let Some((peer_id, secret, nonce)) = keys.read().await.get(target) {
                 //
                 // we don't have the target as a peer yet, but we have shaken hands with them
                 // before, and can try to reuse that shared secret to send a message.
                 // first, we'll need to open a websocket and create a Peer struct for them.
                 //
-                if peer_id.ws_routing.is_some() {
+                if let Some((ref ip, ref port)) = peer_id.ws_routing {
                     //
                     // we can establish a connection directly with this peer
                     //
-                    unimplemented!();
+                    let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    };
+                    let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    };
+                    let socket_tx = build_connection(
+                        our.clone(),
+                        keypair.clone(),
+                        pki.clone(),
+                        keys.clone(),
+                        peers.clone(),
+                        websocket,
+                        kernel_message_tx.clone(),
+                    )
+                    .await;
+                    let new_peer = create_new_peer(
+                        &our,
+                        &peer_id,
+                        secret,
+                        &nonce,
+                        socket_tx.clone(),
+                        kernel_message_tx.clone(),
+                    );
+                    peers.write().await.insert(peer_id.name.clone(), new_peer);
+                    self_tx.send(km).await.unwrap();
+                    continue;
                 } else {
                     //
                     // need to find a router that will connect to this peer!
@@ -145,11 +156,66 @@ pub async fn networking(
             // this means that we need to search the PKI for the peer, and then attempt to
             // exchange handshakes with them.
             //
-            if peer_id.ws_routing.is_some() {
+            let Some(peer_id) = pki.read().await.get(target).cloned() else {
+                // this target cannot be found in the PKI!
+                // throw an Offline error.
+                error_offline(km, &network_error_tx).await;
+                continue;
+            };
+            if let Some((ref ip, ref port)) = peer_id.ws_routing {
                 //
-                // we can establish a connection directly with this peer, then do a handshake
+                // we can establish a connection directly with this peer, then send a handshake
                 //
-                unimplemented!();
+                let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                };
+                let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                };
+                let socket_tx = build_connection(
+                    our.clone(),
+                    keypair.clone(),
+                    pki.clone(),
+                    keys.clone(),
+                    peers.clone(),
+                    websocket,
+                    kernel_message_tx.clone(),
+                )
+                .await;
+                let (secret, handshake) = make_secret_and_handshake(&our, keypair.clone(), target);
+                // use the nonce from the initiatory handshake, always
+                let nonce = *Nonce::from_slice(&handshake.nonce);
+                socket_tx
+                    .send((NetworkMessage::Handshake(handshake), Some(result_tx)))
+                    .unwrap();
+                let Ok(Ok(Some(NetworkMessage::HandshakeAck(response_shake)))) = result_rx.await else {
+                    println!("net: failed handshake with {target}\r");
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                };
+                let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &peer_id) else {
+                    println!("net: failed handshake with {target}\r");
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                };
+                let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
+                // save the handshake to our Keys map
+                keys.write()
+                    .await
+                    .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone(), nonce));
+                let new_peer = create_new_peer(
+                    &our,
+                    &peer_id,
+                    &secret,
+                    &nonce,
+                    socket_tx.clone(),
+                    kernel_message_tx.clone(),
+                );
+                peers.write().await.insert(peer_id.name.clone(), new_peer);
+                self_tx.send(km).await.unwrap();
+                continue;
             } else {
                 //
                 // need to find a router that will connect to this peer, then do a handshake
@@ -159,6 +225,21 @@ pub async fn networking(
         }
     });
     Err(anyhow::anyhow!("networking task exited"))
+}
+
+async fn error_offline(km: KernelMessage, network_error_tx: &NetworkErrorSender) {
+    let _ = network_error_tx
+        .send(WrappedSendError {
+            id: km.id,
+            source: km.source,
+            error: SendError {
+                kind: SendErrorKind::Offline,
+                target: km.target,
+                message: km.message,
+                payload: km.payload,
+            },
+        })
+        .await;
 }
 
 async fn wait_for_ack(
@@ -217,12 +298,12 @@ async fn connect_to_routers(
     for router_name in &our.allowed_routers {
         unimplemented!();
 
-        let _ = print_tx
-            .send(Printout {
-                verbosity: 0,
-                content: format!("failed to connect to router: {router_name}"),
-            })
-            .await;
+        // let _ = print_tx
+        //     .send(Printout {
+        //         verbosity: 0,
+        //         content: format!("failed to connect to router: {router_name}"),
+        //     })
+        //     .await;
     }
 }
 
@@ -243,13 +324,14 @@ async fn receive_incoming_connections(
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
-                tokio::spawn(maintain_connection(
+                tokio::spawn(build_connection(
                     our.clone(),
                     keypair.clone(),
                     pki.clone(),
                     keys.clone(),
                     peers.clone(),
                     websocket,
+                    kernel_message_tx.clone(),
                 ));
             }
             // ignore connections we failed to accept
@@ -380,27 +462,12 @@ fn make_ws_url(our_ip: &str, ip: &str, port: &u16) -> Result<url::Url, SendError
  *  handshake utils
  */
 
-/// read one message from websocket stream and parse it as a handshake.
-async fn get_handshake(websocket: &mut WebSocket) -> Result<Handshake, String> {
-    let handshake_text = websocket
-        .next()
-        .await
-        .ok_or("handshake failed")?
-        .map_err(|e| format!("{}", e))?
-        .into_text()
-        .map_err(|e| format!("{}", e))?;
-    let handshake: Handshake =
-        serde_json::from_str(&handshake_text).map_err(|_| "got bad handshake")?;
-    Ok(handshake)
-}
-
 /// take in handshake and PKI identity, and confirm that the handshake is valid.
 /// takes in optional nonce, which must be the one that connection initiator created.
 fn validate_handshake(
     handshake: &Handshake,
     their_id: &Identity,
-    nonce: Vec<u8>,
-) -> Result<(Arc<PublicKey<Secp256k1>>, Arc<Nonce>), String> {
+) -> Result<Arc<PublicKey<Secp256k1>>, String> {
     let their_networking_key = signature::UnparsedPublicKey::new(
         &signature::ED25519,
         hex::decode(&their_id.networking_key).map_err(|_| "failed to decode networking key")?,
@@ -423,15 +490,10 @@ fn validate_handshake(
         return Err("got improperly signed networking info".into());
     }
 
-    let their_ephemeral_pk =
-        match PublicKey::<Secp256k1>::from_sec1_bytes(&handshake.ephemeral_public_key) {
-            Ok(v) => Arc::new(v),
-            Err(_) => return Err("error".into()),
-        };
-
-    // assign nonce based on our role in the connection
-    let nonce = Arc::new(*Nonce::from_slice(&nonce));
-    return Ok((their_ephemeral_pk, nonce));
+    match PublicKey::<Secp256k1>::from_sec1_bytes(&handshake.ephemeral_public_key) {
+        Ok(v) => return Ok(Arc::new(v)),
+        Err(_) => return Err("error".into()),
+    };
 }
 
 /// given an identity and networking key-pair, produces a handshake message along

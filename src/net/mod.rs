@@ -93,9 +93,7 @@ pub async fn networking(
                 // we have the target as an active peer, meaning we can send the message directly
                 //
                 let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                let _ = peer
-                    .sender
-                    .send((PeerMessage::Raw(km.clone()), result_tx));
+                let _ = peer.sender.send((PeerMessage::Raw(km.clone()), result_tx));
                 // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
                 tokio::spawn(wait_for_ack(
                     km.clone(),

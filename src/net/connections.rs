@@ -144,7 +144,10 @@ pub async fn create_new_peer(
     kernel_message_tx: MessageSender,
 ) -> Result<Peer, ()> {
     let mut key = [0u8; 32];
-    secret.extract::<sha2::Sha256>(None).expand(&[], &mut key).unwrap();
+    secret
+        .extract::<sha2::Sha256>(None)
+        .expand(&[], &mut key)
+        .unwrap();
     let cipher = Aes256GcmSiv::new(generic_array::GenericArray::from_slice(&key));
 
     let (message_tx, message_rx) = unbounded_channel::<(PeerMessage, ErrorShuttle)>();

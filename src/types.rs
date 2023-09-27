@@ -1,4 +1,3 @@
-use ring::digest;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -672,13 +671,6 @@ impl HttpClientError {
         }
     }
 }
-
-//
-// keygen types
-//
-
-pub const CREDENTIAL_LEN: usize = digest::SHA256_OUTPUT_LEN;
-pub type DiskKey = [u8; CREDENTIAL_LEN];
 
 //
 // custom kernel displays

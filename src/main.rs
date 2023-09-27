@@ -1,21 +1,13 @@
-use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes256Gcm, Key,
-};
 use anyhow::Result;
 use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
 use ethers_providers::Ws;
-use lazy_static::__Deref;
-use ring::pbkdf2;
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
 use std::env;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{fs, time::timeout};
 
-use crate::register::{DISK_KEY_SALT, ITERATIONS};
 use crate::types::*;
 
 mod encryptor;
@@ -24,6 +16,7 @@ mod filesystem;
 mod http_client;
 mod http_server;
 mod kernel;
+mod keygen;
 mod net;
 mod register;
 mod terminal;
@@ -44,8 +37,6 @@ const ENCRYPTOR_CHANNEL_CAPACITY: usize = 32;
 const QNS_SEPOLIA_ADDRESS: &str = "0x9e5ed0e7873E0d7f10eEb6dE72E87fE087A12776";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-static PBKDF2_ALG: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256; // TODO maybe look into Argon2
 
 abigen!(QNSRegistry, "src/QNSRegistry.json");
 
@@ -145,18 +136,10 @@ async fn main() {
         Vec<u8>,
     ) = if keyfile.is_ok() {
         // LOGIN flow
-        // get username, keyfile, and jwt_secret from disk
-        let (username, routers, key, jwt_secret) =
-            bincode::deserialize::<(String, Vec<String>, Vec<u8>, Vec<u8>)>(&keyfile.unwrap())
-                .unwrap();
-
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
             format!("http://localhost:{}/login", http_server_port),
-            format!(
-                "Welcome back, {}, Click here to log in to your node.",
-                username
-            ),
+            "Click here to log in to your node.",
         );
         println!("(http://localhost:{}/login)", http_server_port);
         if our_ip != "localhost" {
@@ -166,22 +149,21 @@ async fn main() {
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<(signature::Ed25519KeyPair, Vec<u8>)>(1);
-        let (networking_keypair, jwt_secret_bytes) = tokio::select! {
+        let (tx, mut rx) =
+            mpsc::channel::<(String, Vec<String>, signature::Ed25519KeyPair, Vec<u8>)>(1);
+        let (username, routers, networking_keypair, jwt_secret_bytes) = tokio::select! {
             _ = register::login(
                 tx,
                 kill_rx,
-                key,
-                jwt_secret,
+                keyfile.unwrap(),
                 http_server_port,
-                &username,
             ) => panic!("login failed"),
-            (networking_keypair, jwt_secret_bytes) = async {
+            (username, routers, networking_keypair, jwt_secret_bytes) = async {
                 while let Some(fin) = rx.recv().await {
                     return fin
                 }
                 panic!("login failed")
-            } => (networking_keypair, jwt_secret_bytes),
+            } => (username, routers, networking_keypair, jwt_secret_bytes),
         };
 
         // check if Identity for this username has correct networking keys,
@@ -207,14 +189,13 @@ async fn main() {
             .collect();
 
         // double check that keys match on-chain information
-        if (
-            onchain_id.routers != namehashed_routers
-                || onchain_id.public_key != networking_keypair.public_key().as_ref()
-            // || (onchain_id.ip_and_port > 0 && onchain_id.ip_and_port != combineIpAndPort(
-            //     our_ip.clone(),
-            //     http_server_port,
-            // ))
-        ) {
+        if onchain_id.routers != namehashed_routers
+            || onchain_id.public_key != networking_keypair.public_key().as_ref()
+        // || (onchain_id.ip_and_port > 0 && onchain_id.ip_and_port != combineIpAndPort(
+        //     our_ip.clone(),
+        //     http_server_port,
+        // ))
+        {
             panic!("CRITICAL: your routing information does not match on-chain records");
         }
 
@@ -267,46 +248,29 @@ async fn main() {
             } => (our, password, serialized_networking_keypair, jwt_secret_bytes),
         };
 
-        println!("generating disk encryption keys...");
-        let mut disk_key: DiskKey = [0u8; CREDENTIAL_LEN];
-        pbkdf2::derive(
-            PBKDF2_ALG,
-            NonZeroU32::new(ITERATIONS).unwrap(),
-            DISK_KEY_SALT,
-            password.as_bytes(),
-            &mut disk_key,
-        );
         println!(
             "saving encrypted networking keys to {}/.network.keys",
             home_directory_path
         );
-        let key = Key::<Aes256Gcm>::from_slice(&disk_key);
-        let cipher = Aes256Gcm::new(&key);
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-        let keyciphertext: Vec<u8> = cipher
-            .encrypt(&nonce, serialized_networking_keypair.as_ref())
-            .unwrap();
-
-        let jwtciphertext: Vec<u8> = cipher.encrypt(&nonce, jwt_secret_bytes.as_ref()).unwrap();
-
-        fs::write(
-            format!("{}/.network.keys", home_directory_path),
-            bincode::serialize(&(
-                our.name.clone(),
-                our.allowed_routers.clone(),
-                [nonce.deref().to_vec(), keyciphertext].concat(),
-                [nonce.deref().to_vec(), jwtciphertext].concat(),
-            ))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
 
         let networking_keypair =
             signature::Ed25519KeyPair::from_pkcs8(serialized_networking_keypair.as_ref()).unwrap();
 
         // TODO fix register frontend so this isn't necessary
         our.networking_key = format!("0x{}", our.networking_key);
+
+        fs::write(
+            format!("{}/.network.keys", home_directory_path),
+            keygen::encode_keyfile(
+                password,
+                our.name.clone(),
+                our.allowed_routers.clone(),
+                serialized_networking_keypair,
+                jwt_secret_bytes.clone(),
+            ),
+        )
+        .await
+        .unwrap();
 
         println!("registration complete!");
         (our, networking_keypair, jwt_secret_bytes.to_vec())

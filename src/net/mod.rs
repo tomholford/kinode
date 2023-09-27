@@ -119,7 +119,9 @@ pub async fn networking(
                         error_offline(km, &network_error_tx).await;
                         continue;
                     };
-                    let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
+                    let Ok(Ok((websocket, _response))) =
+                        timeout(TIMEOUT, connect_async(ws_url)).await
+                    else {
                         error_offline(km, &network_error_tx).await;
                         continue;
                     };
@@ -170,7 +172,8 @@ pub async fn networking(
                     error_offline(km, &network_error_tx).await;
                     continue;
                 };
-                let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
+                let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await
+                else {
                     error_offline(km, &network_error_tx).await;
                     continue;
                 };
@@ -190,7 +193,8 @@ pub async fn networking(
                 socket_tx
                     .send((NetworkMessage::Handshake(handshake), Some(result_tx)))
                     .unwrap();
-                let Ok(Ok(Some(NetworkMessage::HandshakeAck(response_shake)))) = result_rx.await else {
+                let Ok(Ok(Some(NetworkMessage::HandshakeAck(response_shake)))) = result_rx.await
+                else {
                     println!("net: failed handshake with {target}\r");
                     error_offline(km, &network_error_tx).await;
                     continue;
@@ -202,9 +206,10 @@ pub async fn networking(
                 };
                 let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
                 // save the handshake to our Keys map
-                keys.write()
-                    .await
-                    .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone(), nonce));
+                keys.write().await.insert(
+                    peer_id.name.clone(),
+                    (peer_id.clone(), secret.clone(), nonce),
+                );
                 let new_peer = create_new_peer(
                     &our,
                     &peer_id,

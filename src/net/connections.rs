@@ -138,10 +138,14 @@ pub async fn maintain_connection(
                     // 3. create a Peer and save, replacing old one if it existed
                     if handshake.target == our.name {
                         let Some(peer_id) = pki.read().await.get(&handshake.from).cloned() else {
-                            println!("net: failed handshake with unknown node {}\r", handshake.from);
+                            println!(
+                                "net: failed handshake with unknown node {}\r",
+                                handshake.from
+                            );
                             continue;
                         };
-                        let Ok(their_ephemeral_pk) = validate_handshake(&handshake, &peer_id) else {
+                        let Ok(their_ephemeral_pk) = validate_handshake(&handshake, &peer_id)
+                        else {
                             println!("net: invalid handshake from {}\r", handshake.from);
                             continue;
                         };

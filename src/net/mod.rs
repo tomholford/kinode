@@ -68,81 +68,87 @@ pub async fn networking(
         }
     };
 
-    tokio::join!(
-        listener,
-        async {
-            while let Some(km) = message_rx.recv().await {
-                // got a message from kernel to send out over the network
-                let target = &km.target.node;
-                if target == &our.name {
-                    // if the message is for us, it's either a protocol-level "hello" message,
-                    // or a debugging command issued from our terminal. handle it here:
-                    handle_incoming_message(&our, km, peers.clone(), pki.clone(), names.clone(), print_tx.clone()).await;
-                    continue;
-                }
-                let peers_read = peers.read().await;
-                if let Some(peer) = peers_read.get(target) {
-                    //
-                    // we have the target as an active peer, meaning we can send the message directly
-                    //
-                    let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                    let _ = peer
-                        .sender
-                        .send((PeerMessage::Raw(km.clone()), Some(result_tx)));
-                    // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
-                    tokio::spawn(wait_for_ack(
-                        km.clone(),
-                        peers.clone(),
-                        target.to_string(),
-                        result_rx,
-                        network_error_tx.clone(),
-                    ));
-                    continue;
-                }
-                drop(peers_read);
-                let Some(peer_id) = pki.read().await.get(target).cloned() else {
-                    // this target cannot be found in the PKI!
-                    // throw an Offline error.
-                    let _ = network_error_tx
-                        .send(WrappedSendError {
-                            id: km.id,
-                            source: km.source,
-                            error: SendError {
-                                kind: SendErrorKind::Offline,
-                                target: km.target,
-                                message: km.message,
-                                payload: km.payload,
-                            },
-                        }).await;
-                    continue;
-                };
-                if let Some((secret, nonce)) = keys.read().await.get(target) {
-                    //
-                    // we don't have the target as a peer yet, but we have shaken hands with them
-                    // before, and can try to reuse that shared secret to send a message.
-                    // first, we'll need to open a websocket and create a Peer struct for them.
-                    //
-                    if peer_id.ws_routing.is_some() {
-                        //
-                        // we can establish a connection directly with this peer
-                        //
-                        unimplemented!();
-                    } else {
-                        //
-                        // need to find a router that will connect to this peer!
-                        //
-                        unimplemented!();
-                    }
-                    continue;
-                }
-                // sending a message to a peer for which we don't have active networking info.
-                // this means that we need to search the PKI for the peer, and then attempt to
-                // exchange handshakes with them.
-                unimplemented!();
+    tokio::join!(listener, async {
+        while let Some(km) = message_rx.recv().await {
+            // got a message from kernel to send out over the network
+            let target = &km.target.node;
+            if target == &our.name {
+                // if the message is for us, it's either a protocol-level "hello" message,
+                // or a debugging command issued from our terminal. handle it here:
+                handle_incoming_message(
+                    &our,
+                    km,
+                    peers.clone(),
+                    pki.clone(),
+                    names.clone(),
+                    print_tx.clone(),
+                )
+                .await;
                 continue;
             }
-        },
-    );
+            let peers_read = peers.read().await;
+            if let Some(peer) = peers_read.get(target) {
+                //
+                // we have the target as an active peer, meaning we can send the message directly
+                //
+                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                let _ = peer
+                    .sender
+                    .send((PeerMessage::Raw(km.clone()), Some(result_tx)));
+                // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
+                tokio::spawn(wait_for_ack(
+                    km.clone(),
+                    peers.clone(),
+                    target.to_string(),
+                    result_rx,
+                    network_error_tx.clone(),
+                ));
+                continue;
+            }
+            drop(peers_read);
+            let Some(peer_id) = pki.read().await.get(target).cloned() else {
+                // this target cannot be found in the PKI!
+                // throw an Offline error.
+                let _ = network_error_tx
+                    .send(WrappedSendError {
+                        id: km.id,
+                        source: km.source,
+                        error: SendError {
+                            kind: SendErrorKind::Offline,
+                            target: km.target,
+                            message: km.message,
+                            payload: km.payload,
+                        },
+                    })
+                    .await;
+                continue;
+            };
+            if let Some((secret, nonce)) = keys.read().await.get(target) {
+                //
+                // we don't have the target as a peer yet, but we have shaken hands with them
+                // before, and can try to reuse that shared secret to send a message.
+                // first, we'll need to open a websocket and create a Peer struct for them.
+                //
+                if peer_id.ws_routing.is_some() {
+                    //
+                    // we can establish a connection directly with this peer
+                    //
+                    unimplemented!();
+                } else {
+                    //
+                    // need to find a router that will connect to this peer!
+                    //
+                    unimplemented!();
+                }
+                continue;
+            }
+            // sending a message to a peer for which we don't have active networking info.
+            // this means that we need to search the PKI for the peer, and then attempt to
+            // exchange handshakes with them.
+            unimplemented!();
+            continue;
+        }
+    },);
     Err(anyhow::anyhow!("networking task exited"))
 }
 

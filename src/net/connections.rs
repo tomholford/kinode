@@ -84,7 +84,7 @@ pub async fn create_new_peer(
         handle,
         sender: message_tx,
         decrypter: decrypter_tx,
-    })
+    });
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel

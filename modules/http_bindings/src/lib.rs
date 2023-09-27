@@ -465,7 +465,7 @@ impl Guest for Component {
                         .split("/")
                         .collect::<Vec<&str>>();
                     if key_segments.len() != path_segments.len()
-                        && (!key.contains("/*") || (key_segments.len() - 1) > path_segments.len())
+                        && (!key.contains("/.*") || (key_segments.len() - 1) > path_segments.len())
                     {
                         continue;
                     }

@@ -1,7 +1,7 @@
 cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
-use bindings::{print_to_terminal, receive, send_request, send_requests, UqProcess};
+use bindings::{print_to_terminal, receive, send_request, send_response, UqProcess};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use alloy_primitives::FixedBytes;
@@ -135,6 +135,26 @@ impl UqProcess for Component {
                 None,
         );
 
+        let _register_endpoint = send_request(
+            &Address{
+                node: our.node.clone(),
+                process: ProcessId::Name("http_bindings".to_string()),
+            },
+            &Request{
+                inherit: false,
+                expects_response: false,
+                metadata: None,
+                ipc: Some(serde_json::json!({
+                    "action": "bind-app",
+                    "path": "/qns-indexer/node/:name",
+                    "app": "qns_indexer",
+                    "authenticated": true,
+                }).to_string()),
+            },
+            None,
+            None,
+        );
+
         loop {
             let Ok((source, message)) = receive() else {
                 print_to_terminal(0, "qns_indexer: got network error");
@@ -146,6 +166,50 @@ impl UqProcess for Component {
                 // print_to_terminal(0, "qns_indexer: got response");
                 continue;
             };
+
+            if source.process == ProcessId::Name("http_bindings".to_string()) {
+                if let Ok(ipc_json) = serde_json::from_str::<serde_json::Value>(&request.ipc.clone().unwrap_or_default()) {
+                    if ipc_json["path"].as_str().unwrap_or_default() == "/qns-indexer/node/:name" {
+                        if let Some(name) = ipc_json["url_params"]["name"].as_str() {
+                            if let Some(node) = state.nodes.get(name) {
+                                send_response(
+                                    &Response {
+                                        ipc: Some(serde_json::json!({
+                                            "status": 200,
+                                            "headers": {
+                                                "Content-Type": "application/json",
+                                            },
+                                        }).to_string()),
+                                        metadata: None,
+                                    },
+                                    Some(&Payload {
+                                        mime: Some("application/json".to_string()),
+                                        bytes: node.as_bytes().to_vec(),
+                                    })
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
+                send_response(
+                    &Response {
+                        ipc: Some(serde_json::json!({
+                            "status": 404,
+                            "headers": {
+                                "Content-Type": "application/json",
+                            },
+                        }).to_string()),
+                        metadata: None,
+                    },
+                    Some(&Payload {
+                        mime: Some("application/json".to_string()),
+                        bytes: "Not Found".to_string().as_bytes().to_vec(),
+                    })
+                );
+                continue;
+            }
+
             let Ok(msg) = serde_json::from_str::<AllActions>(&request.ipc.unwrap_or_default()) else {
                 print_to_terminal(0, "qns_indexer: got invalid message");
                 continue;

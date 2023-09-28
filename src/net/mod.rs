@@ -171,7 +171,8 @@ pub async fn networking(
                     let mut success = false;
                     for router_namehash in &peer_id.allowed_routers {
                         let km = km.clone();
-                        let Some(router_name) = names.read().await.get(router_namehash).cloned() else {
+                        let Some(router_name) = names.read().await.get(router_namehash).cloned()
+                        else {
                             continue;
                         };
                         let Some(router_id) = pki.read().await.get(&router_name).cloned() else {
@@ -373,7 +374,8 @@ pub async fn networking(
                             continue;
                         }
                     };
-                    let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &peer_id) else {
+                    let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &peer_id)
+                    else {
                         println!("net: failed handshake with {target}\r");
                         error_offline(km, &network_error_tx).await;
                         continue;
@@ -570,10 +572,10 @@ async fn connect_to_routers(
                 }
             };
             let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &router_id) else {
-                    println!("net: failed handshake with {router_name}\r");
-                    routers.push_back(router_name);
-                    continue;
-                };
+                println!("net: failed handshake with {router_name}\r");
+                routers.push_back(router_name);
+                continue;
+            };
             let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
             // save the handshake to our Keys map
             keys.write().await.insert(

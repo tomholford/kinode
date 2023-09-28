@@ -52,7 +52,7 @@ pub async fn register(
     let networking_keypair_post = networking_keypair.clone();
 
     let static_files = warp::path("static").and(warp::fs::dir("./src/register_app/static/"));
-    let react_app = warp::path("register")
+    let react_app = warp::path::end()
         .and(warp::get())
         .and(warp::fs::file("./src/register_app/index.html"));
 

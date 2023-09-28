@@ -225,13 +225,13 @@ async fn main() {
         // REGISTER flow
         println!(
             "\u{1b}]8;;{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
-            format!("http://localhost:{}/register", http_server_port),
+            format!("http://localhost:{}", http_server_port),
             "Click here to register your node.",
         );
-        println!("(http://localhost:{}/register)", http_server_port);
+        println!("(http://localhost:{})", http_server_port);
         if our_ip != "localhost" {
             println!(
-                "(if on a remote machine: http://{}:{}/register)",
+                "(if on a remote machine: http://{}:{})",
                 our_ip, http_server_port
             );
         }

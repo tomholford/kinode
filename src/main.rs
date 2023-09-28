@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
-use ethers_providers::{Http, Ws};
+use ethers_providers::Ws;
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
 use std::env;
@@ -335,7 +335,6 @@ async fn main() {
         our.clone(),
         our_ip,
         networking_keypair_arc.clone(),
-        net_message_sender.clone(),
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),

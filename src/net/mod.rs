@@ -7,6 +7,7 @@ use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
 use ethers::prelude::k256::{self, Secp256k1};
 use ring::signature::{self, Ed25519KeyPair};
+use std::collections::VecDeque;
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
@@ -23,7 +24,6 @@ pub async fn networking(
     our: Identity,
     our_ip: String,
     keypair: Arc<Ed25519KeyPair>,
-    self_tx: MessageSender,
     kernel_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
     print_tx: PrintSender,
@@ -48,6 +48,7 @@ pub async fn networking(
                 keypair.clone(),
                 our_ip.clone(),
                 pki.clone(),
+                keys.clone(),
                 peers.clone(),
                 kernel_message_tx.clone(),
                 print_tx.clone(),
@@ -103,7 +104,7 @@ pub async fn networking(
                 continue;
             }
             drop(peers_read);
-            if let Some((peer_id, secret, nonce)) = keys.read().await.get(target) {
+            if let Some((peer_id, secret, nonce)) = keys.read().await.get(target).cloned() {
                 //
                 // we don't have the target as a peer yet, but we have shaken hands with them
                 // before, and can try to reuse that shared secret to send a message.
@@ -136,19 +137,97 @@ pub async fn networking(
                     let new_peer = create_new_peer(
                         &our,
                         &peer_id,
-                        secret,
+                        &secret,
                         &nonce,
                         socket_tx.clone(),
                         kernel_message_tx.clone(),
                     );
+                    // can't do a self_tx.send here because we need to maintain ordering of messages
+                    // already queued.
+                    let _ = new_peer
+                        .sender
+                        .send((PeerMessage::Raw(km.clone()), result_tx));
                     peers.write().await.insert(peer_id.name.clone(), new_peer);
-                    self_tx.send(km).await.unwrap();
+                    // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
+                    tokio::spawn(wait_for_ack(
+                        km.clone(),
+                        peers.clone(),
+                        target.to_string(),
+                        result_rx,
+                        network_error_tx.clone(),
+                    ));
                     continue;
                 } else {
                     //
                     // need to find a router that will connect to this peer!
                     //
-                    unimplemented!();
+                    // get their ID from PKI so we have their most up-to-date router list
+                    let Some(peer_id) = pki.read().await.get(target).cloned() else {
+                        // this target cannot be found in the PKI!
+                        // throw an Offline error.
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    };
+                    let mut success = false;
+                    for router_namehash in &peer_id.allowed_routers {
+                        let km = km.clone();
+                        let Some(router_name) = names.read().await.get(router_namehash).cloned() else {
+                            continue;
+                        };
+                        let Some(router_id) = pki.read().await.get(&router_name).cloned() else {
+                            continue;
+                        };
+                        let Some((ref ip, ref port)) = router_id.ws_routing else {
+                            continue;
+                        };
+                        //
+                        // attempt to connect to the router's IP+port and send through that
+                        //
+                        let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+                            continue;
+                        };
+                        let Ok(Ok((websocket, _response))) =
+                            timeout(TIMEOUT, connect_async(ws_url)).await
+                        else {
+                            continue;
+                        };
+                        let socket_tx = build_connection(
+                            our.clone(),
+                            keypair.clone(),
+                            pki.clone(),
+                            keys.clone(),
+                            peers.clone(),
+                            websocket,
+                            kernel_message_tx.clone(),
+                        )
+                        .await;
+                        let new_peer = create_new_peer(
+                            &our,
+                            &peer_id,
+                            &secret,
+                            &nonce,
+                            socket_tx.clone(),
+                            kernel_message_tx.clone(),
+                        );
+                        let (temp_result_tx, temp_result_rx) = oneshot::channel::<MessageResult>();
+                        let _ = new_peer
+                            .sender
+                            .send((PeerMessage::Raw(km.clone()), temp_result_tx));
+                        match timeout(TIMEOUT, temp_result_rx).await {
+                            Ok(Ok(Ok(_m))) => {
+                                peers.write().await.insert(peer_id.name.clone(), new_peer);
+                                success = true;
+                                break;
+                            }
+                            _ => {
+                                continue;
+                            }
+                        }
+                    }
+                    if !success {
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    }
                 }
             }
             //
@@ -239,7 +318,99 @@ pub async fn networking(
                 //
                 // need to find a router that will connect to this peer, then do a handshake
                 //
-                unimplemented!();
+                let Some(peer_id) = pki.read().await.get(target).cloned() else {
+                    // this target cannot be found in the PKI!
+                    // throw an Offline error.
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                };
+                let mut success = false;
+                for router_namehash in &peer_id.allowed_routers {
+                    let km = km.clone();
+                    let Some(router_name) = names.read().await.get(router_namehash).cloned() else {
+                        continue;
+                    };
+                    let Some(router_id) = pki.read().await.get(&router_name).cloned() else {
+                        continue;
+                    };
+                    let Some((ref ip, ref port)) = router_id.ws_routing else {
+                        continue;
+                    };
+                    //
+                    // attempt to connect to the router's IP+port and send through that
+                    //
+                    let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+                        continue;
+                    };
+                    let Ok(Ok((websocket, _response))) =
+                        timeout(TIMEOUT, connect_async(ws_url)).await
+                    else {
+                        continue;
+                    };
+                    let socket_tx = build_connection(
+                        our.clone(),
+                        keypair.clone(),
+                        pki.clone(),
+                        keys.clone(),
+                        peers.clone(),
+                        websocket,
+                        kernel_message_tx.clone(),
+                    )
+                    .await;
+                    let (secret, handshake) =
+                        make_secret_and_handshake(&our, keypair.clone(), target, None);
+                    // use the nonce from the initiatory handshake, always
+                    let nonce = *Nonce::from_slice(&handshake.nonce);
+                    let (handshake_tx, handshake_rx) = oneshot::channel::<MessageResult>();
+                    socket_tx
+                        .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
+                        .unwrap();
+                    let response_shake = match timeout(TIMEOUT, handshake_rx).await {
+                        Ok(Ok(Ok(Some(NetworkMessage::HandshakeAck(shake))))) => shake,
+                        _ => {
+                            println!("net: failed handshake with {target}\r");
+                            error_offline(km, &network_error_tx).await;
+                            continue;
+                        }
+                    };
+                    let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &peer_id) else {
+                        println!("net: failed handshake with {target}\r");
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    };
+                    let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
+                    // save the handshake to our Keys map
+                    keys.write().await.insert(
+                        peer_id.name.clone(),
+                        (peer_id.clone(), secret.clone(), nonce),
+                    );
+                    let new_peer = create_new_peer(
+                        &our,
+                        &peer_id,
+                        &secret,
+                        &nonce,
+                        socket_tx.clone(),
+                        kernel_message_tx.clone(),
+                    );
+                    let (temp_result_tx, temp_result_rx) = oneshot::channel::<MessageResult>();
+                    let _ = new_peer
+                        .sender
+                        .send((PeerMessage::Raw(km.clone()), temp_result_tx));
+                    match timeout(TIMEOUT, temp_result_rx).await {
+                        Ok(Ok(Ok(_m))) => {
+                            peers.write().await.insert(peer_id.name.clone(), new_peer);
+                            success = true;
+                            break;
+                        }
+                        _ => {
+                            continue;
+                        }
+                    }
+                }
+                if !success {
+                    error_offline(km, &network_error_tx).await;
+                    continue;
+                }
             }
         }
     });
@@ -311,19 +482,122 @@ async fn connect_to_routers(
     keypair: Arc<Ed25519KeyPair>,
     our_ip: String,
     pki: OnchainPKI,
+    keys: PeerKeys,
     peers: Peers,
     kernel_message_tx: MessageSender,
     print_tx: PrintSender,
 ) {
-    for router_name in &our.allowed_routers {
-        unimplemented!();
-
-        // let _ = print_tx
-        //     .send(Printout {
-        //         verbosity: 0,
-        //         content: format!("failed to connect to router: {router_name}"),
-        //     })
-        //     .await;
+    let mut routers = VecDeque::from(our.allowed_routers.clone());
+    while let Some(router_name) = routers.pop_front() {
+        if peers.read().await.contains_key(&router_name) {
+            routers.push_back(router_name);
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        }
+        let Some(router_id) = pki.read().await.get(&router_name).cloned() else {
+            routers.push_back(router_name);
+            continue;
+        };
+        let Some((ref ip, ref port)) = router_id.ws_routing else {
+            continue;
+        };
+        let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+            continue;
+        };
+        let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
+            routers.push_back(router_name);
+            continue;
+        };
+        let keys_read = keys.read().await;
+        if let Some((_, secret, nonce)) = keys_read.get(&router_name).cloned() {
+            drop(keys_read);
+            // if we have a handshake saved, connect to their websocket directly
+            // and save them as an active peer
+            let socket_tx = build_connection(
+                our.clone(),
+                keypair.clone(),
+                pki.clone(),
+                keys.clone(),
+                peers.clone(),
+                websocket,
+                kernel_message_tx.clone(),
+            )
+            .await;
+            let new_peer = create_new_peer(
+                &our,
+                &router_id,
+                &secret,
+                &nonce,
+                socket_tx.clone(),
+                kernel_message_tx.clone(),
+            );
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 0,
+                    content: format!("net: connected to router {router_name}"),
+                })
+                .await;
+            peers.write().await.insert(router_id.name.clone(), new_peer);
+        } else {
+            drop(keys_read);
+            // if we don't yet have a handshake saved, connect to their websocket
+            // and then send a handshake. save the handshake in our keys map,
+            // then save them as an active peer.
+            let socket_tx = build_connection(
+                our.clone(),
+                keypair.clone(),
+                pki.clone(),
+                keys.clone(),
+                peers.clone(),
+                websocket,
+                kernel_message_tx.clone(),
+            )
+            .await;
+            let (secret, handshake) =
+                make_secret_and_handshake(&our, keypair.clone(), &router_name, None);
+            // use the nonce from the initiatory handshake, always
+            let nonce = *Nonce::from_slice(&handshake.nonce);
+            let (handshake_tx, handshake_rx) = oneshot::channel::<MessageResult>();
+            socket_tx
+                .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
+                .unwrap();
+            let response_shake = match timeout(TIMEOUT, handshake_rx).await {
+                Ok(Ok(Ok(Some(NetworkMessage::HandshakeAck(shake))))) => shake,
+                _ => {
+                    println!("net: failed handshake with {router_name}\r");
+                    routers.push_back(router_name);
+                    continue;
+                }
+            };
+            let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &router_id) else {
+                    println!("net: failed handshake with {router_name}\r");
+                    routers.push_back(router_name);
+                    continue;
+                };
+            let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
+            // save the handshake to our Keys map
+            keys.write().await.insert(
+                router_id.name.clone(),
+                (router_id.clone(), secret.clone(), nonce),
+            );
+            let new_peer = create_new_peer(
+                &our,
+                &router_id,
+                &secret,
+                &nonce,
+                socket_tx.clone(),
+                kernel_message_tx.clone(),
+            );
+            let _ = print_tx
+                .send(Printout {
+                    verbosity: 0,
+                    content: format!("net: connected to router {router_name}"),
+                })
+                .await;
+            peers.write().await.insert(router_id.name.clone(), new_peer);
+        }
+        routers.push_back(router_name);
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
@@ -345,6 +619,8 @@ async fn receive_incoming_connections(
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
                 println!("received incoming connection\r");
+                // TODO we will need to perform some amount of validation here
+                // to prevent standard DDoS attacks.
                 tokio::spawn(build_connection(
                     our.clone(),
                     keypair.clone(),
@@ -495,9 +771,12 @@ fn validate_handshake(
             .map_err(|_| "failed to decode networking key")?,
     );
 
+    println!("verifying id: {:?}\r", their_id);
+
     if !(their_networking_key
         .verify(
-            &serde_json::to_vec(&their_id).map_err(|_| "failed to serialize their identity")?,
+            // TODO use language-neutral serialization here too
+            &bincode::serialize(their_id).map_err(|_| "failed to serialize their identity")?,
             &handshake.id_signature,
         )
         .is_ok()
@@ -544,8 +823,8 @@ fn make_secret_and_handshake(
         .allowed_routers
         .clone()
         .into_iter()
-        .map(|name| {
-            let hash = crate::namehash(&name);
+        .map(|namehash| {
+            let hash = crate::namehash(&namehash);
             let mut result = [0u8; 32];
             result.copy_from_slice(hash.as_bytes());
             format!("0x{}", hex::encode(result))
@@ -554,8 +833,9 @@ fn make_secret_and_handshake(
 
     println!("signing id: {:?}\r", our_onchain_id);
 
+    // TODO use language-neutral serialization here too
     let signed_id = keypair
-        .sign(&serde_json::to_vec(our).unwrap_or(vec![]))
+        .sign(&bincode::serialize(&our_onchain_id).unwrap())
         .as_ref()
         .to_vec();
 

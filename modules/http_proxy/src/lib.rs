@@ -84,7 +84,7 @@ impl Guest for Component {
                     expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
-                        "path": "/http-proxy/static/.*",
+                        "path": "/http-proxy/static/*",
                         "authenticated": true,
                         "app": "http_proxy",
                     }).to_string()),
@@ -130,7 +130,7 @@ impl Guest for Component {
                     expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
-                        "path": "/http-proxy/serve/:username/.*",
+                        "path": "/http-proxy/serve/:username/*",
                         "app": "http_proxy",
                     }).to_string()),
                     metadata: None,
@@ -285,7 +285,7 @@ impl Guest for Component {
                             .to_vec()
                     }),
                 );
-            } else if message_json["path"] == "/http-proxy/serve/:username/.*" {
+            } else if message_json["path"] == "/http-proxy/serve/:username/*" {
                 let username = message_json["url_params"]["username"].as_str().unwrap_or("");
                 let raw_path = message_json["raw_path"].as_str().unwrap_or("");
                 print_to_terminal(1, format!("proxy for user: {}", username).as_str());

@@ -1,14 +1,14 @@
 cargo_component_bindings::generate!();
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 use hmac::{Hmac, Mac};
+use jwt::{Error, SignWithKey, VerifyWithKey};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use jwt::{SignWithKey, VerifyWithKey, Error};
+use std::collections::HashMap;
 use url::form_urlencoded;
 
-use bindings::{print_to_terminal, receive, send_request, send_response, get_payload, Guest};
 use bindings::component::uq_process::types::*;
+use bindings::{get_payload, print_to_terminal, receive, send_request, send_response, Guest};
 
 mod process_lib;
 
@@ -23,8 +23,8 @@ struct BoundPath {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
-  username: String,
-  expiration: u64,
+    username: String,
+    expiration: u64,
 }
 
 fn generate_token(our_node: String, secret: Hmac<Sha256>) -> Option<String> {
@@ -44,7 +44,9 @@ fn auth_cookie_valid(our_node: String, cookie: &str, secret: Hmac<Sha256>) -> bo
     let mut auth_token = None;
     for cookie_part in cookie_parts {
         let cookie_part_parts: Vec<&str> = cookie_part.split("=").collect();
-        if cookie_part_parts.len() == 2 && cookie_part_parts[0] == format!("uqbar-auth_{}", our_node) {
+        if cookie_part_parts.len() == 2
+            && cookie_part_parts[0] == format!("uqbar-auth_{}", our_node)
+        {
             auth_token = Some(cookie_part_parts[1].to_string());
             break;
         }
@@ -55,41 +57,48 @@ fn auth_cookie_valid(our_node: String, cookie: &str, secret: Hmac<Sha256>) -> bo
         _ => return false,
     };
 
-    print_to_terminal(1, format!("http_bindings: auth_token: {}", auth_token).as_str());
+    print_to_terminal(
+        1,
+        format!("http_bindings: auth_token: {}", auth_token).as_str(),
+    );
 
     let claims: Result<JwtClaims, Error> = auth_token.verify_with_key(&secret);
 
     match claims {
         Ok(data) => {
-            print_to_terminal(1, format!("http_bindings: our name: {}, token_name {}", our_node, data.username).as_str());
+            print_to_terminal(
+                1,
+                format!(
+                    "http_bindings: our name: {}, token_name {}",
+                    our_node, data.username
+                )
+                .as_str(),
+            );
             data.username == our_node
-        },
+        }
         Err(_) => {
             print_to_terminal(1, "http_bindings: failed to verify token");
             false
-        },
+        }
     }
 }
 
-fn send_http_response(
-    id: String,
-    status: u16,
-    headers: HashMap<String, String>,
-    payload_bytes: Vec<u8>,
-) {
+fn send_http_response(status: u16, headers: HashMap<String, String>, payload_bytes: Vec<u8>) {
     send_response(
         &Response {
-            ipc: Some(serde_json::json!({
-                "id": id,
-                "status": status,
-                "headers": headers,
-            }).to_string()),
+            ipc: Some(
+                serde_json::json!({
+                    "status": status,
+                    "headers": headers,
+                })
+                .to_string(),
+            ),
             metadata: None,
         },
         Some(&Payload {
             mime: Some("application/octet-stream".to_string()),
             bytes: payload_bytes,
-        })
+        }),
     )
 }
 
@@ -108,11 +117,14 @@ impl Guest for Component {
             &Request {
                 inherit: false,
                 expects_response: None,
-                ipc: Some(serde_json::json!({
-                    "ServerAction": {
-                        "action": "get-jwt-secret",
-                    }
-                }).to_string()),
+                ipc: Some(
+                    serde_json::json!({
+                        "ServerAction": {
+                            "action": "get-jwt-secret",
+                        }
+                    })
+                    .to_string(),
+                ),
                 metadata: None,
             },
             None,
@@ -140,7 +152,7 @@ impl Guest for Component {
                 Err(_) => {
                     print_to_terminal(1, "http_bindings: failed to parse ipc JSON, skipping");
                     continue;
-                },
+                }
             };
 
             let action = message_json["action"].as_str().unwrap_or("");
@@ -166,7 +178,7 @@ impl Guest for Component {
                     Err(_) => {
                         print_to_terminal(1, "http_bindings: failed to generate token secret");
                         None
-                    },
+                    }
                 };
                 send_response(
                     &Response {
@@ -177,17 +189,39 @@ impl Guest for Component {
                 );
             } else if action == "bind-app" && path != "" && app != "" {
                 print_to_terminal(1, "http_bindings: binding app 1");
-                let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
-                if app != "apps_home" && (path_segments.is_empty() || path_segments[0] != app.clone().replace("_", "-")) {
-                    print_to_terminal(1, format!("http_bindings: first path segment does not match process: {}", path).as_str());
+                let path_segments = path
+                    .trim_start_matches('/')
+                    .split("/")
+                    .collect::<Vec<&str>>();
+                if app != "apps_home"
+                    && (path_segments.is_empty()
+                        || path_segments[0] != app.clone().replace("_", "-"))
+                {
+                    print_to_terminal(
+                        1,
+                        format!(
+                            "http_bindings: first path segment does not match process: {}",
+                            path
+                        )
+                        .as_str(),
+                    );
                     continue;
                 } else {
-                    print_to_terminal(1, format!("http_bindings: binding app 2 {}", path.to_string()).as_str());
+                    print_to_terminal(
+                        1,
+                        format!("http_bindings: binding app 2 {}", path.to_string()).as_str(),
+                    );
                     path_bindings.insert(path.to_string(), {
                         BoundPath {
                             app: app.to_string(),
-                            authenticated: message_json.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false),
-                            local_only: message_json.get("local_only").and_then(|v| v.as_bool()).unwrap_or(false),
+                            authenticated: message_json
+                                .get("authenticated")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            local_only: message_json
+                                .get("local_only")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
                         }
                     });
                 }
@@ -201,13 +235,18 @@ impl Guest for Component {
                     if message_json["method"] == "GET" {
                         print_to_terminal(1, "http_bindings: got login GET request");
                         let login_page_content = include_str!("login.html");
-                        let personalized_login_page = login_page_content.replace("${our}", &our.node);
+                        let personalized_login_page =
+                            login_page_content.replace("${our}", &our.node);
 
-                        send_http_response(message_json["id"].to_string(), 200, {
-                            let mut headers = HashMap::new();
-                            headers.insert("Content-Type".to_string(), "text/html".to_string());
-                            headers
-                        }, personalized_login_page.as_bytes().to_vec());
+                        send_http_response(
+                            200,
+                            {
+                                let mut headers = HashMap::new();
+                                headers.insert("Content-Type".to_string(), "text/html".to_string());
+                                headers
+                            },
+                            personalized_login_page.as_bytes().to_vec(),
+                        );
                     } else if message_json["method"] == "POST" {
                         print_to_terminal(1, "http_bindings: got login POST request");
 
@@ -216,13 +255,18 @@ impl Guest for Component {
                         };
                         let body_json_string = match String::from_utf8(payload.bytes) {
                             Ok(s) => s,
-                            Err(_) => String::new()
+                            Err(_) => String::new(),
                         };
-                        let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                        let body: serde_json::Value =
+                            serde_json::from_str(&body_json_string).unwrap();
                         let password = body["password"].as_str().unwrap_or("");
 
                         if password == "" {
-                            send_http_response(message_json["id"].to_string(), 400, HashMap::new(), "Bad Request".as_bytes().to_vec());
+                            send_http_response(
+                                400,
+                                HashMap::new(),
+                                "Bad Request".as_bytes().to_vec(),
+                            );
                         }
 
                         match jwt_secret.clone() {
@@ -230,23 +274,41 @@ impl Guest for Component {
                                 match generate_token(our.node.clone(), secret) {
                                     Some(token) => {
                                         // Token was generated successfully; you can use it here.
-                                        send_http_response(message_json["id"].to_string(), 200, {
-                                            let mut headers = HashMap::new();
-                                            headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                            headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
-                                            headers
-                                        }, "".as_bytes().to_vec());
+                                        send_http_response(
+                                            200,
+                                            {
+                                                let mut headers = HashMap::new();
+                                                headers.insert(
+                                                    "Content-Type".to_string(),
+                                                    "text/html".to_string(),
+                                                );
+                                                headers.insert(
+                                                    "set-cookie".to_string(),
+                                                    format!("uqbar-auth_{}={};", our.node, token),
+                                                );
+                                                headers
+                                            },
+                                            "".as_bytes().to_vec(),
+                                        );
                                     }
                                     None => {
                                         print_to_terminal(1, "so secret 1");
                                         // Failed to generate token; you should probably return an error.
-                                        send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                        send_http_response(
+                                            500,
+                                            HashMap::new(),
+                                            "Server Error".as_bytes().to_vec(),
+                                        );
                                     }
                                 }
                             }
                             None => {
                                 print_to_terminal(1, "so secret 2");
-                                send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                send_http_response(
+                                    500,
+                                    HashMap::new(),
+                                    "Server Error".as_bytes().to_vec(),
+                                );
                             }
                         }
                     } else if message_json["method"] == "PUT" {
@@ -257,14 +319,19 @@ impl Guest for Component {
                         };
                         let body_json_string = match String::from_utf8(payload.bytes) {
                             Ok(s) => s,
-                            Err(_) => String::new()
+                            Err(_) => String::new(),
                         };
-                        let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                        let body: serde_json::Value =
+                            serde_json::from_str(&body_json_string).unwrap();
                         // let password = body["password"].as_str().unwrap_or("");
                         let signature = body["signature"].as_str().unwrap_or("");
 
                         if signature == "" {
-                            send_http_response(message_json["id"].to_string(), 400, HashMap::new(), "Bad Request".as_bytes().to_vec());
+                            send_http_response(
+                                400,
+                                HashMap::new(),
+                                "Bad Request".as_bytes().to_vec(),
+                            );
                         } else {
                             // TODO: Check signature against our address
                             print_to_terminal(1, "http_bindings: generating secret...");
@@ -276,26 +343,47 @@ impl Guest for Component {
                                     match generate_token(our.node.clone(), secret) {
                                         Some(token) => {
                                             // Token was generated successfully; you can use it here.
-                                            send_http_response(message_json["id"].to_string(), 200, {
-                                                let mut headers = HashMap::new();
-                                                headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                                headers.insert("set-cookie".to_string(), format!("uqbar-auth_{}={};", our.node, token));
-                                                headers
-                                            }, "".as_bytes().to_vec());
+                                            send_http_response(
+                                                200,
+                                                {
+                                                    let mut headers = HashMap::new();
+                                                    headers.insert(
+                                                        "Content-Type".to_string(),
+                                                        "text/html".to_string(),
+                                                    );
+                                                    headers.insert(
+                                                        "set-cookie".to_string(),
+                                                        format!(
+                                                            "uqbar-auth_{}={};",
+                                                            our.node, token
+                                                        ),
+                                                    );
+                                                    headers
+                                                },
+                                                "".as_bytes().to_vec(),
+                                            );
                                         }
                                         None => {
                                             // Failed to generate token; you should probably return an error.
-                                            send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                            send_http_response(
+                                                500,
+                                                HashMap::new(),
+                                                "Server Error".as_bytes().to_vec(),
+                                            );
                                         }
                                     }
                                 }
                                 None => {
-                                    send_http_response(message_json["id"].to_string(), 500, HashMap::new(), "Server Error".as_bytes().to_vec());
+                                    send_http_response(
+                                        500,
+                                        HashMap::new(),
+                                        "Server Error".as_bytes().to_vec(),
+                                    );
                                 }
                             }
                         }
                     } else {
-                        send_http_response(message_json["id"].to_string(), 404, HashMap::new(), "Not Found".as_bytes().to_vec());
+                        send_http_response(404, HashMap::new(), "Not Found".as_bytes().to_vec());
                     }
                     continue;
                 }
@@ -307,8 +395,12 @@ impl Guest for Component {
                     let auth_success = match jwt_secret.clone() {
                         Some(secret) => {
                             bindings::print_to_terminal(1, "HAVE SECRET");
-                            auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
-                        },
+                            auth_cookie_valid(
+                                our.node.clone(),
+                                message_json["headers"]["cookie"].as_str().unwrap_or(""),
+                                secret,
+                            )
+                        }
                         None => {
                             bindings::print_to_terminal(1, "NO SECRET");
                             false
@@ -318,13 +410,14 @@ impl Guest for Component {
                     if auth_success {
                         let body_bytes = match get_payload() {
                             Some(payload) => payload.bytes,
-                            None => vec![]
+                            None => vec![],
                         };
                         let body_json_string = match String::from_utf8(body_bytes) {
                             Ok(s) => s,
-                            Err(_) => String::new()
+                            Err(_) => String::new(),
                         };
-                        let body: serde_json::Value = serde_json::from_str(&body_json_string).unwrap();
+                        let body: serde_json::Value =
+                            serde_json::from_str(&body_json_string).unwrap();
                         let channel_id = body["channel_id"].as_str().unwrap_or("");
                         let public_key_hex = body["public_key_hex"].as_str().unwrap_or("");
 
@@ -336,43 +429,61 @@ impl Guest for Component {
                             &Request {
                                 inherit: true,
                                 expects_response: None,
-                                ipc: Some(serde_json::json!({
-                                    "GetKeyAction": {
-                                        "channel_id": channel_id,
-                                        "public_key_hex": public_key_hex,
-                                    }
-                                }).to_string()),
+                                ipc: Some(
+                                    serde_json::json!({
+                                        "GetKeyAction": {
+                                            "channel_id": channel_id,
+                                            "public_key_hex": public_key_hex,
+                                        }
+                                    })
+                                    .to_string(),
+                                ),
                                 metadata: None,
                             },
                             None,
                             None,
                         );
                     } else {
-                        send_http_response(message_json["id"].to_string(), 401, HashMap::new(), "Unauthorized".as_bytes().to_vec());
+                        send_http_response(401, HashMap::new(), "Unauthorized".as_bytes().to_vec());
                     }
                     continue;
                 }
                 // End Encryption Secret Logic
 
-                let path_segments = path.trim_start_matches('/').split("/").collect::<Vec<&str>>();
+                let path_segments = path
+                    .trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .split("/")
+                    .collect::<Vec<&str>>();
                 let mut registered_path = path;
                 let mut url_params: HashMap<String, String> = HashMap::new();
 
                 for (key, _value) in &path_bindings {
-                    let key_segments = key.trim_start_matches('/').split("/").collect::<Vec<&str>>();
-                    if key_segments.len() != path_segments.len() && (!key.contains("/.*") || (key_segments.len() - 1) > path_segments.len()) {
+                    let key_segments = key
+                        .trim_start_matches('/')
+                        .trim_end_matches('/')
+                        .split("/")
+                        .collect::<Vec<&str>>();
+                    if key_segments.len() != path_segments.len()
+                        && (!key.contains("/.*") || (key_segments.len() - 1) > path_segments.len())
+                    {
                         continue;
                     }
 
                     let mut paths_match = true;
                     for i in 0..key_segments.len() {
-                        if key_segments[i] == ".*" {
+                        if key_segments[i] == "*" {
                             break;
-                        } else if !(key_segments[i].starts_with(":") || key_segments[i] == path_segments[i]) {
+                        } else if !(key_segments[i].starts_with(":")
+                            || key_segments[i] == path_segments[i])
+                        {
                             paths_match = false;
                             break;
                         } else if key_segments[i].starts_with(":") {
-                            url_params.insert(key_segments[i][1..].to_string(), path_segments[i].to_string());
+                            url_params.insert(
+                                key_segments[i][1..].to_string(),
+                                path_segments[i].to_string(),
+                            );
                         }
                     }
 
@@ -383,19 +494,28 @@ impl Guest for Component {
                     url_params = HashMap::new();
                 }
 
-                print_to_terminal(1, &("http_bindings: registered path ".to_string() + registered_path));
+                print_to_terminal(
+                    1,
+                    &("http_bindings: registered path ".to_string() + registered_path),
+                );
 
                 match path_bindings.get(registered_path) {
                     Some(bound_path) => {
                         let app = bound_path.app.as_str();
-                        print_to_terminal(1, &("http_bindings: properly unwrapped path ".to_string() + registered_path));
+                        print_to_terminal(
+                            1,
+                            &("http_bindings: properly unwrapped path ".to_string()
+                                + registered_path),
+                        );
 
                         if bound_path.authenticated {
                             print_to_terminal(1, "AUTHENTICATED ROUTE");
                             let auth_success = match jwt_secret.clone() {
-                                Some(secret) => {
-                                    auth_cookie_valid(our.node.clone(), message_json["headers"]["cookie"].as_str().unwrap_or(""), secret)
-                                },
+                                Some(secret) => auth_cookie_valid(
+                                    our.node.clone(),
+                                    message_json["headers"]["cookie"].as_str().unwrap_or(""),
+                                    secret,
+                                ),
                                 None => {
                                     print_to_terminal(1, "NO SECRET");
                                     false
@@ -407,31 +527,52 @@ impl Guest for Component {
                                 let proxy_path = message_json["proxy_path"].as_str();
 
                                 let redirect_path: String = match proxy_path {
-                                    Some(pp) => form_urlencoded::byte_serialize(pp.as_bytes()).collect(),
-                                    None => form_urlencoded::byte_serialize(path.as_bytes()).collect()
+                                    Some(pp) => {
+                                        form_urlencoded::byte_serialize(pp.as_bytes()).collect()
+                                    }
+                                    None => {
+                                        form_urlencoded::byte_serialize(path.as_bytes()).collect()
+                                    }
                                 };
 
                                 let location = match proxy_path {
-                                    Some(_) => format!("/http-proxy/serve/{}/login?redirect={}", &our.node, redirect_path),
-                                    None => format!("/login?redirect={}", redirect_path)
+                                    Some(_) => format!(
+                                        "/http-proxy/serve/{}/login?redirect={}",
+                                        &our.node, redirect_path
+                                    ),
+                                    None => format!("/login?redirect={}", redirect_path),
                                 };
 
-                                send_http_response(message_json["id"].to_string(), 302, {
-                                    let mut headers = HashMap::new();
-                                    headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                    headers.insert("Location".to_string(), location);
-                                    headers
-                                }, "Auth cookie not valid".as_bytes().to_vec());
+                                send_http_response(
+                                    302,
+                                    {
+                                        let mut headers = HashMap::new();
+                                        headers.insert(
+                                            "Content-Type".to_string(),
+                                            "text/html".to_string(),
+                                        );
+                                        headers.insert("Location".to_string(), location);
+                                        headers
+                                    },
+                                    "Auth cookie not valid".as_bytes().to_vec(),
+                                );
                                 continue;
                             }
                         }
 
                         if bound_path.local_only && !address.starts_with("127.0.0.1:") {
-                            send_http_response(message_json["id"].to_string(), 403, {
-                                let mut headers = HashMap::new();
-                                headers.insert("Content-Type".to_string(), "text/html".to_string());
-                                headers
-                            }, "<h1>Localhost Origin Required</h1>".as_bytes().to_vec());
+                            send_http_response(
+                                403,
+                                {
+                                    let mut headers = HashMap::new();
+                                    headers.insert(
+                                        "Content-Type".to_string(),
+                                        "text/html".to_string(),
+                                    );
+                                    headers
+                                },
+                                "<h1>Localhost Origin Required</h1>".as_bytes().to_vec(),
+                            );
                             continue;
                         }
 
@@ -444,33 +585,37 @@ impl Guest for Component {
                             &Request {
                                 inherit: true,
                                 expects_response: None,
-                                ipc: Some(serde_json::json!({
-                                    "path": registered_path,
-                                    "raw_path": path,
-                                    "method": message_json["method"],
-                                    "headers": message_json["headers"],
-                                    "query_params": message_json["query_params"],
-                                    "url_params": url_params,
-                                    "id": message_json["id"],
-                                }).to_string()),
+                                ipc: Some(
+                                    serde_json::json!({
+                                        "path": registered_path,
+                                        "raw_path": path,
+                                        "method": message_json["method"],
+                                        "headers": message_json["headers"],
+                                        "query_params": message_json["query_params"],
+                                        "url_params": url_params,
+                                    })
+                                    .to_string(),
+                                ),
                                 metadata: None,
                             },
                             None,
                             get_payload().as_ref(),
                         );
                         continue;
-                    },
+                    }
                     None => {
                         print_to_terminal(1, "http_bindings: no app found at this path");
-                        send_http_response(message_json["id"].to_string(), 404, HashMap::new(), "Not Found".as_bytes().to_vec());
-                    },
+                        send_http_response(404, HashMap::new(), "Not Found".as_bytes().to_vec());
+                    }
                 }
             } else {
-                print_to_terminal(1,
+                print_to_terminal(
+                    1,
                     format!(
                         "http_bindings: unexpected action: {:?}",
                         &message_json["action"],
-                    ).as_str()
+                    )
+                    .as_str(),
                 );
             }
         }

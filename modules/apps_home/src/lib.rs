@@ -1,6 +1,6 @@
 cargo_component_bindings::generate!();
 
-use bindings::{print_to_terminal, receive, send_request, send_requests, send_response, get_payload, Guest, send_and_await_response};
+use bindings::{print_to_terminal, receive, send_request, send_requests, send_response, get_payload, Guest};
 use bindings::component::uq_process::types::*;
 use serde_json::json;
 
@@ -9,7 +9,6 @@ mod process_lib;
 struct Component;
 
 const APPS_HOME_PAGE: &str = include_str!("home.html");
-const PQI_ENDPOINT: &str = "http://147.135.114.167:8083/sequencer/blockchain.json";
 
 fn generate_http_binding(add: Address, path: &str, authenticated: bool) -> (Address, Request, Option<Context>, Option<Payload>) {
     (
@@ -40,9 +39,8 @@ impl Guest for Component {
         };
 
         // <address, request, option<context>, option<payload>>
-        let http_endpoint_binding_requests: [(Address, Request, Option<Context>, Option<Payload>); 2] = [
+        let http_endpoint_binding_requests: [(Address, Request, Option<Context>, Option<Payload>); 1] = [
             generate_http_binding(bindings_address.clone(), "/", true),
-            generate_http_binding(bindings_address.clone(), "/pqi", true),
         ];
         send_requests(&http_endpoint_binding_requests);
 
@@ -87,61 +85,6 @@ impl Guest for Component {
                             bytes: APPS_HOME_PAGE.replace("${our}", &our.node).to_string().as_bytes().to_vec(),
                         }),
                     );
-                } else if message_json["path"] == "/pqi" && message_json["method"] == "GET" {
-                    let response = send_and_await_response(
-                        &Address {
-                            node: our.node.clone(),
-                            process: ProcessId::Name("http_client".to_string()),
-                        },
-                        &Request {
-                            inherit: false,
-                            expects_response: Some(5), // TODO evaluate timeout
-                            ipc: Some(serde_json::json!({
-                                "method": "GET",
-                                "uri": PQI_ENDPOINT,
-                                "headers": {},
-                            }).to_string()),
-                            metadata: None,
-                        },
-                        None,
-                    );
-                    match response {
-                        Ok(_reponse) => {
-                            let payload = get_payload();
-                            send_response(
-                                &Response {
-                                    ipc: Some(serde_json::json!({
-                                        "action": "response",
-                                        "status": 200,
-                                        "headers": {
-                                            "Content-Type": "application/json",
-                                        },
-                                    }).to_string()),
-                                    metadata: None,
-                                },
-                                payload.as_ref(),
-                            );
-                        }
-                        Err(_) => {
-                            send_response(
-                                &Response {
-                                    ipc: Some(serde_json::json!({
-                                        "action": "response",
-                                        "status": 503,
-                                        "headers": {},
-                                    }).to_string()),
-                                    metadata: None,
-                                },
-                                Some(&Payload {
-                                    mime: Some("text/html".to_string()),
-                                    bytes: "Service Unavailable"
-                                        .to_string()
-                                        .as_bytes()
-                                        .to_vec(),
-                                }),
-                            );
-                        }
-                    }
                 } else if message_json["path"].is_string() {
                     send_response(
                         &Response {

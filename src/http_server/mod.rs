@@ -174,8 +174,8 @@ async fn handle_websocket(
         } else if msg.is_close() {
             // Delete the websocket from the map
             let mut ws_map = websockets.lock().await;
-            for (channel_id, node_map) in ws_map.iter_mut() {
-                for (node, id_map) in node_map.iter_mut() {
+            for (node, node_map) in ws_map.iter_mut() {
+                for (channel_id, id_map) in node_map.iter_mut() {
                     if let Some(_) = id_map.remove(&ws_id) {
                         // Send disconnect message
                         send_ws_disconnect(

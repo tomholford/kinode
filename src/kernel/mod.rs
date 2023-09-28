@@ -523,6 +523,9 @@ impl Process {
                     return self.kernel_message_to_process_receive(Ok(km.clone()))
                 }
                 Ok(km) => self.message_queue.push_back(Ok(km)),
+                Err(e) if e.id == awaited_message_id => {
+                    return self.kernel_message_to_process_receive(Err(e))
+                }
                 Err(e) => self.message_queue.push_back(Err(e)),
             }
         }

@@ -127,10 +127,10 @@ pub async fn maintain_connection(
                                 match timeout(TIMEOUT, result_rx).await {
                                     Ok(Ok(Ok(_))) => {
                                         message_tx.send((NetworkMessage::Ack(id), None)).unwrap();
-                                    },
+                                    }
                                     _ => {
                                         message_tx.send((NetworkMessage::Nack(id), None)).unwrap();
-                                    },
+                                    }
                                 }
                             });
                             continue;
@@ -161,8 +161,12 @@ pub async fn maintain_connection(
                         };
                         // use the nonce from the initiatory handshake, always
                         let nonce = *Nonce::from_slice(&handshake.nonce);
-                        let (secret, handshake) =
-                            make_secret_and_handshake(&our, keypair.clone(), &handshake.from, Some(handshake.id));
+                        let (secret, handshake) = make_secret_and_handshake(
+                            &our,
+                            keypair.clone(),
+                            &handshake.from,
+                            Some(handshake.id),
+                        );
                         message_tx
                             .send((NetworkMessage::HandshakeAck(handshake), None))
                             .unwrap();
@@ -193,8 +197,10 @@ pub async fn maintain_connection(
                             tokio::spawn(async move {
                                 match timeout(TIMEOUT, result_rx).await {
                                     Ok(Ok(Ok(Some(NetworkMessage::HandshakeAck(h))))) => {
-                                        message_tx.send((NetworkMessage::HandshakeAck(h), None)).unwrap();
-                                    },
+                                        message_tx
+                                            .send((NetworkMessage::HandshakeAck(h), None))
+                                            .unwrap();
+                                    }
                                     _ => {
                                         message_tx.send((NetworkMessage::Nack(id), None)).unwrap();
                                     }

@@ -185,7 +185,8 @@ pub async fn networking(
                     kernel_message_tx.clone(),
                 )
                 .await;
-                let (secret, handshake) = make_secret_and_handshake(&our, keypair.clone(), target, None);
+                let (secret, handshake) =
+                    make_secret_and_handshake(&our, keypair.clone(), target, None);
                 // use the nonce from the initiatory handshake, always
                 let nonce = *Nonce::from_slice(&handshake.nonce);
                 let (handshake_tx, handshake_rx) = oneshot::channel::<MessageResult>();
@@ -221,7 +222,9 @@ pub async fn networking(
                 );
                 // can't do a self_tx.send here because we need to maintain ordering of messages
                 // already queued.
-                let _ = new_peer.sender.send((PeerMessage::Raw(km.clone()), result_tx));
+                let _ = new_peer
+                    .sender
+                    .send((PeerMessage::Raw(km.clone()), result_tx));
                 peers.write().await.insert(peer_id.name.clone(), new_peer);
                 // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
                 tokio::spawn(wait_for_ack(
@@ -242,7 +245,6 @@ pub async fn networking(
     });
     Err(anyhow::anyhow!("networking task exited"))
 }
-
 
 async fn error_offline(km: KernelMessage, network_error_tx: &NetworkErrorSender) {
     let _ = network_error_tx

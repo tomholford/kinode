@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ethers::prelude::{abigen, namehash, Address as EthAddress, Provider, U256};
-use ethers_providers::Ws;
+use ethers_providers::{Http, Ws};
 use ring::pkcs8::Document;
 use ring::signature::{self, KeyPair};
 use std::env;
@@ -56,7 +56,7 @@ async fn main() {
     // read PKI from HTTP endpoint served by RPC
     // TODO this is so incredibly bad, lol, lmao
     let mut rpc_url =
-        "wss://eth-sepolia.g.alchemy.com/v2/W0nka5SiRCHASxyF6jzJ7HkQaMfnq4Mh".to_string();
+        "wss://eth-sepolia.g.alchemy.com/v2/xSRwuKmpFNB24np9VMxrbGmHDaXO5qaS".to_string();
 
     for (i, arg) in args.iter().enumerate() {
         if arg == "--rpc" {

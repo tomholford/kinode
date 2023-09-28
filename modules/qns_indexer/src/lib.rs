@@ -142,7 +142,7 @@ impl UqProcess for Component {
             },
             &Request{
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 metadata: None,
                 ipc: Some(serde_json::json!({
                     "action": "bind-app",

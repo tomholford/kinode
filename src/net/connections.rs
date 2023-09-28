@@ -3,14 +3,10 @@ use aes_gcm::aead::Aead;
 use aes_gcm::KeyInit;
 use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use elliptic_curve::ecdh::SharedSecret;
-use ethers::abi::ethabi::AbiError;
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
-use std::fmt::write;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::error::CapacityError;
 use tokio_tungstenite::tungstenite::{self};
 
 pub async fn build_connection(
@@ -22,6 +18,7 @@ pub async fn build_connection(
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
 ) -> UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)> {
+    println!("building new connection\r");
     // create a sender and receiver to pass messages from peers to this connection.
     // when we receive a message from a new peer, we can set their sender to this.
     let (message_tx, message_rx) = unbounded_channel::<(NetworkMessage, Option<ErrorShuttle>)>();
@@ -51,6 +48,7 @@ pub async fn maintain_connection(
     mut message_rx: UnboundedReceiver<(NetworkMessage, Option<ErrorShuttle>)>,
     kernel_message_tx: MessageSender,
 ) {
+    println!("maintaining connection\r");
     // accept messages on the websocket in one task, and send messages in another
     let (mut write_stream, mut read_stream) = websocket.split();
 
@@ -122,8 +120,19 @@ pub async fn maintain_connection(
                         //
                         let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
                         if let Some(peer) = peers.read().await.get(from) {
+                            let id = id.clone();
+                            let message_tx = message_tx.clone();
                             let _ = peer.sender.send((PeerMessage::Net(net_message), result_tx));
-                            // TODO spawn waiter here with result_rx
+                            tokio::spawn(async move {
+                                match timeout(TIMEOUT, result_rx).await {
+                                    Ok(Ok(Ok(_))) => {
+                                        message_tx.send((NetworkMessage::Ack(id), None)).unwrap();
+                                    },
+                                    _ => {
+                                        message_tx.send((NetworkMessage::Nack(id), None)).unwrap();
+                                    },
+                                }
+                            });
                             continue;
                         }
                         // if we don't have the peer, throw a nack.
@@ -131,7 +140,7 @@ pub async fn maintain_connection(
                         message_tx.send((NetworkMessage::Nack(*id), None)).unwrap();
                     }
                 }
-                NetworkMessage::Handshake(handshake) => {
+                NetworkMessage::Handshake(ref handshake) => {
                     // when we get a handshake, if we are the target,
                     // 1. verify it against the PKI
                     // 2. send a response handshakeAck
@@ -144,6 +153,7 @@ pub async fn maintain_connection(
                             );
                             continue;
                         };
+                        println!("checking hs against id: {:?}\r", peer_id);
                         let Ok(their_ephemeral_pk) = validate_handshake(&handshake, &peer_id)
                         else {
                             println!("net: invalid handshake from {}\r", handshake.from);
@@ -152,7 +162,7 @@ pub async fn maintain_connection(
                         // use the nonce from the initiatory handshake, always
                         let nonce = *Nonce::from_slice(&handshake.nonce);
                         let (secret, handshake) =
-                            make_secret_and_handshake(&our, keypair.clone(), &handshake.from);
+                            make_secret_and_handshake(&our, keypair.clone(), &handshake.from, Some(handshake.id));
                         message_tx
                             .send((NetworkMessage::HandshakeAck(handshake), None))
                             .unwrap();
@@ -175,10 +185,31 @@ pub async fn maintain_connection(
                         // if we are NOT the target,
                         // try to send it to the matching peer handler "sender"
                         // if we don't have the peer, throw a nack.
-                        unimplemented!();
+                        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                        if let Some(peer) = peers.read().await.get(&handshake.from) {
+                            let id = handshake.id.clone();
+                            let message_tx = message_tx.clone();
+                            let _ = peer.sender.send((PeerMessage::Net(net_message), result_tx));
+                            tokio::spawn(async move {
+                                match timeout(TIMEOUT, result_rx).await {
+                                    Ok(Ok(Ok(Some(NetworkMessage::HandshakeAck(h))))) => {
+                                        message_tx.send((NetworkMessage::HandshakeAck(h), None)).unwrap();
+                                    },
+                                    _ => {
+                                        message_tx.send((NetworkMessage::Nack(id), None)).unwrap();
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+                        // if we don't have the peer, throw a nack.
+                        println!("net: nacking handshake with id {}\r", handshake.id);
+                        message_tx
+                            .send((NetworkMessage::Nack(handshake.id), None))
+                            .unwrap();
                     }
                 }
-                NetworkMessage::HandshakeAck(handshake) => {
+                NetworkMessage::HandshakeAck(ref handshake) => {
                     // when we get a handshakeAck, if we are the target,
                     // simply handle it with ack-map entry for the handshake
                     if handshake.target == our.name {
@@ -186,13 +217,24 @@ pub async fn maintain_connection(
                             println!("net: got unexpected handshakeAck\r");
                             continue;
                         };
-                        let _ = result_rx.send(Ok(Some(NetworkMessage::HandshakeAck(handshake))));
+                        let _ = result_rx
+                            .send(Ok(Some(NetworkMessage::HandshakeAck(handshake.clone()))));
                         continue;
                     } else {
                         // if we are NOT the target,
                         // try to send it to the matching peer handler "sender"
                         // if we don't have the peer, throw a nack.
-                        unimplemented!();
+                        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
+                        if let Some(peer) = peers.read().await.get(&handshake.from) {
+                            let _ = peer.sender.send((PeerMessage::Net(net_message), result_tx));
+                            // TODO i don't *think* we need a waiter task here
+                            continue;
+                        }
+                        // if we don't have the peer, throw a nack.
+                        println!("net: nacking handshakeAck with id {}\r", handshake.id);
+                        message_tx
+                            .send((NetworkMessage::Nack(handshake.id), None))
+                            .unwrap();
                     }
                 }
             }
@@ -344,9 +386,6 @@ async fn peer_handler(
                 // otherwise, simply send
                 match message {
                     PeerMessage::Raw(message) => {
-                        if let Message::Request(ref r) = message.message {
-                            println!("B #{}\r", r.ipc.as_ref().unwrap_or(&"".to_string()));
-                        }
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
                                 if socket_tx.is_closed() {

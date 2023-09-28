@@ -19,7 +19,7 @@ struct RpcMessage {
     pub node: String,
     pub process: String,
     pub inherit: Option<bool>,
-    pub expects_response: Option<bool>, // always false?
+    pub expects_response: Option<u64>, // always false?
     pub ipc: Option<String>,
     pub metadata: Option<String>,
     pub context: Option<String>,
@@ -36,7 +36,7 @@ struct CapabilitiesTransfer {
     pub params: String,
 }
 
-// curl http://localhost:8080/rpc/message -H 'content-type: application/json' -d '{"node": "hosted", "process": "vfs", "inherit": false, "expects_response": false, "ipc": "{\"New\": {\"identifier\": \"foo\"}}", "metadata": null, "context": null, "mime": null, "data": null}'
+// curl http://localhost:8080/rpc/message -H 'content-type: application/json' -d '{"node": "hosted", "process": "vfs", "inherit": false, "expects_response": null, "ipc": "{\"New\": {\"identifier\": \"foo\"}}", "metadata": null, "context": null, "mime": null, "data": null}'
 
 fn send_http_response(status: u16, headers: HashMap<String, String>, payload_bytes: Vec<u8>) {
     send_response(
@@ -114,7 +114,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(
                         json!({
                             "action": "bind-app",
@@ -133,7 +133,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(
                         json!({
                             "action": "bind-app",
@@ -443,7 +443,7 @@ impl Guest for Component {
                                         },
                                         &Request {
                                             inherit: false,
-                                            expects_response: false,
+                                            expects_response: None,
                                             ipc: Some(
                                                 json!({
                                                     "action": "transfer_capability",

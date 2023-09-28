@@ -6,9 +6,7 @@ use anyhow::Result;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
 use ethers::prelude::k256::{self, Secp256k1};
-use futures::StreamExt;
 use ring::signature::{self, Ed25519KeyPair};
-use std::collections::VecDeque;
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
@@ -187,17 +185,20 @@ pub async fn networking(
                     kernel_message_tx.clone(),
                 )
                 .await;
-                let (secret, handshake) = make_secret_and_handshake(&our, keypair.clone(), target);
+                let (secret, handshake) = make_secret_and_handshake(&our, keypair.clone(), target, None);
                 // use the nonce from the initiatory handshake, always
                 let nonce = *Nonce::from_slice(&handshake.nonce);
+                let (handshake_tx, handshake_rx) = oneshot::channel::<MessageResult>();
                 socket_tx
-                    .send((NetworkMessage::Handshake(handshake), Some(result_tx)))
+                    .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
                     .unwrap();
-                let Ok(Ok(Some(NetworkMessage::HandshakeAck(response_shake)))) = result_rx.await
-                else {
-                    println!("net: failed handshake with {target}\r");
-                    error_offline(km, &network_error_tx).await;
-                    continue;
+                let response_shake = match timeout(TIMEOUT, handshake_rx).await {
+                    Ok(Ok(Ok(Some(NetworkMessage::HandshakeAck(shake))))) => shake,
+                    _ => {
+                        println!("net: failed handshake with {target}\r");
+                        error_offline(km, &network_error_tx).await;
+                        continue;
+                    }
                 };
                 let Ok(their_ephemeral_pk) = validate_handshake(&response_shake, &peer_id) else {
                     println!("net: failed handshake with {target}\r");
@@ -218,8 +219,18 @@ pub async fn networking(
                     socket_tx.clone(),
                     kernel_message_tx.clone(),
                 );
+                // can't do a self_tx.send here because we need to maintain ordering of messages
+                // already queued.
+                let _ = new_peer.sender.send((PeerMessage::Raw(km.clone()), result_tx));
                 peers.write().await.insert(peer_id.name.clone(), new_peer);
-                self_tx.send(km).await.unwrap();
+                // now that the message is sent, spawn an async task to wait for the ack/nack/timeout
+                tokio::spawn(wait_for_ack(
+                    km.clone(),
+                    peers.clone(),
+                    target.to_string(),
+                    result_rx,
+                    network_error_tx.clone(),
+                ));
                 continue;
             } else {
                 //
@@ -231,6 +242,7 @@ pub async fn networking(
     });
     Err(anyhow::anyhow!("networking task exited"))
 }
+
 
 async fn error_offline(km: KernelMessage, network_error_tx: &NetworkErrorSender) {
     let _ = network_error_tx
@@ -253,39 +265,40 @@ async fn wait_for_ack(
     target: String,
     result_rx: oneshot::Receiver<MessageResult>,
     network_error_tx: NetworkErrorSender,
-) {
-    match result_rx.await.unwrap_or(Err(SendErrorKind::Offline)) {
-        Ok(_) => {
-            // debugging stuff:
-            // let end = std::time::Instant::now();
-            // let elapsed = end.duration_since(start);
-            // let _ = print_tx
-            //     .send(Printout {
-            //         verbosity: 0,
-            //         content: format!(
-            //             "sent ~{:.2}mb message to {target} in {elapsed:?}",
-            //             bincode::serialize(&km).unwrap().len() as f64 / 1_048_576.0
-            //         ),
-            //     })
-            //     .await;
-            // end debugging stuff
-            return;
+) -> Result<Option<NetworkMessage>, SendErrorKind> {
+    match timeout(TIMEOUT, result_rx).await {
+        Ok(Ok(Ok(m))) => {
+            return Ok(m);
         }
-        Err(e) => {
+        Ok(Ok(Err(e))) => {
             let _ = peers.write().await.remove(&target);
             let _ = network_error_tx
                 .send(WrappedSendError {
                     id: km.id,
                     source: km.source,
                     error: SendError {
-                        kind: e,
+                        kind: e.clone(),
                         target: km.target,
                         message: km.message,
                         payload: km.payload,
                     },
                 })
                 .await;
-            return;
+            return Err(e);
+        }
+        Ok(Err(e)) => {
+            // RECV error: we couldn't even do a send to this peer..
+            // TODO probably should trigger a retry here???
+            println!("{e}\r");
+            let _ = peers.write().await.remove(&target);
+            let _ = error_offline(km, &network_error_tx).await;
+            return Err(SendErrorKind::Offline);
+        }
+        Err(_e) => {
+            // TIMEOUT error: we didn't get an ack in the fixed timeout period
+            let _ = peers.write().await.remove(&target);
+            let _ = error_offline(km, &network_error_tx).await;
+            return Err(SendErrorKind::Offline);
         }
     }
 }
@@ -329,6 +342,7 @@ async fn receive_incoming_connections(
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
+                println!("received incoming connection\r");
                 tokio::spawn(build_connection(
                     our.clone(),
                     keypair.clone(),
@@ -475,7 +489,8 @@ fn validate_handshake(
 ) -> Result<Arc<PublicKey<Secp256k1>>, String> {
     let their_networking_key = signature::UnparsedPublicKey::new(
         &signature::ED25519,
-        hex::decode(&their_id.networking_key).map_err(|_| "failed to decode networking key")?,
+        hex::decode(&strip_0x(&their_id.networking_key))
+            .map_err(|_| "failed to decode networking key")?,
     );
 
     if !(their_networking_key
@@ -507,6 +522,7 @@ fn make_secret_and_handshake(
     our: &Identity,
     keypair: Arc<Ed25519KeyPair>,
     target: &str,
+    id: Option<u64>,
 ) -> (Arc<EphemeralSecret<Secp256k1>>, Handshake) {
     // produce ephemeral keys for DH exchange and subsequent symmetric encryption
     let ephemeral_secret = Arc::new(EphemeralSecret::<k256::Secp256k1>::random(
@@ -518,6 +534,24 @@ fn make_secret_and_handshake(
         .sign(&ephemeral_public_key.to_sec1_bytes())
         .as_ref()
         .to_vec();
+
+    // before signing our identity, convert router names to namehashes
+    // to match the exact onchain representation of our identity
+    let mut our_onchain_id = our.clone();
+    our_onchain_id.allowed_routers = our
+        .allowed_routers
+        .clone()
+        .into_iter()
+        .map(|name| {
+            let hash = crate::namehash(&name);
+            let mut result = [0u8; 32];
+            result.copy_from_slice(hash.as_bytes());
+            format!("0x{}", hex::encode(result))
+        })
+        .collect();
+
+    println!("signing id: {:?}\r", our_onchain_id);
+
     let signed_id = keypair
         .sign(&serde_json::to_vec(our).unwrap_or(vec![]))
         .as_ref()
@@ -528,7 +562,7 @@ fn make_secret_and_handshake(
     let nonce = iv.to_vec();
 
     let handshake = Handshake {
-        id: 0, // TODO
+        id: id.unwrap_or(rand::random()),
         from: our.name.clone(),
         target: target.to_string(),
         id_signature: signed_id,
@@ -538,4 +572,12 @@ fn make_secret_and_handshake(
     };
 
     (ephemeral_secret, handshake)
+}
+
+fn strip_0x(s: &str) -> String {
+    if s.starts_with("0x") {
+        s[2..].to_string()
+    } else {
+        s.to_string()
+    }
 }

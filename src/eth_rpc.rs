@@ -2,7 +2,7 @@ use crate::types::*;
 use anyhow::Result;
 use ethers::core::types::Filter;
 use ethers::prelude::Provider;
-use ethers::types::{ValueOrArray, U256};
+use ethers::types::{ValueOrArray, U256, U64};
 use ethers_providers::{Middleware, StreamExt, Ws};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -52,10 +52,6 @@ pub async fn eth_rpc(
     mut recv_in_client: MessageReceiver,
     print_tx: PrintSender,
 ) -> Result<()> {
-    let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url).await else {
-        panic!("eth_rpc: couldn't connect to ws endpoint");
-    };
-
     // TODO maybe don't need to do Arc Mutex
     let subscriptions = Arc::new(Mutex::new(HashMap::<
         u64,
@@ -64,7 +60,6 @@ pub async fn eth_rpc(
 
     while let Some(message) = recv_in_client.recv().await {
         let our = our.clone();
-        let ws_rpc = ws_rpc.clone();
         let send_to_loop = send_to_loop.clone();
         let print_tx = print_tx.clone();
 
@@ -186,35 +181,77 @@ pub async fn eth_rpc(
                     filter = filter.topic3(topic3);
                 }
 
-                let ws_rpc = ws_rpc.clone();
+                let rpc_url = rpc_url.clone();
 
                 let handle = tokio::task::spawn(async move {
-                    let Ok(mut stream) = ws_rpc.subscribe_logs(&filter).await else {
-                        return Err(EthRpcError::EventSubscriptionFailed);
-                    };
+                    // when connection dies you need to restart at the last block you saw
+                    // otherwise you replay events unnecessarily
+                    let mut from_block: U64 =
+                        filter.clone().get_from_block().unwrap_or(U64::zero());
+                    loop {
+                        // NOTE give main.rs uses rpc_url and panics if it can't connect, we do
+                        // know that this should work in theory...can keep trying to reconnect
+                        let Ok(ws_rpc) = Provider::<Ws>::connect(rpc_url.clone()).await else {
+                            // TODO grab and print error
+                            let _ = print_tx
+                                .send(Printout {
+                                    verbosity: 1,
+                                    content: format!("eth_rpc: connection retrying"),
+                                })
+                                .await;
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        };
 
-                    while let Some(event) = stream.next().await {
-                        send_to_loop.send(
-                            KernelMessage {
-                                id: rand::random(),
-                                source: Address {
-                                    node: our.clone(),
-                                    process: ProcessId::Name("eth_rpc".into()),
-                                },
-                                target: target.clone(),
-                                rsvp: None,
-                                message: Message::Request(Request {
-                                    inherit: false, // TODO what
-                                    expects_response: false,
-                                    ipc: Some(json!({
-                                        "EventSubscription": serde_json::to_value(event).unwrap()
-                                    }).to_string()),
-                                    metadata: None,
-                                }),
-                                payload: None,
-                                signed_capabilities: None,
+                        match ws_rpc
+                            .subscribe_logs(&filter.clone().from_block(from_block))
+                            .await
+                        {
+                            Err(e) => {
+                                continue;
                             }
-                        ).await.unwrap();
+                            Ok(mut stream) => {
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 1,
+                                        content: format!("eth_rpc: connection established"),
+                                    })
+                                    .await;
+
+                                while let Some(event) = stream.next().await {
+                                    send_to_loop.send(
+                                        KernelMessage {
+                                            id: rand::random(),
+                                            source: Address {
+                                                node: our.clone(),
+                                                process: ProcessId::Name("eth_rpc".into()),
+                                            },
+                                            target: target.clone(),
+                                            rsvp: None,
+                                            message: Message::Request(Request {
+                                                inherit: false, // TODO what
+                                                expects_response: false,
+                                                ipc: Some(json!({
+                                                    "EventSubscription": serde_json::to_value(event.clone()).unwrap()
+                                                }).to_string()),
+                                                metadata: None,
+                                            }),
+                                            payload: None,
+                                            signed_capabilities: None,
+                                        }
+                                    ).await.unwrap();
+                                    from_block = event.block_number.unwrap_or(from_block);
+                                }
+                                let _ = print_tx
+                                    .send(Printout {
+                                        verbosity: 0,
+                                        content: format!(
+                                            "eth_rpc: subscription connection lost, reconnecting"
+                                        ),
+                                    })
+                                    .await;
+                            }
+                        };
                     }
                     Ok(())
                 });

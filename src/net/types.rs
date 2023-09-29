@@ -23,6 +23,7 @@ pub struct Peer {
     pub sender: mpsc::UnboundedSender<(PeerMessage, ErrorShuttle)>,
     // send encrypted messages from this peer here to have them decrypted and sent to kernel
     pub decrypter: mpsc::UnboundedSender<(Vec<u8>, ErrorShuttle)>,
+    pub socket_tx: mpsc::UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
 }
 
 /// parsed from Binary websocket message

@@ -6,6 +6,7 @@ use elliptic_curve::ecdh::SharedSecret;
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::{self};
 
@@ -17,13 +18,15 @@ pub async fn build_connection(
     peers: Peers,
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
-) -> UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)> {
-    // println!("building new connection\r");
+    with: Option<String>,
+) -> (UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>, JoinHandle<Option<String>>) {
+    println!("building new connection\r");
     // create a sender and receiver to pass messages from peers to this connection.
     // when we receive a message from a new peer, we can set their sender to this.
     let (message_tx, message_rx) = unbounded_channel::<(NetworkMessage, Option<ErrorShuttle>)>();
-    tokio::spawn(maintain_connection(
+    let handle = tokio::spawn(maintain_connection(
         our,
+        with,
         keypair,
         pki,
         keys,
@@ -33,13 +36,14 @@ pub async fn build_connection(
         message_rx,
         kernel_message_tx,
     ));
-    return message_tx;
+    return (message_tx, handle);
 }
 
 /// Keeps a connection alive and handles sending and receiving of NetworkMessages through it.
 /// TODO add a keepalive PING/PONG system
 pub async fn maintain_connection(
     our: Identity,
+    with: Option<String>,
     keypair: Arc<Ed25519KeyPair>,
     pki: OnchainPKI,
     keys: PeerKeys,
@@ -48,9 +52,9 @@ pub async fn maintain_connection(
     message_tx: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
     mut message_rx: UnboundedReceiver<(NetworkMessage, Option<ErrorShuttle>)>,
     kernel_message_tx: MessageSender,
-) {
-    // let conn_id: u64 = rand::random();
-    // println!("maintaining connection {conn_id}\r");
+) -> Option<String> {
+    let conn_id: u64 = rand::random();
+    println!("maintaining connection {conn_id}\r");
 
     // accept messages on the websocket in one task, and send messages in another
     let (mut write_stream, mut read_stream) = websocket.split();
@@ -71,10 +75,10 @@ pub async fn maintain_connection(
             match net_message {
                 NetworkMessage::Ack(id) => {
                     let Some(result_tx) = ack_map.write().await.remove(&id) else {
-                        // println!("conn {conn_id}: got unexpected Ack {id}\r");
+                        println!("conn {conn_id}: got unexpected Ack {id}\r");
                         continue;
                     };
-                    // println!("conn {conn_id}: got Ack {id}\r");
+                    println!("conn {conn_id}: got Ack {id}\r");
                     let _ = result_tx.send(Ok(None));
                     continue;
                 }
@@ -92,7 +96,7 @@ pub async fn maintain_connection(
                     ref to,
                     ref contents,
                 } => {
-                    // println!("conn {conn_id}: handling msg {id}\r");
+                    println!("conn {conn_id}: handling msg {id}\r");
                     // if the message is *directed to us*, try to handle with the
                     // matching peer handler "decrypter".
                     //
@@ -136,7 +140,7 @@ pub async fn maintain_connection(
                             });
                             continue;
                         }
-                        // println!("net: nacking message {id}\r");
+                        println!("net: nacking message {id}\r");
                         message_tx.send((NetworkMessage::Nack(*id), None)).unwrap();
                     } else {
                         // if the message is *directed to someone else*, try to handle
@@ -172,16 +176,16 @@ pub async fn maintain_connection(
                     // 3. create a Peer and save, replacing old one if it existed
                     if handshake.target == our.name {
                         let Some(peer_id) = pki.read().await.get(&handshake.from).cloned() else {
-                            // println!(
-                            //     "net: failed handshake with unknown node {}\r",
-                            //     handshake.from
-                            // );
+                            println!(
+                                "net: failed handshake with unknown node {}\r",
+                                handshake.from
+                            );
                             continue;
                         };
                         let their_ephemeral_pk = match validate_handshake(&handshake, &peer_id) {
                             Ok(pk) => pk,
                             Err(e) => {
-                                // println!("net: invalid handshake from {}: {}\r", handshake.from, e);
+                                println!("net: invalid handshake from {}: {}\r", handshake.from, e);
                                 continue;
                             }
                         };
@@ -267,7 +271,7 @@ pub async fn maintain_connection(
                         Ok(()) => {
                             match &message {
                                 NetworkMessage::Msg { id, .. } => {
-                                    // println!("conn {conn_id}: piping msg {id}\r");
+                                    println!("conn {conn_id}: piping msg {id}\r");
                                     sender_ack_map.write().await.insert(*id, result_tx.unwrap());
                                     continue;
                                 }
@@ -309,6 +313,7 @@ pub async fn maintain_connection(
             println!("ws_sender died\r");
         },
     };
+    return with;
 }
 
 /// After a successful handshake, use information to spawn a new `peer_handler` task
@@ -337,7 +342,7 @@ pub fn create_new_peer(
         nonce.clone(),
         message_rx,
         decrypter_rx,
-        conn_sender,
+        conn_sender.clone(),
         kernel_message_tx,
     ));
     return Peer {
@@ -345,6 +350,7 @@ pub fn create_new_peer(
         handle,
         sender: message_tx,
         decrypter: decrypter_tx,
+        socket_tx: conn_sender,
     };
 }
 
@@ -372,16 +378,22 @@ async fn peer_handler(
                 if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
                     if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
                         if message.source.node == who {
+                            println!("net: got peer message {}, acking\r", message.id);
                             let _ = result_tx.send(Ok(Some(NetworkMessage::Ack(message.id))));
                             let _ = kernel_message_tx.send(message).await;
                             continue;
                         }
+                        println!("net: got message 'from' wrong person, nacking\r");
                         let _ = result_tx.send(Ok(Some(NetworkMessage::Nack(message.id))));
+                        break;
                     }
+                    println!("net: failed to deserialize message from {}\r", who);
+                    break;
                 }
+                println!("net: failed to decrypt message from {}\r", who);
                 break;
             }
-        } => { println!("net: decryption error with message from {who}\r"); }
+        } => { println!("net: lost peer {who}\r"); }
         //
         // take in messages targeted at specific peer and either:
         // - encrypt them, and send to proper connection
@@ -395,23 +407,21 @@ async fn peer_handler(
                     PeerMessage::Raw(message) => {
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
-                                if socket_tx.is_closed() {
-                                    let _ = result_tx.send(Err(SendErrorKind::Offline));
-                                } else {
-                                    match socket_tx.send((
-                                        NetworkMessage::Msg {
-                                            from: our.name.clone(),
-                                            to: who.clone(),
-                                            id: message.id,
-                                            contents: encrypted,
-                                        },
-                                        Some(result_tx),
-                                    )) {
-                                        Ok(()) => continue,
-                                        Err(tokio::sync::mpsc::error::SendError((_, result_tx))) => {
-                                            let _ = result_tx.unwrap().send(Err(SendErrorKind::Offline));
-                                        },
-                                    }
+                                match socket_tx.send((
+                                    NetworkMessage::Msg {
+                                        from: our.name.clone(),
+                                        to: who.clone(),
+                                        id: message.id,
+                                        contents: encrypted,
+                                    },
+                                    Some(result_tx),
+                                )) {
+                                    Ok(()) => tokio::task::yield_now().await,
+                                    Err(tokio::sync::mpsc::error::SendError((_, result_tx))) => {
+                                        println!("net: lost socket with {who}\r");
+                                        let _ = result_tx.unwrap().send(Err(SendErrorKind::Offline));
+                                        break;
+                                    },
                                 }
                             }
                         }
@@ -420,6 +430,7 @@ async fn peer_handler(
                         match socket_tx.send((net_message, Some(result_tx))) {
                             Ok(()) => continue,
                             Err(tokio::sync::mpsc::error::SendError((_, result_tx))) => {
+                                println!("net: lost *forwarding* socket with {who}\r");
                                 let _ = result_tx.unwrap().send(Err(SendErrorKind::Offline));
                                 break;
                             },
@@ -427,7 +438,7 @@ async fn peer_handler(
                     }
                 }
             }
-        } => { println!("net: send error with message to {who}\r"); },
+        } => { println!("net: deleting peer {who}\r"); },
     };
     return who;
 }

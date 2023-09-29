@@ -338,6 +338,7 @@ async fn main() {
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),
+        net_message_sender,
         net_message_receiver,
     ));
     tasks.spawn(filesystem::fs_sender(

@@ -19,7 +19,10 @@ pub async fn build_connection(
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
     with: Option<String>,
-) -> (UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>, JoinHandle<Option<String>>) {
+) -> (
+    UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
+    JoinHandle<Option<String>>,
+) {
     println!("building new connection\r");
     // create a sender and receiver to pass messages from peers to this connection.
     // when we receive a message from a new peer, we can set their sender to this.

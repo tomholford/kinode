@@ -497,7 +497,9 @@ async fn connect_to_routers(
     tokio::spawn(async move {
         loop {
             let res = loop_working_routers.write().await.join_next().await;
-            let Some(Ok(Ok(Some(dead_conn)))) = res else { continue };
+            let Some(Ok(Ok(Some(dead_conn)))) = res else {
+                continue;
+            };
             println!("net: router {dead_conn} died\r");
             let _ = loop_print_tx
                 .send(Printout {

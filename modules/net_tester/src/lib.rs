@@ -2,9 +2,16 @@ cargo_component_bindings::generate!();
 
 use bindings::component::uq_process::types::*;
 use bindings::{print_to_terminal, receive, send_requests, Guest};
-use serde_json::{from_str, to_string, Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{from_str, json, to_string, Value};
 
 struct Component;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Meta {
+    start_time: u64,
+    transfer_size: u64,
+}
 
 /*
  *  sends a bunch of empty bytes across network
@@ -37,12 +44,13 @@ impl Guest for Component {
                 );
                 if request.metadata.is_some() {
                     let end_time: u64 = bindings::get_unix_time();
+                    let meta = from_str::<Meta>(&request.metadata.unwrap()).unwrap();
                     print_to_terminal(
                         0,
                         &format!(
-                            "net_tester: {:?}, {:?}",
-                            request.metadata,
-                            end_time,
+                            "net_tester: moved {} bytes in {}s",
+                            meta.transfer_size,
+                            end_time - meta.start_time
                         ),
                     );
                 }
@@ -89,10 +97,13 @@ impl Guest for Component {
                         inherit: false,
                         expects_response: None,
                         ipc: Some(chunks.to_string()),
-                        metadata: Some(to_string(&json!({
-                            "start_time": start_time.to_string(),
-                            "transfer_size": chunks * chunk.len() as u64,
-                        })).unwrap()),
+                        metadata: Some(
+                            to_string(&Meta {
+                                start_time,
+                                transfer_size: chunks * chunk.len() as u64,
+                            })
+                            .unwrap(),
+                        ),
                     },
                     None,
                     Some(Payload {

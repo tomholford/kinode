@@ -130,6 +130,7 @@ name = "net_tester"
 version = "0.1.0"
 dependencies = [
  "cargo-component-bindings",
+ "serde",
  "serde_json",
  "wit-bindgen 0.9.0",
 ]

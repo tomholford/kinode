@@ -103,6 +103,7 @@ pub async fn networking(
                     target.to_string(),
                     result_rx,
                     message_tx.clone(),
+                    network_error_tx.clone(),
                 ));
                 continue;
             }
@@ -324,6 +325,7 @@ pub async fn networking(
                     target.to_string(),
                     result_rx,
                     message_tx.clone(),
+                    network_error_tx.clone(),
                 ));
                 continue;
             } else {
@@ -452,7 +454,7 @@ async fn error_offline(km: KernelMessage, network_error_tx: &NetworkErrorSender)
         .await;
 }
 
-/// always tries again
+/// always tries again, except for timeouts caused by too-large messages...
 async fn wait_for_ack(
     km: KernelMessage,
     peers: Peers,
@@ -460,17 +462,40 @@ async fn wait_for_ack(
     target: String,
     result_rx: oneshot::Receiver<MessageResult>,
     message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
 ) {
     match timeout(TIMEOUT, result_rx).await {
         Ok(Ok(Ok(m))) => {
             println!("net: got return message {m:?} from {target}\r");
             return;
         }
+        Ok(Ok(Err(SendErrorKind::Timeout))) => {
+            println!("net: got timeout/uggy from {target}\r");
+            let _ = peers.write().await.remove(&target);
+            let _ = network_error_tx.send(WrappedSendError {
+                id: km.id,
+                source: km.source,
+                error: SendError {
+                    kind: SendErrorKind::Timeout,
+                    target: km.target,
+                    message: km.message,
+                    payload: km.payload,
+                },
+            }).await;
+            return
+        }
+        Err(_elapsed) => {
+            // try again without deleting
+            println!("net: timeout, trying again\r");
+            let _ = message_tx.send(km).await;
+            return
+        }
         e => {
             println!("net: got error {e:?} in wait_for_ack\r");
             let _ = peers.write().await.remove(&target);
             let _ = keys.write().await.remove(&target);
             let _ = message_tx.send(km).await;
+            return
         }
     }
 }

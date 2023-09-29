@@ -59,6 +59,8 @@ pub async fn maintain_connection(
     let conn_id: u64 = rand::random();
     println!("maintaining connection {conn_id}\r");
 
+    let message_max_size = websocket.get_config().max_frame_size.unwrap();
+
     // accept messages on the websocket in one task, and send messages in another
     let (mut write_stream, mut read_stream) = websocket.split();
 
@@ -270,42 +272,41 @@ pub async fn maintain_connection(
             while let Some((message, result_tx)) = message_rx.recv().await {
                 // TODO use a language-netural serialization format here!
                 if let Ok(bytes) = bincode::serialize::<NetworkMessage>(&message) {
-                    match write_stream.send(tungstenite::Message::Binary(bytes)).await {
-                        Ok(()) => {
-                            match &message {
-                                NetworkMessage::Msg { id, .. } => {
-                                    println!("conn {conn_id}: piping msg {id}\r");
-                                    sender_ack_map.write().await.insert(*id, result_tx.unwrap());
-                                    continue;
-                                }
-                                NetworkMessage::Handshake(h) => {
-                                    sender_ack_map.write().await.insert(h.id, result_tx.unwrap());
-                                    continue;
-                                }
-                                _ => continue,
-                            }
+                    if bytes.len() > message_max_size {
+                        println!("net: message too large\r");
+                        let _ = result_tx.unwrap().send(Err(SendErrorKind::Timeout));
+                        continue;
+                    }
+                    match &message {
+                        NetworkMessage::Msg { id, .. } => {
+                            println!("conn {conn_id}: piping msg {id}\r");
+                            sender_ack_map.write().await.insert(*id, result_tx.unwrap());
                         }
+                        NetworkMessage::Handshake(h) => {
+                            sender_ack_map.write().await.insert(h.id, result_tx.unwrap());
+                        }
+                        _ => {}
+                    }
+                    match write_stream.send(tungstenite::Message::Binary(bytes)).await {
+                        Ok(()) => {}
                         Err(e) => {
                             println!("net: send error: {:?}\r", e);
+                            let id = match &message {
+                                NetworkMessage::Msg { id, .. } => id,
+                                NetworkMessage::Handshake(h) => &h.id,
+                                _ => continue,
+                            };
+                            let Some(result_tx) = sender_ack_map.write().await.remove(&id) else {
+                                continue;
+                            };
                             // TODO learn how to handle other non-fatal websocket errors.
                             match e {
-                                tungstenite::error::Error::Capacity(_) => {
-                                    match result_tx {
-                                        Some(result_tx) => {
-                                            let _ = result_tx.send(Err(SendErrorKind::Timeout));
-                                            continue;
-                                        }
-                                        None => continue,
-                                    }
+                                tungstenite::error::Error::Capacity(_)
+                                | tungstenite::Error::Io(_) => {
+                                    let _ = result_tx.send(Err(SendErrorKind::Timeout));
                                 }
                                 _ => {
-                                    match result_tx {
-                                        Some(result_tx) => {
-                                            let _ = result_tx.send(Err(SendErrorKind::Offline));
-                                            break;
-                                        }
-                                        None => break,
-                                    }
+                                    let _ = result_tx.send(Err(SendErrorKind::Offline));
                                 }
                             }
                         }

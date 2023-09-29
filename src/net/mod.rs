@@ -472,30 +472,32 @@ async fn wait_for_ack(
         Ok(Ok(Err(SendErrorKind::Timeout))) => {
             println!("net: got timeout/uggy from {target}\r");
             let _ = peers.write().await.remove(&target);
-            let _ = network_error_tx.send(WrappedSendError {
-                id: km.id,
-                source: km.source,
-                error: SendError {
-                    kind: SendErrorKind::Timeout,
-                    target: km.target,
-                    message: km.message,
-                    payload: km.payload,
-                },
-            }).await;
-            return
+            let _ = network_error_tx
+                .send(WrappedSendError {
+                    id: km.id,
+                    source: km.source,
+                    error: SendError {
+                        kind: SendErrorKind::Timeout,
+                        target: km.target,
+                        message: km.message,
+                        payload: km.payload,
+                    },
+                })
+                .await;
+            return;
         }
         Err(_elapsed) => {
             // try again without deleting
             println!("net: timeout, trying again\r");
             let _ = message_tx.send(km).await;
-            return
+            return;
         }
         e => {
             println!("net: got error {e:?} in wait_for_ack\r");
             let _ = peers.write().await.remove(&target);
             let _ = keys.write().await.remove(&target);
             let _ = message_tx.send(km).await;
-            return
+            return;
         }
     }
 }

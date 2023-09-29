@@ -182,7 +182,7 @@ pub async fn networking(
                             continue;
                         };
                         //
-                        // attempt to connect to the router's IP+port and send through that
+                        // otherwise, attempt to connect to the router's IP+port and send through that
                         //
                         let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
                             continue;
@@ -464,7 +464,7 @@ async fn wait_for_ack(
         Ok(Err(e)) => {
             // RECV error: we couldn't even do a send to this peer..
             // TODO probably should trigger a retry here???
-            println!("{e}\r");
+            println!("net error: {e}\r");
             let _ = peers.write().await.remove(&target);
             let _ = error_offline(km, &network_error_tx).await;
             return Err(SendErrorKind::Offline);
@@ -620,7 +620,7 @@ async fn receive_incoming_connections(
     while let Ok((stream, _socket_addr)) = tcp.accept().await {
         match accept_async(MaybeTlsStream::Plain(stream)).await {
             Ok(websocket) => {
-                println!("received incoming connection\r");
+                // println!("received incoming connection\r");
                 // TODO we will need to perform some amount of validation here
                 // to prevent standard DDoS attacks.
                 tokio::spawn(build_connection(
@@ -773,8 +773,6 @@ fn validate_handshake(
             .map_err(|_| "failed to decode networking key")?,
     );
 
-    println!("verifying id: {:?}\r", their_id);
-
     if !(their_networking_key
         .verify(
             // TODO use language-neutral serialization here too
@@ -832,8 +830,6 @@ fn make_secret_and_handshake(
             format!("0x{}", hex::encode(result))
         })
         .collect();
-
-    println!("signing id: {:?}\r", our_onchain_id);
 
     // TODO use language-neutral serialization here too
     let signed_id = keypair

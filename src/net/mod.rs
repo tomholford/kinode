@@ -17,6 +17,7 @@ use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream};
 mod connections;
 mod types;
 
+// only used in connection initialization, otherwise, nacks and Responses are only used for "timeouts"
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Entry point from the main kernel task. Runs forever, spawns listener and sender tasks.
@@ -75,6 +76,9 @@ pub async fn networking(
 
     let _ = tokio::join!(listener, async {
         while let Some(km) = message_rx.recv().await {
+            if let Message::Request(ref req) = km.message {
+                println!("A: {}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
+            }
             // got a message from kernel to send out over the network
             let target = &km.target.node;
             // if the message is for us, it's either a protocol-level "hello" message,

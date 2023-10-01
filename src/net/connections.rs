@@ -60,10 +60,8 @@ pub async fn maintain_connection(
     net_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
 ) -> Option<String> {
-    let conn_id: u64 = rand::random();
+    // let conn_id: u64 = rand::random();
     // println!("maintaining connection {conn_id}\r");
-
-    let message_max_size = websocket.get_config().max_frame_size.unwrap();
 
     // accept messages on the websocket in one task, and send messages in another
     let (mut write_stream, mut read_stream) = websocket.split();
@@ -99,7 +97,7 @@ pub async fn maintain_connection(
                         .send((NetworkMessage::HandshakeAck(handshake), None))
                         .unwrap();
                 }
-                Err((message_id, e)) => {
+                Err((message_id, _e)) => {
                     // println!("net: got forwarding error from ack_rx: {:?}\r", e);
                     // what do we do here?
                     forwarder_message_tx
@@ -299,16 +297,6 @@ pub async fn maintain_connection(
             while let Some((message, result_tx)) = message_rx.recv().await {
                 // TODO use a language-netural serialization format here!
                 if let Ok(bytes) = bincode::serialize::<NetworkMessage>(&message) {
-                    if bytes.len() > message_max_size {
-                        println!("net error: message too large! insta-timeout\r");
-                        let id = match &message {
-                            NetworkMessage::Msg { id, .. } => id,
-                            NetworkMessage::Handshake(h) => &h.id,
-                            _ => continue,
-                        };
-                        let _ = result_tx.unwrap().send(Err((*id, SendErrorKind::Timeout)));
-                        continue;
-                    }
                     match &message {
                         NetworkMessage::Msg { id, .. } => {
                             // println!("conn {conn_id}: piping msg {id}\r");
@@ -319,8 +307,11 @@ pub async fn maintain_connection(
                         }
                         _ => {}
                     }
+                    println!("D: \r");
                     match write_stream.send(tungstenite::Message::Binary(bytes)).await {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            println!("E: \r");
+                        }
                         Err(e) => {
                             // println!("net: send error: {:?}\r", e);
                             let id = match &message {
@@ -338,7 +329,7 @@ pub async fn maintain_connection(
                                     let _ = result_tx.send(Err((*id, SendErrorKind::Timeout)));
                                 }
                                 _ => {
-                                    let _ = result_tx.send(Err((*id, SendErrorKind::Offline)));
+                                    let _ = result_tx.send(Ok(NetworkMessage::Nack(*id)));
                                 }
                             }
                         }
@@ -471,9 +462,20 @@ async fn peer_handler(
                 // otherwise, simply send
                 match message {
                     PeerMessage::Raw(message) => {
+                        if let Message::Request(ref req) = message.message {
+                            println!("B: {}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
+                        }
+                        let start = std::time::Instant::now();
                         let id = message.id;
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
+                            let mid = std::time::Instant::now();
+                            println!("serialization in {:?}\r", mid.duration_since(start));
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
+                                let end = std::time::Instant::now();
+                                let elapsed = end.duration_since(mid);
+                                if let Message::Request(ref req) = message.message {
+                                    println!("C: {}, encryption in {elapsed:?}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
+                                }
                                 if maybe_result_tx.is_none() {
                                     ack_map.write().await.insert(id, message);
                                 }
@@ -535,8 +537,7 @@ async fn peer_handler(
                     }
                     Err((message_id, e)) => {
                         // println!("net: got error from ack_rx: {:?}\r", e);
-                        // what do we do here?
-                        // i *think* we should send a net_error_message timeout.
+                        // in practice this is always a timeout in current implementation
                         let Some(km) = recv_ack_map.write().await.remove(&message_id) else {
                             continue;
                         };
@@ -545,7 +546,7 @@ async fn peer_handler(
                                 id: km.id,
                                 source: km.source,
                                 error: SendError {
-                                    kind: SendErrorKind::Offline,
+                                    kind: e,
                                     target: km.target,
                                     message: km.message,
                                     payload: km.payload,

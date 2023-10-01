@@ -76,9 +76,6 @@ pub async fn networking(
 
     let _ = tokio::join!(listener, async {
         while let Some(km) = message_rx.recv().await {
-            if let Message::Request(ref req) = km.message {
-                println!("A: {}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
-            }
             // got a message from kernel to send out over the network
             let target = &km.target.node;
             // if the message is for us, it's either a protocol-level "hello" message,

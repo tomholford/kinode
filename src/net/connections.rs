@@ -307,11 +307,8 @@ pub async fn maintain_connection(
                         }
                         _ => {}
                     }
-                    println!("D: \r");
                     match write_stream.send(tungstenite::Message::Binary(bytes)).await {
-                        Ok(()) => {
-                            println!("E: \r");
-                        }
+                        Ok(()) => {}
                         Err(e) => {
                             // println!("net: send error: {:?}\r", e);
                             let id = match &message {
@@ -462,20 +459,9 @@ async fn peer_handler(
                 // otherwise, simply send
                 match message {
                     PeerMessage::Raw(message) => {
-                        if let Message::Request(ref req) = message.message {
-                            println!("B: {}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
-                        }
-                        let start = std::time::Instant::now();
                         let id = message.id;
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
-                            let mid = std::time::Instant::now();
-                            println!("serialization in {:?}\r", mid.duration_since(start));
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
-                                let end = std::time::Instant::now();
-                                let elapsed = end.duration_since(mid);
-                                if let Message::Request(ref req) = message.message {
-                                    println!("C: {}, encryption in {elapsed:?}\r", req.ipc.as_ref().unwrap_or(&"hejj".into()));
-                                }
                                 if maybe_result_tx.is_none() {
                                     ack_map.write().await.insert(id, message);
                                 }

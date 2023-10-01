@@ -210,7 +210,9 @@ pub async fn maintain_connection(
                             //     "net: failed handshake with unknown node {}\r",
                             //     handshake.from
                             // );
-                            message_tx.send((NetworkMessage::Nack(handshake.id), None)).unwrap();
+                            message_tx
+                                .send((NetworkMessage::Nack(handshake.id), None))
+                                .unwrap();
                             break;
                         };
                         let their_ephemeral_pk = match validate_handshake(&handshake, &peer_id) {

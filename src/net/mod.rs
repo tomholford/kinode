@@ -180,7 +180,8 @@ pub async fn networking(
                     let mut success = false;
                     for router_namehash in &peer_id.allowed_routers {
                         let km = km.clone();
-                        let Some(router_name) = names.read().await.get(router_namehash).cloned() else {
+                        let Some(router_name) = names.read().await.get(router_namehash).cloned()
+                        else {
                             continue;
                         };
                         let Some(router_id) = pki.read().await.get(&router_name).cloned() else {
@@ -193,32 +194,33 @@ pub async fn networking(
                         // otherwise, attempt to connect to the router's IP+port and send through that
                         //
                         // if we already have this router as a peer, use that socket_tx
-                        let (socket_tx, maybe_conn_handle) = if let Some(router) =
-                            peers.read().await.get(&router_name)
-                        {
-                            (router.socket_tx.clone(), None)
-                        } else {
-                            let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
-                                continue;
+                        let (socket_tx, maybe_conn_handle) =
+                            if let Some(router) = peers.read().await.get(&router_name) {
+                                (router.socket_tx.clone(), None)
+                            } else {
+                                let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
+                                    continue;
+                                };
+                                let Ok(Ok((websocket, _response))) =
+                                    timeout(TIMEOUT, connect_async(ws_url)).await
+                                else {
+                                    continue;
+                                };
+                                let (socket_tx, conn_handle) = build_connection(
+                                    our.clone(),
+                                    keypair.clone(),
+                                    pki.clone(),
+                                    keys.clone(),
+                                    peers.clone(),
+                                    websocket,
+                                    kernel_message_tx.clone(),
+                                    message_tx.clone(),
+                                    network_error_tx.clone(),
+                                    None,
+                                )
+                                .await;
+                                (socket_tx, Some(conn_handle))
                             };
-                            let Ok(Ok((websocket, _response))) = timeout(TIMEOUT, connect_async(ws_url)).await else {
-                                continue;
-                            };
-                            let (socket_tx, conn_handle) = build_connection(
-                                our.clone(),
-                                keypair.clone(),
-                                pki.clone(),
-                                keys.clone(),
-                                peers.clone(),
-                                websocket,
-                                kernel_message_tx.clone(),
-                                message_tx.clone(),
-                                network_error_tx.clone(),
-                                None,
-                            )
-                            .await;
-                            (socket_tx, Some(conn_handle))
-                        };
                         let new_peer = create_new_peer(
                             our.clone(),
                             peer_id.clone(),
@@ -390,13 +392,13 @@ pub async fn networking(
                             (router.socket_tx.clone(), None)
                         } else {
                             let Ok(ws_url) = make_ws_url(&our_ip, ip, port) else {
-                            continue;
-                        };
+                                continue;
+                            };
                             let Ok(Ok((websocket, _response))) =
-                            timeout(TIMEOUT, connect_async(ws_url)).await
-                        else {
-                            continue;
-                        };
+                                timeout(TIMEOUT, connect_async(ws_url)).await
+                            else {
+                                continue;
+                            };
                             let (socket_tx, conn_handle) = build_connection(
                                 our.clone(),
                                 keypair.clone(),

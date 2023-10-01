@@ -6,21 +6,20 @@ use ethers::prelude::k256::Secp256k1;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub type PeerKeys = Arc<RwLock<HashMap<String, (Identity, Arc<SharedSecret<Secp256k1>>, Nonce)>>>;
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 pub type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-pub type MessageResult = Result<Option<NetworkMessage>, SendErrorKind>;
-pub type ErrorShuttle = oneshot::Sender<MessageResult>;
+pub type MessageResult = Result<NetworkMessage, (u64, SendErrorKind)>;
+pub type ErrorShuttle = mpsc::UnboundedSender<MessageResult>;
 
 /// stored in mapping by their username
 pub struct Peer {
     pub identity: Identity,
-    pub handle: tokio::task::JoinHandle<String>,
     // send messages here to have them encrypted and sent across an active connection
-    pub sender: mpsc::UnboundedSender<(PeerMessage, ErrorShuttle)>,
+    pub sender: mpsc::UnboundedSender<(PeerMessage, Option<ErrorShuttle>)>,
     // send encrypted messages from this peer here to have them decrypted and sent to kernel
     pub decrypter: mpsc::UnboundedSender<(Vec<u8>, ErrorShuttle)>,
     pub socket_tx: mpsc::UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,

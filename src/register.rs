@@ -79,7 +79,7 @@ pub async fn register(
 
     let routes = static_files.or(react_app).or(api);
 
-    let _ = open::that(format!("http://localhost:{}/register", port));
+    let _ = open::that(format!("http://localhost:{}/", port));
     warp::serve(routes)
         .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
             kill_rx.await.ok();

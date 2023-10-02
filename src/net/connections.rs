@@ -455,6 +455,10 @@ async fn peer_handler(
                     PeerMessage::Raw(message) => {
                         let id = message.id;
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
+                            // generating a random nonce for each message.
+                            // this isn't really as secure as we could get: should
+                            // add a counter and then throw away the key when we hit a
+                            // certain # of messages. TODO.
                             let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
                                 if maybe_result_tx.is_none() {
@@ -465,7 +469,7 @@ async fn peer_handler(
                                         from: our.name.clone(),
                                         to: who.clone(),
                                         id: id,
-                                        contents: [nonce.as_slice().to_vec(), encrypted].concat(),
+                                        contents: [nonce.to_vec(), encrypted].concat(),
                                     },
                                     Some(maybe_result_tx.unwrap_or(ack_tx.clone())),
                                 )) {

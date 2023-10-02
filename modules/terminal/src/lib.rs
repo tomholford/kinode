@@ -26,7 +26,7 @@ fn parse_command(our_name: &str, line: String) {
                 },
                 &Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(message.into()),
                     metadata: None,
                 },
@@ -62,7 +62,7 @@ fn parse_command(our_name: &str, line: String) {
                 },
                 &Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(ipc.into()),
                     metadata: None,
                 },
@@ -88,8 +88,8 @@ impl Guest for Component {
                     }
                     message
                 }
-                Err(error) => {
-                    print_to_terminal(0, &format!("net error: {:?}!", error));
+                Err((error, _context)) => {
+                    print_to_terminal(0, &format!("net error: {:?}!", error.kind));
                     continue;
                 }
             };

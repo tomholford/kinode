@@ -108,7 +108,7 @@ fn send_ws_update(our_name: String, game: Game) {
         },
         &Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(
                 serde_json::json!({
                     "EncryptAndForwardAction": {
@@ -189,7 +189,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(
                         serde_json::json!({
                             "action": "bind-app",
@@ -208,7 +208,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(
                         serde_json::json!({
                             "action": "bind-app",
@@ -577,7 +577,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(30), // TODO check this!
                                                     ipc: Some(
                                                         serde_json::json!({
                                                             "action": "new_game",
@@ -733,7 +733,7 @@ impl Guest for Component {
                                                         },
                                                         &Request {
                                                             inherit: false,
-                                                            expects_response: true,
+                                                            expects_response: Some(30),  // TODO check this!
                                                             ipc: Some(
                                                                 serde_json::json!({
                                                                     "action": "make_move",
@@ -885,7 +885,7 @@ impl Guest for Component {
                                                 },
                                                 &Request {
                                                     inherit: false,
-                                                    expects_response: true,
+                                                    expects_response: Some(30), // TODO check this!
                                                     ipc: Some(
                                                         serde_json::json!({
                                                             "action": "end_game",

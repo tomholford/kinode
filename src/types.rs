@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 //
 
 // keeps the from address so we know where to pipe error
-pub type NetworkErrorSender = tokio::sync::mpsc::Sender<WrappedNetworkError>;
-pub type NetworkErrorReceiver = tokio::sync::mpsc::Receiver<WrappedNetworkError>;
+pub type NetworkErrorSender = tokio::sync::mpsc::Sender<WrappedSendError>;
+pub type NetworkErrorReceiver = tokio::sync::mpsc::Receiver<WrappedSendError>;
 
 pub type MessageSender = tokio::sync::mpsc::Sender<KernelMessage>;
 pub type MessageReceiver = tokio::sync::mpsc::Receiver<KernelMessage>;
@@ -112,9 +112,9 @@ pub struct Payload {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub inherit: bool,
-    pub expects_response: bool,
-    pub ipc: Option<String>,      // JSON-string
-    pub metadata: Option<String>, // JSON-string
+    pub expects_response: Option<u64>, // number of seconds until timeout
+    pub ipc: Option<String>,           // JSON-string
+    pub metadata: Option<String>,      // JSON-string
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -126,7 +126,7 @@ pub struct Response {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
     Request(Request),
-    Response((Result<Response, UqbarError>, Option<Context>)),
+    Response((Response, Option<Context>)),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -143,21 +143,15 @@ pub struct SignedCapability {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UqbarError {
-    pub kind: String,
-    pub message: Option<String>, // JSON-string
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NetworkError {
-    pub kind: NetworkErrorKind,
+pub struct SendError {
+    pub kind: SendErrorKind,
     pub target: Address, // what the message was trying to reach
     pub message: Message,
     pub payload: Option<Payload>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum NetworkErrorKind {
+pub enum SendErrorKind {
     Offline,
     Timeout,
 }
@@ -202,10 +196,10 @@ pub struct KernelMessage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WrappedNetworkError {
+pub struct WrappedSendError {
     pub id: u64,
     pub source: Address,
-    pub error: NetworkError,
+    pub error: SendError,
 }
 
 /// A terminal printout. Verbosity level is from low to high, and for
@@ -691,28 +685,19 @@ impl std::fmt::Display for Message {
         match self {
             Message::Request(request) => write!(
                 f,
-                "Request(\n    inherit: {},\n    expects_response: {},\n    ipc: {},\n    metadata: {}\n)",
+                "Request(\n    inherit: {},\n    expects_response: {:#?},\n    ipc: {},\n    metadata: {}\n)",
                 request.inherit,
                 request.expects_response,
                 &request.ipc.as_ref().unwrap_or(&"None".into()),
                 &request.metadata.as_ref().unwrap_or(&"None".into()),
             ),
-            Message::Response((response, context)) => match response {
-                Ok(response) => write!(
-                    f,
-                    "Response(\n    ipc: {},\n    metadata: {},\n    context: {}\n)",
-                    &response.ipc.as_ref().unwrap_or(&"None".into()),
-                    &response.metadata.as_ref().unwrap_or(&"None".into()),
-                    &context.as_ref().unwrap_or(&"None".into()),
-                ),
-                Err(error) => write!(
-                    f,
-                    "Response(\n    kind: {},\n    message: {},\n    context: {}\n)",
-                    error.kind,
-                    &error.message.as_ref().unwrap_or(&"None".into()),
-                    &context.as_ref().unwrap_or(&"None".into()),
-                ),
-            },
+            Message::Response((response, context)) => write!(
+                f,
+                "Response(\n    ipc: {},\n    metadata: {},\n    context: {}\n)",
+                &response.ipc.as_ref().unwrap_or(&"None".into()),
+                &response.metadata.as_ref().unwrap_or(&"None".into()),
+                &context.as_ref().unwrap_or(&"None".into()),
+            ),
         }
     }
 }

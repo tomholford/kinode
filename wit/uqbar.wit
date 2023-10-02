@@ -30,8 +30,8 @@ interface types {
         // if true, this request inherits context AND payload of incipient
         // request, and cannot have its own context.
         inherit: bool,
-        // if true, this request expects a response
-        expects-response: bool,
+        // if Some, this request expects a response in the number of seconds given
+        expects-response: option<u64>,
         ipc: option<json>,
         metadata: option<json>,
         // to grab payload, use get_payload()
@@ -50,7 +50,7 @@ interface types {
     // it matches, if any was set.
     variant message {
         request(request),
-        response(tuple<result<response, uqbar-error>, option<context>>),
+        response(tuple<response, option<context>>),
     }
 
     variant capabilities {
@@ -65,11 +65,6 @@ interface types {
         signature: list<u8>,
     }
 
-    record uqbar-error {
-        kind: string,
-        message: option<json>,
-    }
-
     // network errors come from trying to send a message to another node.
     // a message can fail by timing out, or by the node being entirely unreachable (offline).
     // in either case, the message is not delivered, and the process that sent it
@@ -77,13 +72,13 @@ interface types {
     // and is free to handle it as it sees fit.
     // note that if the message is a response, the process can issue a response again,
     // and it will be directed to the same (remote) request as the original.
-    record network-error {
-        kind: network-error-kind,
+    record send-error {
+        kind: send-error-kind,
         message: message,
         payload: option<payload>,
     }
 
-    enum network-error-kind {
+    enum send-error-kind {
         offline,
         timeout,
     }
@@ -112,9 +107,8 @@ world uq-process {
         capabilities,
         signed-capability,
 
-        uqbar-error,
-        network-error,
-        network-error-kind,
+        send-error,
+        send-error-kind,
         on-panic,
     }
 
@@ -133,7 +127,7 @@ world uq-process {
 
     // what should bytes_uri be?? need vfs?
     import spawn: func(id: process-id, bytes-uri: string, on-panic: on-panic, capabilities: capabilities) ->
-        result<process-id, uqbar-error>
+        option<process-id>
 
     // capabilities management
 
@@ -158,22 +152,24 @@ world uq-process {
 
     // ingest next message when it arrives along with its source.
     // almost all long-running processes will call this in a loop
-    import receive: func() -> result<tuple<address, message>, tuple<network-error, option<context>>>
+    import receive: func() -> result<tuple<address, message>, tuple<send-error, option<context>>>
 
     // gets payload, if any, of the message we just received
     import get-payload: func() -> option<payload>
 
     // send message(s) to target(s)
-    import send-request: func(target: address, request: request, context: option<context>, payload: option<payload>)
-    import send-requests: func(requests: list<tuple<address, request, option<context>, option<payload>>>)
-    import send-response: func(response: response, payload: option<payload>)
-    import send-error: func(error: uqbar-error)
+    import send-request:
+        func(target: address, request: request, context: option<context>, payload: option<payload>)
+    import send-requests:
+        func(requests: list<tuple<address, request, option<context>, option<payload>>>)
+    import send-response:
+        func(response: response, payload: option<payload>)
 
     // send a single request, then block (internally) until its response
     // the type is Message but will always contain Response
     import send-and-await-response:
         func(target: address, request: request, payload: option<payload>) ->
-            result<tuple<address, message>, network-error>
+            result<tuple<address, message>, send-error>
 
     //  wasi
     import wasi:random/insecure

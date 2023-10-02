@@ -15,7 +15,7 @@ fn generate_http_binding(add: Address, path: &str, authenticated: bool) -> (Addr
         add,
         Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(serde_json::json!({
                 "action": "bind-app",
                 "path": path,
@@ -50,7 +50,7 @@ impl Guest for Component {
                 continue;
             };
             let Message::Request(request) = message else {
-                print_to_terminal(0, "apps_home: got unexpected message");
+                print_to_terminal(0, &format!("apps_home: got unexpected message: {:?}", message));
                 continue;
             };
 
@@ -133,7 +133,7 @@ impl Guest for Component {
                                     },
                                     &Request {
                                         inherit: false,
-                                        expects_response: false,
+                                        expects_response: None,
                                         ipc: Some(serde_json::json!({
                                             "EncryptAndForwardAction": {
                                                 "channel_id": "apps_home",

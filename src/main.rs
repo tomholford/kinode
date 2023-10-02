@@ -26,7 +26,7 @@ mod vfs;
 const EVENT_LOOP_CHANNEL_CAPACITY: usize = 10_000;
 const EVENT_LOOP_DEBUG_CHANNEL_CAPACITY: usize = 50;
 const TERMINAL_CHANNEL_CAPACITY: usize = 32;
-const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 100_000;
+const WEBSOCKET_SENDER_CHANNEL_CAPACITY: usize = 32;
 const FILESYSTEM_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CHANNEL_CAPACITY: usize = 32;
 const HTTP_CLIENT_CHANNEL_CAPACITY: usize = 32;
@@ -56,7 +56,7 @@ async fn main() {
     // read PKI from HTTP endpoint served by RPC
     // TODO this is so incredibly bad, lol, lmao
     let mut rpc_url =
-        "wss://eth-sepolia.g.alchemy.com/v2/W0nka5SiRCHASxyF6jzJ7HkQaMfnq4Mh".to_string();
+        "wss://eth-sepolia.g.alchemy.com/v2/xSRwuKmpFNB24np9VMxrbGmHDaXO5qaS".to_string();
 
     for (i, arg) in args.iter().enumerate() {
         if arg == "--rpc" {
@@ -338,6 +338,7 @@ async fn main() {
         kernel_message_sender.clone(),
         network_error_sender,
         print_sender.clone(),
+        net_message_sender,
         net_message_receiver,
     ));
     tasks.spawn(filesystem::fs_sender(
@@ -430,7 +431,7 @@ async fn main() {
             rsvp: None,
             message: Message::Request(Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(serde_json::to_string(&KernelCommand::Shutdown).unwrap()),
                 metadata: None,
             }),

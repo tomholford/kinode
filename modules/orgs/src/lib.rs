@@ -84,7 +84,7 @@ fn generate_http_binding(
         add,
         Request {
             inherit: false,
-            expects_response: false,
+            expects_response: None,
             ipc: Some(
                 json!({
                     "action": "bind-app",
@@ -141,21 +141,16 @@ fn send_http_response(status: u16, headers: HashMap<String, String>, payload_byt
 }
 
 fn get_response_info(
-    response: Result<(Address, Message), NetworkError>,
+    response: Result<(Address, Message), SendError>,
 ) -> (Option<String>, Option<Payload>, Option<String>) {
     match response {
         Ok((_source, message)) => {
-            if let Message::Response((response_result, context)) = message {
-                match response_result {
-                    Ok(response) => {
-                        let ipc = match response.ipc {
-                            Some(ipc) => Some(ipc.to_string()),
-                            None => None,
-                        };
-                        (ipc, get_payload(), context)
-                    }
-                    Err(_) => (None, None, None),
-                }
+            if let Message::Response((response, context)) = message {
+                let ipc = match response.ipc {
+                    Some(ipc) => Some(ipc.to_string()),
+                    None => None,
+                };
+                (ipc, get_payload(), context)
             } else {
                 (None, None, None)
             }
@@ -179,7 +174,7 @@ fn send_http_client_request(
         },
         &Request {
             inherit: false,
-            expects_response: true,
+            expects_response: Some(5), // TODO evaluate timeout
             ipc: Some(
                 json!({
                     "method": method,
@@ -313,7 +308,7 @@ fn handle_telegram_update(
                             },
                             &Request {
                                 inherit: false,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(
                                     json!({
                                         "EncryptAndForwardAction": {
@@ -362,7 +357,7 @@ fn handle_telegram_update(
                             },
                             &Request {
                                 inherit: false,
-                                expects_response: true,
+                                expects_response: Some(5), // TODO evaluate timeout
                                 ipc: Some(json!({
                                     "method": "GET",
                                     "uri": format!("https://api.telegram.org/bot{}/getChatAdministrators", bot_data.token),
@@ -561,7 +556,7 @@ fn serve_html(our: Address, default_headers: HashMap<String, String>) {
         },
         &Request {
             inherit: false,
-            expects_response: true,
+            expects_response: Some(5), // TODO evaluate timeout
             ipc: Some(
                 json!({
                     "GetEntry": {
@@ -609,7 +604,7 @@ fn serve_static(raw_path: &str, our: Address, default_headers: HashMap<String, S
             },
             &Request {
                 inherit: false,
-                expects_response: true,
+                expects_response: Some(5), // TODO evaluate timeout
                 ipc: Some(
                     json!({
                         "GetEntry": {
@@ -1064,7 +1059,7 @@ impl Guest for Component {
                                                     },
                                                     &Request {
                                                         inherit: false,
-                                                        expects_response: true,
+                                                        expects_response: Some(5), // TODO evaluate timeout
                                                         ipc: Some(
                                                             json!({
                                                                 "action": "get_contact_info",
@@ -1086,7 +1081,7 @@ impl Guest for Component {
                                                     },
                                                     &Request {
                                                         inherit: false,
-                                                        expects_response: true,
+                                                        expects_response: Some(15), // TODO evaluate timeout
                                                         ipc: Some(
                                                             json!({
                                                                 "action": "update_orgs",
@@ -1197,7 +1192,7 @@ impl Guest for Component {
                                                     },
                                                     &Request {
                                                         inherit: false,
-                                                        expects_response: true,
+                                                        expects_response: Some(5), // TODO evaluate timeout
                                                         ipc: Some(json!({
                                                             "method": "GET",
                                                             "uri": format!("https://api.telegram.org/bot{}/getChat", bot.token.clone()),
@@ -1355,7 +1350,7 @@ impl Guest for Component {
                                                     },
                                                     &Request {
                                                         inherit: false,
-                                                        expects_response: true,
+                                                        expects_response: Some(5), // TODO evaluate timeout
                                                         ipc: Some(json!({
                                                             "method": "GET",
                                                             "uri": format!("https://api.telegram.org/bot{}/getMe", token),
@@ -1688,7 +1683,7 @@ impl Guest for Component {
                         }
                     }
                 }
-                Message::Response((response_result, context)) => {
+                Message::Response((response, context)) => {
                     if source.process == ProcessId::Name("http_client".to_string()) {
                         let Some(bot_id_string) = context else {
                             print_to_terminal(0, "orgs: got response without context");
@@ -1759,14 +1754,7 @@ impl Guest for Component {
                             }
                         }
                     } else if source.process == ProcessId::Name("orgs".to_string()) {
-                        let ipc = match response_result {
-                            Ok(result) => result.ipc,
-                            Err(_) => {
-                                print_to_terminal(0, "orgs: got error response");
-                                continue;
-                            }
-                        };
-                        if let Some(json) = ipc {
+                        if let Some(json) = response.ipc {
                             let message_json: serde_json::Value = match serde_json::from_str(&json)
                             {
                                 Ok(v) => v,

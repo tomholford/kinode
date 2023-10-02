@@ -70,7 +70,7 @@ pub async fn eth_rpc(
             message:
                 Message::Request(Request {
                     inherit: _,
-                    expects_response: is_expecting_response,
+                    expects_response,
                     ipc: json,
                     metadata: _,
                 }),
@@ -80,7 +80,7 @@ pub async fn eth_rpc(
             panic!("eth_rpc: bad message");
         };
 
-        let target = if is_expecting_response {
+        let target = if expects_response.is_some() {
             Address {
                 node: our.clone(),
                 process: source.process.clone(),
@@ -142,10 +142,13 @@ pub async fn eth_rpc(
                         target: target.clone(),
                         rsvp: None,
                         message: Message::Response((
-                            Ok(Response {
-                                ipc: Some(json!(id).to_string()),
+                            Response {
+                                ipc: Some(
+                                    serde_json::to_string::<Result<u64, EthRpcError>>(&Ok(id))
+                                        .unwrap(),
+                                ),
                                 metadata: None,
-                            }),
+                            },
                             None,
                         )),
                         payload: None,
@@ -230,7 +233,7 @@ pub async fn eth_rpc(
                                             rsvp: None,
                                             message: Message::Request(Request {
                                                 inherit: false, // TODO what
-                                                expects_response: false,
+                                                expects_response: None,
                                                 ipc: Some(json!({
                                                     "EventSubscription": serde_json::to_value(event.clone()).unwrap()
                                                 }).to_string()),
@@ -253,7 +256,6 @@ pub async fn eth_rpc(
                             }
                         };
                     }
-                    Ok(())
                 });
                 subscriptions.lock().await.insert(id, handle);
             }
@@ -296,10 +298,10 @@ fn make_error_message(our: String, id: u64, source: Address, error: EthRpcError)
         target: source,
         rsvp: None,
         message: Message::Response((
-            Err(UqbarError {
-                kind: error.kind().into(),
-                message: Some(serde_json::to_string(&error).unwrap()),
-            }),
+            Response {
+                ipc: Some(serde_json::to_string::<Result<u64, EthRpcError>>(&Err(error)).unwrap()),
+                metadata: None,
+            },
             None,
         )),
         payload: None,

@@ -157,14 +157,14 @@ pub async fn encryptor(
                                     },
                                     target,
                                     rsvp: None,
-                                    message: Message::Response((Ok(
+                                    message: Message::Response((
                                         Response {
                                             ipc: Some(serde_json::json!({
                                                 "status": 201,
                                                 "headers": headers,
                                             }).to_string()),
                                             metadata: None,
-                                        }),
+                                        },
                                         None,
                                     )),
                                     payload: Some(Payload {
@@ -232,7 +232,7 @@ pub async fn encryptor(
                                 rsvp: None,
                                 message: Message::Request(Request {
                                     inherit: false,
-                                    expects_response: false, // A forwarded message does not expect a response
+                                    expects_response: None, // A forwarded message does not expect a response
                                     ipc: Some(json.clone().unwrap_or_default().to_string()),
                                     metadata: None,
                                 }),
@@ -286,7 +286,7 @@ pub async fn encryptor(
                                 rsvp: None,
                                 message: Message::Request(Request {
                                     inherit: false,
-                                    expects_response: false, // A forwarded message does not expect a response
+                                    expects_response: None, // A forwarded message does not expect a response
                                     ipc: Some(json.clone().unwrap_or_default().to_string()),
                                     metadata: None,
                                 }),
@@ -339,10 +339,10 @@ pub async fn encryptor(
                                 target: source,
                                 rsvp: None,
                                 message: Message::Response((
-                                    Ok(Response {
+                                    Response {
                                         ipc: None,
                                         metadata: None,
-                                    }),
+                                    },
                                     None,
                                 )),
                                 payload: Some(Payload {
@@ -394,10 +394,10 @@ pub async fn encryptor(
                                 target: source,
                                 rsvp: None,
                                 message: Message::Response((
-                                    Ok(Response {
+                                    Response {
                                         ipc: None,
                                         metadata: None,
-                                    }),
+                                    },
                                     None,
                                 )),
                                 payload: Some(Payload {

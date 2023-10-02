@@ -350,7 +350,7 @@ async fn handle_request(
         }
     };
 
-    //  println!("got action! {:?}", action);
+    // println!("got action! {:?}", action);
 
     let (ipc, bytes) = match action {
         FsAction::Write => {
@@ -363,13 +363,7 @@ async fn handle_request(
             let file_uuid = FileIdentifier::new_uuid();
             manifest.write(&file_uuid, &payload.bytes).await?;
 
-            (
-                Some(
-                    serde_json::to_string(&FsResponse::Write(file_uuid.to_uuid().unwrap()))
-                        .unwrap(),
-                ),
-                None,
-            )
+            (FsResponse::Write(file_uuid.to_uuid().unwrap()), None)
         }
         FsAction::WriteOffset((file_uuid, offset)) => {
             let Some(ref payload) = payload else {
@@ -384,26 +378,14 @@ async fn handle_request(
                 .write_at(&file_uuid, offset, &payload.bytes)
                 .await?;
 
-            (
-                Some(
-                    serde_json::to_string(&FsResponse::Write(file_uuid.to_uuid().unwrap()))
-                        .unwrap(),
-                ),
-                None,
-            )
+            (FsResponse::Write(file_uuid.to_uuid().unwrap()), None)
         }
         FsAction::Read(file_uuid) => {
             let file = FileIdentifier::UUID(file_uuid);
 
             match manifest.read(&file, None, None).await {
-                Err(e) => {
-                    // println!("error reading file...");
-                    return Err(e);
-                }
-                Ok(bytes) => (
-                    Some(serde_json::to_string(&FsResponse::Read(file_uuid)).unwrap()),
-                    Some(bytes),
-                ),
+                Err(e) => return Err(e),
+                Ok(bytes) => (FsResponse::Read(file_uuid), Some(bytes)),
             }
         }
         FsAction::ReadChunk(req) => {
@@ -413,14 +395,8 @@ async fn handle_request(
                 .read(&file, Some(req.start), Some(req.length))
                 .await
             {
-                Err(e) => {
-                    // println!("error reading file...");
-                    return Err(e);
-                }
-                Ok(bytes) => (
-                    Some(serde_json::to_string(&FsResponse::Read(req.file)).unwrap()),
-                    Some(bytes),
-                ),
+                Err(e) => return Err(e),
+                Ok(bytes) => (FsResponse::Read(req.file), Some(bytes)),
             }
         }
         FsAction::Replace(old_file_uuid) => {
@@ -433,19 +409,13 @@ async fn handle_request(
             let file = FileIdentifier::UUID(old_file_uuid);
             manifest.write(&file, &payload.bytes).await?;
 
-            (
-                Some(serde_json::to_string(&FsResponse::Write(old_file_uuid)).unwrap()),
-                None,
-            )
+            (FsResponse::Write(old_file_uuid), None)
         }
         FsAction::Delete(del) => {
             let file = FileIdentifier::UUID(del);
             manifest.delete(&file).await?;
 
-            (
-                Some(serde_json::to_string(&FsResponse::Delete(del)).unwrap()),
-                None,
-            )
+            (FsResponse::Delete(del), None)
         }
         FsAction::Append(maybe_file_uuid) => {
             let Some(ref payload) = payload else {
@@ -461,22 +431,13 @@ async fn handle_request(
 
             manifest.append(&file_uuid, &payload.bytes).await?;
             // note expecting file_uuid here, if we want process state to access append, we would change this.
-            (
-                Some(
-                    serde_json::to_string(&FsResponse::Append(file_uuid.to_uuid().unwrap()))
-                        .unwrap(),
-                ),
-                None,
-            )
+            (FsResponse::Append(file_uuid.to_uuid().unwrap()), None)
         }
         FsAction::Length(file_uuid) => {
             let file = FileIdentifier::UUID(file_uuid);
             let length = manifest.get_length(&file).await;
             match length {
-                Some(len) => (
-                    Some(serde_json::to_string(&FsResponse::Length(len)).unwrap()),
-                    None,
-                ),
+                Some(len) => (FsResponse::Length(len), None),
                 None => {
                     return Err(FileSystemError::LFSError {
                         error: "file not found".into(),
@@ -489,10 +450,7 @@ async fn handle_request(
             manifest.set_length(&file, length).await?;
 
             // doublecheck if this is the type of return statement we want.
-            (
-                Some(serde_json::to_string(&FsResponse::Length(length)).unwrap()),
-                None,
-            )
+            (FsResponse::Length(length), None)
         }
         //  process state handlers
         FsAction::SetState => {
@@ -505,25 +463,19 @@ async fn handle_request(
             let file = FileIdentifier::Process(source.process.clone());
             let _ = manifest.write(&file, &payload.bytes).await;
 
-            (
-                Some(serde_json::to_string(&FsResponse::SetState).unwrap()),
-                None,
-            )
+            (FsResponse::SetState, None)
         }
         FsAction::GetState => {
             let file = FileIdentifier::Process(source.process.clone());
 
             match manifest.read(&file, None, None).await {
                 Err(e) => return Err(e),
-                Ok(bytes) => (
-                    Some(serde_json::to_string(&FsResponse::GetState).unwrap()),
-                    Some(bytes),
-                ),
+                Ok(bytes) => (FsResponse::GetState, Some(bytes)),
             }
         }
     };
 
-    if expects_response {
+    if expects_response.is_some() {
         let response = KernelMessage {
             id: id.clone(),
             source: Address {
@@ -533,10 +485,13 @@ async fn handle_request(
             target: source.clone(),
             rsvp,
             message: Message::Response((
-                Ok(Response {
-                    ipc,
+                Response {
+                    ipc: Some(
+                        serde_json::to_string::<Result<FsResponse, FileSystemError>>(&Ok(ipc))
+                            .unwrap(),
+                    ),
                     metadata, // for kernel
-                }),
+                },
                 None,
             )),
             payload: Some(Payload {
@@ -592,10 +547,15 @@ fn make_error_message(
         target,
         rsvp: None,
         message: Message::Response((
-            Err(UqbarError {
-                kind: error.kind().into(),
-                message: Some(serde_json::to_string(&error).unwrap()),
-            }),
+            Response {
+                ipc: Some(
+                    serde_json::to_string::<Result<FileSystemResponse, FileSystemError>>(&Err(
+                        error,
+                    ))
+                    .unwrap(),
+                ),
+                metadata: None,
+            },
             None,
         )),
         payload: None,

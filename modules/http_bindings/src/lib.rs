@@ -116,7 +116,7 @@ impl Guest for Component {
             },
             &Request {
                 inherit: false,
-                expects_response: false,
+                expects_response: None,
                 ipc: Some(
                     serde_json::json!({
                         "ServerAction": {
@@ -138,7 +138,7 @@ impl Guest for Component {
             };
             let Message::Request(request) = message else {
                 // Ignore responses for now
-                print_to_terminal(0, "http_bindings: got unexpected message");
+                print_to_terminal(0, "http_bindings: got unexpected Respose, ignoring");
                 continue;
             };
 
@@ -428,7 +428,7 @@ impl Guest for Component {
                             },
                             &Request {
                                 inherit: true,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(
                                     serde_json::json!({
                                         "GetKeyAction": {
@@ -584,7 +584,7 @@ impl Guest for Component {
                             },
                             &Request {
                                 inherit: true,
-                                expects_response: false,
+                                expects_response: None,
                                 ipc: Some(
                                     serde_json::json!({
                                         "path": registered_path,

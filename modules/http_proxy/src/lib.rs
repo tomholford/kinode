@@ -65,7 +65,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/http-proxy",
@@ -81,7 +81,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/http-proxy/static/*",
@@ -97,7 +97,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/http-proxy/list",
@@ -112,7 +112,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/http-proxy/register",
@@ -127,7 +127,7 @@ impl Guest for Component {
                 bindings_address.clone(),
                 Request {
                     inherit: false,
-                    expects_response: false,
+                    expects_response: None,
                     ipc: Some(serde_json::json!({
                         "action": "bind-app",
                         "path": "/http-proxy/serve/:username/*",
@@ -330,7 +330,7 @@ impl Guest for Component {
                         },
                         &Request {
                             inherit: true,
-                            expects_response: false,
+                            expects_response: None,
                             ipc: Some(json!({
                                 "action": "request",
                                 "method": message_json["method"],

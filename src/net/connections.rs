@@ -1,590 +1,389 @@
 use crate::net::*;
-
-use aes_gcm::aead::Aead;
-use aes_gcm::KeyInit;
-use aes_gcm_siv::{Aes256GcmSiv, Nonce};
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    XChaCha20Poly1305, XNonce,
+};
+use elliptic_curve::ecdh::SharedSecret;
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::{self};
+use tokio_tungstenite::tungstenite;
 
-#[async_recursion]
-pub async fn build_routed_connection(
-    our: Identity,
-    our_ip: String,
-    keypair: Arc<Ed25519KeyPair>,
-    router: String,
-    initial_message: (KernelMessage, ErrorShuttle),
-    pki: OnchainPKI,
-    peers: Peers,
-    kernel_message_tx: MessageSender,
-) -> Result<(), NetworkErrorKind> {
-    // println!("build_routed_connection\r");
-    let peers_write = peers.write().await;
-    if let Some(router_peer) = peers_write.get(&router) {
-        //
-        // if we have one of their routers as a peer already, try
-        // and use that connection to first send a handshake,
-        // then receive one, then create a peer-task and send the message
-        //
-        // println!("a\r");
-        let target = initial_message.0.target.node.clone();
-        let router_socket_tx = router_peer.sender.clone();
-        drop(peers_write);
-        // println!("s\r");
-        // 1. generate a handshake
-        let (ephemeral_secret, our_handshake) =
-            make_secret_and_handshake(&our, keypair.clone(), &target);
-        let nonce = our_handshake.nonce.clone();
-        // 2. send the handshake
-        let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-        let _ = router_socket_tx.send((
-            NetworkMessage::Handshake {
-                id: 1,
-                handshake: our_handshake,
-            },
-            Some(result_tx),
-        ));
-        // println!("d\r");
-        // 3. receive the target's handshake and validate it
-        let their_handshake = match result_rx.await.unwrap_or(Err(NetworkErrorKind::Timeout)) {
-            Ok(Some(NetworkMessage::HandshakeAck { handshake, .. })) => handshake,
-            Err(e) => return Err(e),
-            _ => return Err(NetworkErrorKind::Offline),
-        };
-        // println!("f\r");
-        let their_id = match pki.read().await.get(&target) {
-            Some(id) => id.clone(),
-            None => return Err(NetworkErrorKind::Offline),
-        };
-        // println!("g\r");
-        let (their_ephemeral_pk, nonce) =
-            match validate_handshake(&their_handshake, &their_id, nonce) {
-                Ok(v) => v,
-                Err(_) => return Err(NetworkErrorKind::Offline),
-            };
-        // println!("h\r");
-        let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
-        let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-        // 4. create Peer object and senders/handlers
-        // sender -> socket, socket -> handler
-        let (sender_tx, sender_rx) = unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
-        let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
-        let (kill_tx, kill_rx) = unbounded_channel::<()>();
-        // println!("j\r");
-        let peer = Peer {
-            networking_address: their_id.networking_key,
-            sender: sender_tx.clone(),
-            handler: handler_tx.clone(),
-            destructor: kill_tx,
-        };
-        // println!("k\r");
-        // 5. spawn peer handler
-        let peer_handler = tokio::spawn(peer_handler(
-            our.clone(),
-            their_id.name.clone(),
-            cipher,
-            nonce,
-            sender_rx,
-            handler_rx,
-            kill_rx,
-            router_socket_tx,
-            kernel_message_tx.clone(),
-        ));
-        // println!("l\r");
-        // connection is now ready to write to
-        tokio::spawn(active_routed_peer(
-            their_id.name.clone(),
-            sender_tx.clone(),
-            peer_handler,
-        ));
-        peers.write().await.insert(their_id.name.clone(), peer);
-        let _ = sender_tx.send((NetworkMessage::Raw(initial_message.0), initial_message.1));
-        return Ok(());
-    } else if let Some(router_id) = pki.read().await.get(&router) {
-        drop(peers_write);
-        if let Some((ip, port)) = &router_id.ws_routing {
-            if let Ok(ws_url) = make_ws_url(&our_ip, ip, port) {
-                if let Ok(Ok((websocket, _response))) =
-                    timeout(TIMEOUT, connect_async(ws_url)).await
-                {
-                    //
-                    // we were able to connect to one of their routers:
-                    // try to connect to it normally as a peer, then
-                    // recursively call this function to hit the above branch.
-                    //
-                    if let Ok(_) = build_connection(
-                        our.clone(),
-                        keypair.clone(),
-                        Some(router_id.clone()),
-                        None,
-                        pki.clone(),
-                        peers.clone(),
-                        websocket,
-                        kernel_message_tx.clone(),
-                    )
-                    .await
-                    {
-                        return build_routed_connection(
-                            our,
-                            our_ip,
-                            keypair,
-                            router,
-                            initial_message,
-                            pki.clone(),
-                            peers,
-                            kernel_message_tx,
-                        )
-                        .await;
-                    }
-                }
-            }
-        }
-    }
-    Err(NetworkErrorKind::Offline)
-}
-
-/// returns JoinHandle to active_peer if created
 pub async fn build_connection(
     our: Identity,
     keypair: Arc<Ed25519KeyPair>,
-    target: Option<Identity>,
-    initial_message: Option<(NetworkMessage, ErrorShuttle)>,
     pki: OnchainPKI,
+    keys: PeerKeys,
     peers: Peers,
-    mut websocket: WebSocket,
-    kernel_message_tx: MessageSender,
-) -> Result<JoinHandle<String>, NetworkErrorKind> {
-    // println!("build_connection\r");
-    let (cipher, nonce, their_id) = match target {
-        Some(target) => {
-            // we have target, we are initiating
-            let (ephemeral_secret, our_handshake) =
-                make_secret_and_handshake(&our, keypair.clone(), &target.name);
-            let _ = websocket
-                .send(tungstenite::Message::Text(
-                    serde_json::to_string(&our_handshake).unwrap_or("".into()),
-                ))
-                .await;
-            let their_handshake = match get_handshake(&mut websocket).await {
-                Ok(h) => h,
-                Err(_) => return Err(NetworkErrorKind::Offline),
-            };
-            let (their_ephemeral_pk, nonce) =
-                match validate_handshake(&their_handshake, &target, our_handshake.nonce.clone()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        println!("handshake validation failed: {}\r", e);
-                        return Err(NetworkErrorKind::Offline);
-                    }
-                };
-            let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
-            let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-            (cipher, nonce, target)
-        }
-        None => {
-            // no target yet, wait for handshake to come in, then reply
-            let their_handshake = match get_handshake(&mut websocket).await {
-                Ok(h) => h,
-                Err(_) => return Err(NetworkErrorKind::Offline),
-            };
-            let their_id = match pki.read().await.get(&their_handshake.from) {
-                Some(id) => id.clone(),
-                None => return Err(NetworkErrorKind::Offline),
-            };
-            let (their_ephemeral_pk, nonce) = match validate_handshake(
-                &their_handshake,
-                &their_id,
-                their_handshake.nonce.clone(),
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("handshake validation failed: {}\r", e);
-                    return Err(NetworkErrorKind::Offline);
-                }
-            };
-            let (ephemeral_secret, our_handshake) =
-                make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
-            let _ = websocket
-                .send(tungstenite::Message::Text(
-                    serde_json::to_string(&our_handshake).unwrap_or("".into()),
-                ))
-                .await;
-            let encryption_key = ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
-            let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-            (cipher, nonce, their_id)
-        }
-    };
-
-    // sender -> socket, socket -> handler
-    let (sender_tx, sender_rx) = unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
-    let (socket_tx, socket_rx) = unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
-    let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
-    let (kill_tx, kill_rx) = unbounded_channel::<()>();
-
-    let peer = Peer {
-        networking_address: their_id.networking_key,
-        sender: sender_tx.clone(),
-        handler: handler_tx.clone(),
-        destructor: kill_tx,
-    };
-
-    let peer_handler = tokio::spawn(peer_handler(
-        our.clone(),
-        their_id.name.clone(),
-        cipher,
-        nonce,
-        sender_rx,
-        handler_rx,
-        kill_rx,
-        socket_tx.clone(),
-        kernel_message_tx.clone(),
-    ));
-    let connection_handler = tokio::spawn(maintain_connection(
-        our.clone(),
-        their_id.name.clone(),
-        keypair.clone(),
-        pki.clone(),
-        peers.clone(),
-        socket_tx,
-        socket_rx,
-        websocket,
-        kernel_message_tx.clone(),
-    ));
-    // connection is now ready to write to
-    let active_peer = tokio::spawn(active_peer(
-        their_id.name.clone(),
-        sender_tx.clone(),
-        peer_handler,
-        connection_handler,
-    ));
-    // if this replaces an existing peer, destroy old one
-    if let Some(old_peer) = peers.write().await.get(&their_id.name) {
-        // println!("replacing existing dead-peer\r");
-        let _ = old_peer.destructor.send(());
-    }
-    peers.write().await.insert(their_id.name.clone(), peer);
-    if let Some(to_send) = initial_message {
-        let _ = sender_tx.send(to_send);
-    }
-    Ok(active_peer)
-}
-
-/// returns name of peer when it dies
-async fn active_peer(
-    who: String,
-    sender: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
-    peer_handler: JoinHandle<()>,
-    connection_handler: JoinHandle<()>,
-) -> String {
-    // println!("active_peer\r");
-    let keepalive = tokio::spawn(async move {
-        loop {
-            // println!("doing a keepalive\r");
-            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-            let _ = sender.send((NetworkMessage::Keepalive, Some(result_tx)));
-            match result_rx.await {
-                Ok(Ok(Some(NetworkMessage::Ack(_)))) => {
-                    // println!("alive was kept\r");
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                }
-                _ => break,
-            }
-        }
-    });
-    tokio::select! {
-        _ = peer_handler => {},
-        _ = connection_handler => {},
-        _ = keepalive => {},
-    }
-    return who;
-}
-
-/// returns name of peer when it dies
-async fn active_routed_peer(
-    who: String,
-    sender: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
-    peer_handler: JoinHandle<()>,
-) -> String {
-    let keepalive = tokio::spawn(async move {
-        loop {
-            let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-            let _ = sender.send((NetworkMessage::Keepalive, Some(result_tx)));
-            match result_rx.await {
-                Ok(Ok(Some(NetworkMessage::Ack(_)))) => {
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                }
-                _ => break,
-            }
-        }
-    });
-    // println!("active_routed_peer\r");
-    tokio::select! {
-        _ = peer_handler => {},
-        _ = keepalive => {},
-    }
-    return who;
-}
-
-async fn ack_waiter(mut ack_rx: UnboundedReceiver<NetworkMessage>, shuttle: ErrorShuttle) {
-    match timeout(TIMEOUT, ack_rx.recv()).await {
-        Ok(Some(NetworkMessage::Nack(_))) => {
-            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Offline));
-        }
-        Ok(Some(msg)) => {
-            let _ = shuttle.unwrap().send(Ok(Some(msg)));
-        }
-        _ => {
-            let _ = shuttle.unwrap().send(Err(NetworkErrorKind::Timeout));
-        }
-    }
-}
-
-/// send and receive messages on an existing websocket.
-/// if this breaks it's a timeout
-async fn maintain_connection(
-    our: Identity,
-    with: String, // name of direct peer this socket is with
-    keypair: Arc<Ed25519KeyPair>,
-    pki: OnchainPKI,
-    peers: Peers,
-    self_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
-    mut message_rx: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
     websocket: WebSocket,
     kernel_message_tx: MessageSender,
+    net_message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
+    with: Option<String>,
+) -> (
+    UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
+    JoinHandle<Option<String>>,
 ) {
-    // println!("maintain_connection\r");
-    let message_max_size = websocket.get_config().max_frame_size.unwrap();
+    // println!("building new connection\r");
+    let (message_tx, message_rx) = unbounded_channel::<(NetworkMessage, Option<ErrorShuttle>)>();
+    let handle = tokio::spawn(maintain_connection(
+        our,
+        with,
+        keypair,
+        pki,
+        keys,
+        peers,
+        websocket,
+        message_tx.clone(),
+        message_rx,
+        kernel_message_tx,
+        net_message_tx,
+        network_error_tx,
+    ));
+    return (message_tx, handle);
+}
+
+/// Keeps a connection alive and handles sending and receiving of NetworkMessages through it.
+/// TODO add a keepalive PING/PONG system
+/// TODO kill this after a certain amount of inactivity
+pub async fn maintain_connection(
+    our: Identity,
+    with: Option<String>,
+    keypair: Arc<Ed25519KeyPair>,
+    pki: OnchainPKI,
+    keys: PeerKeys,
+    peers: Peers,
+    websocket: WebSocket,
+    message_tx: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
+    mut message_rx: UnboundedReceiver<(NetworkMessage, Option<ErrorShuttle>)>,
+    kernel_message_tx: MessageSender,
+    net_message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
+) -> Option<String> {
+    // let conn_id: u64 = rand::random();
+    // println!("maintaining connection {conn_id}\r");
+
+    // accept messages on the websocket in one task, and send messages in another
     let (mut write_stream, mut read_stream) = websocket.split();
-    let mut outstanding_acks = VecDeque::<UnboundedSender<NetworkMessage>>::new();
 
-    loop {
-        tokio::select! {
-            Some((message, result_tx)) = message_rx.recv() => {
-                // can use a buffer here but doesn't seem to affect performance
-                let bytes = bincode::serialize(&message).unwrap();
-                // println!("send of size: {:.2}mb\r", bytes.len() as f64 / 1_048_576.0);
-                if bytes.len() > message_max_size {
-                    // println!("message too large\r");
-                    let _ = match result_tx {
-                        Some(tx) => tx.send(Err(NetworkErrorKind::Timeout)),
-                        None => Ok(()),
-                    };
-                    continue;
+    let (forwarding_ack_tx, mut forwarding_ack_rx) = unbounded_channel::<MessageResult>();
+    // manage outstanding ACKs from messages sent over the connection
+    // TODO replace with more performant data structure
+    let ack_map = Arc::new(RwLock::new(HashMap::<u64, ErrorShuttle>::new()));
+    let sender_ack_map = ack_map.clone();
+
+    let forwarder_message_tx = message_tx.clone();
+    let ack_forwarder = tokio::spawn(async move {
+        while let Some(result) = forwarding_ack_rx.recv().await {
+            match result {
+                Ok(NetworkMessage::Ack(id)) => {
+                    // println!("net: got forwarding ack for message {}\r", id);
+                    forwarder_message_tx
+                        .send((NetworkMessage::Ack(id), None))
+                        .unwrap();
                 }
-                let _ = write_stream.send(tungstenite::Message::Binary(
-                    bytes
-                )).await;
-                // println!("..sent\r");
-
-                match message {
-                    NetworkMessage::Raw(_)
-                    | NetworkMessage::Ack(_)
-                    | NetworkMessage::Nack(_)
-                    | NetworkMessage::HandshakeAck { .. } => continue,
-                    NetworkMessage::Keepalive => {
-                        let (ack_tx, ack_rx) = unbounded_channel::<NetworkMessage>();
-                        // keepalives get *first priority* in acknowledgement!
-                        outstanding_acks.push_back(ack_tx);
-                        tokio::spawn(ack_waiter(
-                            ack_rx,
-                            result_tx,
-                        ));
-                    }
-                    NetworkMessage::Handshake { .. }
-                    | NetworkMessage::Msg { .. } => {
-                        let (ack_tx, ack_rx) = unbounded_channel::<NetworkMessage>();
-                        outstanding_acks.push_front(ack_tx);
-                        tokio::spawn(ack_waiter(
-                            ack_rx,
-                            result_tx,
-                        ));
-                    }
+                Ok(NetworkMessage::Nack(id)) => {
+                    // println!("net: got forwarding nack for message {}\r", id);
+                    forwarder_message_tx
+                        .send((NetworkMessage::Nack(id), None))
+                        .unwrap();
                 }
-            },
-            Some(incoming) = read_stream.next() => {
-                let Ok(tungstenite::Message::Binary(bin)) = incoming else {
-                    // println!("got a ??\r");
-                    // println!("{:?}\r", incoming);
-                    break
-                };
-                let Ok(msg) = bincode::deserialize::<NetworkMessage>(&bin) else { break };
-                match msg {
-                    NetworkMessage::Raw(_) => continue,
-                    NetworkMessage::Ack(_)
-                    | NetworkMessage::HandshakeAck { .. }
-                    | NetworkMessage::Nack(_) => {
-                        if let Some(sender) = outstanding_acks.pop_back() {
-                            let _ = sender.send(msg);
-                        }
-                    }
-                    NetworkMessage::Keepalive => {
-                        let _ = self_tx.send((NetworkMessage::Ack(0), None));
-                    }
-                    NetworkMessage::Handshake { id, handshake } => {
-                        // if we get an initiatory handshake directed to us,
-                        // respond with our own, and spawn an active_routed_peer!
-                        let our = our.clone();
-                        let pki = pki.clone();
-                        let keypair = keypair.clone();
-                        let self_tx = self_tx.clone();
-                        let kernel_message_tx = kernel_message_tx.clone();
-                        let peers = peers.clone();
-                        let their_handshake = handshake.clone();
-                        tokio::spawn(async move {
-                            if their_handshake.target == our.name {
-                                // println!("got indirect handshake from {} for us\r", their_handshake.from);
-                                let their_id = match pki.read().await.get(&their_handshake.from) {
-                                    Some(id) => id.clone(),
-                                    None => return,
-                                };
-                                let (their_ephemeral_pk, nonce) = match validate_handshake(
-                                    &their_handshake,
-                                    &their_id,
-                                    their_handshake.nonce.clone(),
-                                ) {
-                                    Ok(v) => v,
-                                    Err(_) => return,
-                                };
-                                let (ephemeral_secret, our_handshake) =
-                                    make_secret_and_handshake(&our, keypair.clone(), &their_id.name);
-                                let _ =
-                                    self_tx.send((NetworkMessage::HandshakeAck { id, handshake: our_handshake }, None));
-                                let encryption_key =
-                                    ephemeral_secret.diffie_hellman(&their_ephemeral_pk);
-                                let cipher = Aes256GcmSiv::new(&encryption_key.raw_secret_bytes());
-                                let (sender_tx, sender_rx) =
-                                    unbounded_channel::<(NetworkMessage, ErrorShuttle)>();
-                                let (handler_tx, handler_rx) = unbounded_channel::<Vec<u8>>();
-                                let (kill_tx, kill_rx) = unbounded_channel::<()>();
-
-                                let peer = Peer {
-                                    networking_address: their_id.networking_key,
-                                    sender: sender_tx.clone(),
-                                    handler: handler_tx.clone(),
-                                    destructor: kill_tx,
-                                };
-                                // spawn peer handler
-                                let peer_handler = tokio::spawn(peer_handler(
-                                    our.clone(),
-                                    their_id.name.clone(),
-                                    cipher,
-                                    nonce,
-                                    sender_rx,
-                                    handler_rx,
-                                    kill_rx,
-                                    self_tx.clone(),
-                                    kernel_message_tx.clone(),
-                                ));
-                                // connection is now ready to write to
-                                tokio::spawn(active_routed_peer(
-                                    their_id.name.clone(),
-                                    sender_tx.clone(),
-                                    peer_handler,
-                                ));
-                                // if this replaces an existing peer, destroy old one
-                                if let Some(old_peer) = peers.write().await.get(&their_id.name) {
-                                    // println!("replacing existing dead-peer\r");
-                                    let _ = old_peer.destructor.send(());
-                                }
-                                peers.write().await.insert(their_id.name.clone(), peer);
-                            } else {
-                                // println!(
-                                //     "got handshake from {} for {}\r",
-                                //     their_handshake.from, their_handshake.target
-                                // );
-                                // a handshake should be forwarded to the target if possible.
-                                // TODO discriminate and only do this for people we route for
-                                if let Some(peer) = peers.write().await.get(&their_handshake.target) {
-                                    let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                                    if let Ok(()) = peer.sender.send((
-                                        NetworkMessage::Handshake { id, handshake: their_handshake },
-                                        Some(result_tx),
-                                    )) {
-                                        if let Ok(Ok(Some(resp))) = result_rx.await {
-                                            let _ = self_tx.send((resp, None));
-                                            return;
-                                        }
-                                    } else {
-                                        let _ = peer.destructor.send(());
-                                    }
-                                }
-                                // we cannot produce a connection to that target
-                                let _ = self_tx.send((NetworkMessage::Nack(id), None));
-                            }
-                        });
-                    }
-                    NetworkMessage::Msg {
-                        from,
-                        to,
-                        id,
-                        contents,
-                    } if to == our.name => {
-                        // println!("got message for us\r");
-                        if let Some(peer) = peers.write().await.get(&from) {
-                            if let Ok(()) = peer.handler.send(contents.to_vec()) {
-                                // println!("message handled and acked\r");
-                                let _ = self_tx.send((NetworkMessage::Ack(id), None));
-                                continue;
-                            }
-                        }
-                        // println!("message not handled\r");
-                        // message was not handled, either kill connection if direct,
-                        // or destroy peer if not.
-                        if with == from {
-                            // println!("...killing connection\r");
-                            break;
-                        } else {
-                            match peers.write().await.get(&from) {
-                                None => {}
-                                Some(peer) => {
-                                    // println!("...removing peer\r");
-                                    let _ = peer.destructor.send(());
-                                }
-                            }
-                        }
-                    }
-                    NetworkMessage::Msg {
-                        from,
-                        to,
-                        id,
-                        contents,
-                    } => {
-                        // println!("got message for {to}\r");
-                        // this message needs to be routed to someone else!
-                        // TODO: be selective here!
-                        // forward the ACK if we get it from target.
-                        let self_tx = self_tx.clone();
-                        let peers = peers.clone();
-                        tokio::spawn(async move {
-                            if let Some(peer) = peers.write().await.get(&to) {
-                                let (result_tx, result_rx) = oneshot::channel::<MessageResult>();
-                                if let Ok(()) = peer.sender.send((
-                                    NetworkMessage::Msg {
-                                        from,
-                                        to,
-                                        id,
-                                        contents,
-                                    },
-                                    Some(result_tx),
-                                )) {
-                                    if let Ok(Ok(Some(NetworkMessage::Ack(id)))) = result_rx.await {
-                                        let _ = self_tx.send((NetworkMessage::Ack(id), None));
-                                        return;
-                                    }
-                                }
-                                // we cannot send a message to that target
-                                let _ = self_tx.send((NetworkMessage::Nack(id), None));
-                                let _ = peer.destructor.send(());
-                            }
-                        });
-                    }
+                Ok(NetworkMessage::HandshakeAck(handshake)) => {
+                    // println!(
+                    //     "net: got forwarding handshakeAck for message {}\r",
+                    //     handshake.id
+                    // );
+                    forwarder_message_tx
+                        .send((NetworkMessage::HandshakeAck(handshake), None))
+                        .unwrap();
+                }
+                Err((message_id, _e)) => {
+                    // println!("net: got forwarding error from ack_rx: {:?}\r", e);
+                    // what do we do here?
+                    forwarder_message_tx
+                        .send((NetworkMessage::Nack(message_id), None))
+                        .unwrap();
+                }
+                _ => {
+                    // println!("net: weird none ack\r");
                 }
             }
         }
-    }
+    });
+
+    // receive messages from over the websocket and route them to the correct peer handler,
+    // or create it, if necessary.
+    let ws_receiver = tokio::spawn(async move {
+        while let Some(Ok(tungstenite::Message::Binary(bin))) = read_stream.next().await {
+            // TODO use a language-netural serialization format here!
+            let Ok(net_message) = bincode::deserialize::<NetworkMessage>(&bin) else {
+                // just kill the connection if we get a non-Uqbar message
+                break;
+            };
+            match net_message {
+                NetworkMessage::Ack(id) => {
+                    let Some(result_tx) = ack_map.write().await.remove(&id) else {
+                        // println!("conn {conn_id}: got unexpected Ack {id}\r");
+                        continue;
+                    };
+                    // println!("conn {conn_id}: got Ack {id}\r");
+                    let _ = result_tx.send(Ok(net_message));
+                    continue;
+                }
+                NetworkMessage::Nack(id) => {
+                    let Some(result_tx) = ack_map.write().await.remove(&id) else {
+                        // println!("net: got unexpected Nack\r");
+                        continue;
+                    };
+                    let _ = result_tx.send(Ok(net_message));
+                    continue;
+                }
+                NetworkMessage::Msg {
+                    ref id,
+                    ref from,
+                    ref to,
+                    ref contents,
+                } => {
+                    // println!("conn {conn_id}: handling msg {id}\r");
+                    // if the message is *directed to us*, try to handle with the
+                    // matching peer handler "decrypter".
+                    //
+                    if to == &our.name {
+                        // if we have the peer, send the message to them.
+                        if let Some(peer) = peers.read().await.get(from) {
+                            let _ = peer
+                                .decrypter
+                                .send((contents.to_owned(), forwarding_ack_tx.clone()));
+                            continue;
+                        }
+                        // if we don't have the peer, see if we have the keys to create them.
+                        // if we don't have their keys, throw a nack.
+                        if let Some((peer_id, secret)) = keys.read().await.get(from) {
+                            let new_peer = create_new_peer(
+                                our.clone(),
+                                peer_id.clone(),
+                                peers.clone(),
+                                keys.clone(),
+                                secret.clone(),
+                                message_tx.clone(),
+                                kernel_message_tx.clone(),
+                                net_message_tx.clone(),
+                                network_error_tx.clone(),
+                            );
+                            let _ = new_peer
+                                .decrypter
+                                .send((contents.to_owned(), forwarding_ack_tx.clone()));
+                            peers.write().await.insert(peer_id.name.clone(), new_peer);
+                        } else {
+                            // println!("net: nacking message {id}\r");
+                            message_tx.send((NetworkMessage::Nack(*id), None)).unwrap();
+                        }
+                    } else {
+                        // if the message is *directed to someone else*, try to handle
+                        // with the matching peer handler "sender".
+                        //
+                        if let Some(peer) = peers.read().await.get(to) {
+                            let _ = peer.sender.send((
+                                PeerMessage::Net(net_message),
+                                Some(forwarding_ack_tx.clone()),
+                            ));
+                        } else {
+                            // if we don't have the peer, throw a nack.
+                            // println!("net: nacking message with id {id}\r");
+                            message_tx.send((NetworkMessage::Nack(*id), None)).unwrap();
+                        }
+                    }
+                }
+                NetworkMessage::Handshake(ref handshake) => {
+                    // when we get a handshake, if we are the target,
+                    // 1. verify it against the PKI
+                    // 2. send a response handshakeAck
+                    // 3. create a Peer and save, replacing old one if it existed
+                    // as long as we are the target, we also get to kill this connection
+                    // if the handshake is invalid, since it must be directly "to" us.
+                    if handshake.target == our.name {
+                        let Some(peer_id) = pki.read().await.get(&handshake.from).cloned() else {
+                            // println!(
+                            //     "net: failed handshake with unknown node {}\r",
+                            //     handshake.from
+                            // );
+                            message_tx
+                                .send((NetworkMessage::Nack(handshake.id), None))
+                                .unwrap();
+                            break;
+                        };
+                        let their_ephemeral_pk = match validate_handshake(&handshake, &peer_id) {
+                            Ok(pk) => pk,
+                            Err(e) => {
+                                println!("net: invalid handshake from {}: {}\r", handshake.from, e);
+                                message_tx
+                                    .send((NetworkMessage::Nack(handshake.id), None))
+                                    .unwrap();
+                                break;
+                            }
+                        };
+                        let (secret, handshake) = make_secret_and_handshake(
+                            &our,
+                            keypair.clone(),
+                            &handshake.from,
+                            Some(handshake.id),
+                        );
+                        message_tx
+                            .send((NetworkMessage::HandshakeAck(handshake), None))
+                            .unwrap();
+                        let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
+                        // save the handshake to our Keys map
+                        keys.write()
+                            .await
+                            .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone()));
+                        let new_peer = create_new_peer(
+                            our.clone(),
+                            peer_id.clone(),
+                            peers.clone(),
+                            keys.clone(),
+                            secret,
+                            message_tx.clone(),
+                            kernel_message_tx.clone(),
+                            net_message_tx.clone(),
+                            network_error_tx.clone(),
+                        );
+                        // we might be replacing an old peer, so we need to remove it first
+                        // we can't rely on the hashmap for this, because the dropped peer
+                        // will trigger a drop of the sender, which will kill the peer_handler
+                        peers.write().await.remove(&peer_id.name);
+                        peers.write().await.insert(peer_id.name.clone(), new_peer);
+                    } else {
+                        // if we are NOT the target,
+                        // try to send it to the matching peer handler "sender"
+                        if let Some(peer) = peers.read().await.get(&handshake.target) {
+                            let _ = peer.sender.send((
+                                PeerMessage::Net(net_message),
+                                Some(forwarding_ack_tx.clone()),
+                            ));
+                        } else {
+                            // if we don't have the peer, throw a nack.
+                            // println!("net: nacking handshake with id {}\r", handshake.id);
+                            message_tx
+                                .send((NetworkMessage::Nack(handshake.id), None))
+                                .unwrap();
+                        }
+                    }
+                }
+                NetworkMessage::HandshakeAck(ref handshake) => {
+                    let Some(result_tx) = ack_map.write().await.remove(&handshake.id) else {
+                        continue;
+                    };
+                    let _ = result_tx.send(Ok(net_message));
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = ws_receiver => {
+            // println!("ws_receiver died\r");
+        },
+        _ = ack_forwarder => {
+            // println!("ack_forwarder died\r");
+        }
+        // receive messages we would like to send to peers along this connection
+        // and send them to the websocket
+        _ = async {
+            while let Some((message, result_tx)) = message_rx.recv().await {
+                // TODO use a language-netural serialization format here!
+                if let Ok(bytes) = bincode::serialize::<NetworkMessage>(&message) {
+                    match &message {
+                        NetworkMessage::Msg { id, .. } => {
+                            // println!("conn {conn_id}: piping msg {id}\r");
+                            sender_ack_map.write().await.insert(*id, result_tx.unwrap());
+                        }
+                        NetworkMessage::Handshake(h) => {
+                            sender_ack_map.write().await.insert(h.id, result_tx.unwrap());
+                        }
+                        _ => {}
+                    }
+                    match write_stream.send(tungstenite::Message::Binary(bytes)).await {
+                        Ok(()) => {}
+                        Err(e) => {
+                            // println!("net: send error: {:?}\r", e);
+                            let id = match &message {
+                                NetworkMessage::Msg { id, .. } => id,
+                                NetworkMessage::Handshake(h) => &h.id,
+                                _ => continue,
+                            };
+                            let Some(result_tx) = sender_ack_map.write().await.remove(&id) else {
+                                continue;
+                            };
+                            // TODO learn how to handle other non-fatal websocket errors.
+                            match e {
+                                tungstenite::error::Error::Capacity(_)
+                                | tungstenite::Error::Io(_) => {
+                                    let _ = result_tx.send(Err((*id, SendErrorKind::Timeout)));
+                                }
+                                _ => {
+                                    let _ = result_tx.send(Ok(NetworkMessage::Nack(*id)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } => {
+            // println!("ws_sender died\r");
+        },
+    };
+    return with;
+}
+
+/// After a successful handshake, use information to spawn a new `peer_handler` task
+/// and save a `Peer` in our peers mapping. Returns a sender to use for sending messages
+/// to this peer, which will also be saved in its Peer struct.
+pub fn create_new_peer(
+    our: Identity,
+    new_peer_id: Identity,
+    peers: Peers,
+    keys: PeerKeys,
+    secret: Arc<SharedSecret<Secp256k1>>,
+    conn_sender: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
+    kernel_message_tx: MessageSender,
+    net_message_tx: MessageSender,
+    network_error_tx: NetworkErrorSender,
+) -> Peer {
+    let (message_tx, message_rx) = unbounded_channel::<(PeerMessage, Option<ErrorShuttle>)>();
+    let (decrypter_tx, decrypter_rx) = unbounded_channel::<(Vec<u8>, ErrorShuttle)>();
+    let peer_id_name = new_peer_id.name.clone();
+    let peer_conn_sender = conn_sender.clone();
+    tokio::spawn(async move {
+        match peer_handler(
+            our,
+            peer_id_name.clone(),
+            secret,
+            message_rx,
+            decrypter_rx,
+            peer_conn_sender,
+            kernel_message_tx,
+            network_error_tx,
+        )
+        .await
+        {
+            None => {
+                // println!("net: dropping peer handler but not deleting\r");
+            }
+            Some(km) => {
+                // println!("net: ok actually deleting peer+keys now and retrying send\r");
+                peers.write().await.remove(&peer_id_name);
+                keys.write().await.remove(&peer_id_name);
+                let _ = net_message_tx.send(km).await;
+            }
+        }
+    });
+    return Peer {
+        identity: new_peer_id,
+        sender: message_tx,
+        decrypter: decrypter_tx,
+        socket_tx: conn_sender,
+    };
 }
 
 /// 1. take in messages from a specific peer, decrypt them, and send to kernel
@@ -594,79 +393,163 @@ async fn maintain_connection(
 async fn peer_handler(
     our: Identity,
     who: String,
-    cipher: Aes256GcmSiv,
-    nonce: Arc<Nonce>,
-    mut forwarder: UnboundedReceiver<(NetworkMessage, ErrorShuttle)>,
-    mut receiver: UnboundedReceiver<Vec<u8>>,
-    mut destructor: UnboundedReceiver<()>,
-    socket_tx: UnboundedSender<(NetworkMessage, ErrorShuttle)>,
+    secret: Arc<SharedSecret<Secp256k1>>,
+    mut message_rx: UnboundedReceiver<(PeerMessage, Option<ErrorShuttle>)>,
+    mut decrypter_rx: UnboundedReceiver<(Vec<u8>, ErrorShuttle)>,
+    socket_tx: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
     kernel_message_tx: MessageSender,
-) {
+    network_error_tx: NetworkErrorSender,
+) -> Option<KernelMessage> {
     // println!("peer_handler\r");
-    let kill = tokio::spawn(async move {
-        let _ = destructor.recv().await;
-        return;
-    });
+    let mut key = [0u8; 32];
+    secret
+        .extract::<sha2::Sha256>(None)
+        .expand(&[], &mut key)
+        .unwrap();
+    let cipher = XChaCha20Poly1305::new(generic_array::GenericArray::from_slice(&key));
 
-    let f_nonce = nonce.clone();
-    let f_cipher = cipher.clone();
-    let f_who = who.clone();
-    let forwarder = tokio::spawn(async move {
-        while let Some((message, result_tx)) = forwarder.recv().await {
-            // if message is raw, we should encrypt.
-            // otherwise, simply send
-            match message {
-                NetworkMessage::Raw(message) => {
-                    if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
-                        if let Ok(encrypted) = f_cipher.encrypt(&f_nonce, bytes.as_ref()) {
-                            if socket_tx.is_closed() {
-                                let _ = result_tx.unwrap().send(Err(NetworkErrorKind::Offline));
-                            } else {
-                                let _ = socket_tx.send((
+    let (ack_tx, mut ack_rx) = unbounded_channel::<MessageResult>();
+    // TODO use a more efficient data structure
+    let ack_map = Arc::new(RwLock::new(HashMap::<u64, KernelMessage>::new()));
+    let recv_ack_map = ack_map.clone();
+    tokio::select! {
+        //
+        // take in messages from a specific peer, decrypt them, and send to kernel
+        //
+        _ = async {
+            while let Some((encrypted_bytes, result_tx)) = decrypter_rx.recv().await {
+                let nonce = XNonce::from_slice(&encrypted_bytes[..24]);
+                if let Ok(decrypted) = cipher.decrypt(&nonce, &encrypted_bytes[24..]) {
+                    if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
+                        if message.source.node == who {
+                            // println!("net: got peer message {}, acking\r", message.id);
+                            let _ = result_tx.send(Ok(NetworkMessage::Ack(message.id)));
+                            let _ = kernel_message_tx.send(message).await;
+                            continue;
+                        }
+                        println!("net: got message 'from' wrong person! cheater/liar!\r");
+                        break;
+                    }
+                    println!("net: failed to deserialize message from {}\r", who);
+                    continue;
+                }
+                println!("net: failed to decrypt message from {}, could be spoofer\r", who);
+                continue;
+            }
+        } => {
+            // println!("net: lost peer {who}\r");
+            return None
+        }
+        //
+        // take in messages targeted at specific peer and either:
+        // - encrypt them, and send to proper connection
+        // - forward them untouched along the connection
+        //
+        _ = async {
+            // if we get a result_tx, rather than track it here, let a different
+            // part of the code handle whatever comes back from the socket.
+            while let Some((message, maybe_result_tx)) = message_rx.recv().await {
+                // if message is raw, we should encrypt.
+                // otherwise, simply send
+                match message {
+                    PeerMessage::Raw(message) => {
+                        let id = message.id;
+                        if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
+                            // generating a random nonce for each message.
+                            // this isn't really as secure as we could get: should
+                            // add a counter and then throw away the key when we hit a
+                            // certain # of messages. TODO.
+                            let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+                            if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
+                                if maybe_result_tx.is_none() {
+                                    ack_map.write().await.insert(id, message);
+                                }
+                                match socket_tx.send((
                                     NetworkMessage::Msg {
                                         from: our.name.clone(),
-                                        to: f_who.clone(),
-                                        id: message.id,
-                                        contents: encrypted,
+                                        to: who.clone(),
+                                        id: id,
+                                        contents: [nonce.to_vec(), encrypted].concat(),
                                     },
-                                    result_tx,
-                                ));
+                                    Some(maybe_result_tx.unwrap_or(ack_tx.clone())),
+                                )) {
+                                    Ok(()) => tokio::task::yield_now().await,
+                                    Err(tokio::sync::mpsc::error::SendError((_, result_tx))) => {
+                                        // println!("net: lost socket with {who}\r");
+                                        let _ = result_tx.unwrap().send(Ok(NetworkMessage::Nack(id)));
+                                    },
+                                }
                             }
                         }
                     }
-                }
-                _ => {
-                    if socket_tx.is_closed() {
-                        result_tx
-                            .unwrap()
-                            .send(Err(NetworkErrorKind::Offline))
-                            .unwrap();
-                    } else {
-                        let _ = socket_tx.send((message, result_tx));
+                    PeerMessage::Net(net_message) => {
+                        match socket_tx.send((net_message, Some(maybe_result_tx.unwrap_or(ack_tx.clone())))) {
+                            Ok(()) => continue,
+                            Err(tokio::sync::mpsc::error::SendError((net_message, result_tx))) => {
+                                // println!("net: lost *forwarding* socket with {who}\r");
+                                let id = match net_message {
+                                    NetworkMessage::Msg { id, .. } => id,
+                                    NetworkMessage::Handshake(h) => h.id,
+                                    _ => continue,
+                                };
+                                let _ = result_tx.unwrap().send(Ok(NetworkMessage::Nack(id)));
+                                break;
+                            },
+                        }
                     }
                 }
             }
-        }
-    });
-
-    tokio::select! {
-        _ = forwarder => {
-            // println!("peer_handler: forwarder died!\r");
-        },
-        _ = kill => {
-            // println!("peer_handler was killed!\r");
-        },
-        _ = async {
-            while let Some(encrypted_bytes) = receiver.recv().await {
-                if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
-                    if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
-                        let _ = kernel_message_tx.send(message).await;
+        } => return None,
+        //
+        // receive acks and nacks from our socket
+        // throw away acks, but kill this peer and retry the send on nacks.
+        //
+        maybe_km = async {
+            while let Some(result) = ack_rx.recv().await {
+                match result {
+                    Ok(NetworkMessage::Ack(id)) => {
+                        // println!("net: got ack for message {}\r", id);
+                        recv_ack_map.write().await.remove(&id);
                         continue;
                     }
+                    Ok(NetworkMessage::Nack(id)) => {
+                        // println!("net: got nack for message {}\r", id);
+                        let Some(km) = recv_ack_map.write().await.remove(&id) else {
+                            continue;
+                        };
+                        // when we get a Nack, **delete this peer** and try to send the message again!
+                        return Some(km)
+                    }
+                    Err((message_id, e)) => {
+                        // println!("net: got error from ack_rx: {:?}\r", e);
+                        // in practice this is always a timeout in current implementation
+                        let Some(km) = recv_ack_map.write().await.remove(&message_id) else {
+                            continue;
+                        };
+                        let _ = network_error_tx
+                            .send(WrappedSendError {
+                                id: km.id,
+                                source: km.source,
+                                error: SendError {
+                                    kind: e,
+                                    target: km.target,
+                                    message: km.message,
+                                    payload: km.payload,
+                                },
+                            })
+                            .await;
+                        return None
+                    }
+                    _ => {
+                        // println!("net: weird none ack\r");
+                        return None
+                    }
                 }
-                // println!("net: decryption error with message from {who}\r");
-                break;
             }
-        } => {}
-    };
+            return None;
+        } => {
+            // println!("net: exiting peer due to nackage\r");
+            return maybe_km
+        },
+    }
 }

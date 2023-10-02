@@ -42,10 +42,9 @@ pub fn de_wit_address(wit: wit::Address) -> t::Address {
 pub fn en_wit_message(message: t::Message) -> wit::Message {
     match message {
         t::Message::Request(request) => wit::Message::Request(en_wit_request(request)),
-        t::Message::Response(response) => match response.0 {
-            Ok(r) => wit::Message::Response((Ok(en_wit_response(r)), response.1)),
-            Err(error) => wit::Message::Response((Err(en_wit_uqbar_error(error)), response.1)),
-        },
+        t::Message::Response((response, context)) => {
+            wit::Message::Response((en_wit_response(response), context))
+        }
     }
 }
 
@@ -81,32 +80,18 @@ pub fn en_wit_response(response: t::Response) -> wit::Response {
     }
 }
 
-pub fn de_wit_uqbar_error(wit: wit::UqbarError) -> t::UqbarError {
-    t::UqbarError {
-        kind: wit.kind,
-        message: wit.message,
-    }
-}
-
-pub fn en_wit_uqbar_error(error: t::UqbarError) -> wit::UqbarError {
-    wit::UqbarError {
-        kind: error.kind,
-        message: error.message,
-    }
-}
-
-pub fn en_wit_network_error(error: t::NetworkError) -> wit::NetworkError {
-    wit::NetworkError {
-        kind: en_wit_network_error_kind(error.kind),
+pub fn en_wit_send_error(error: t::SendError) -> wit::SendError {
+    wit::SendError {
+        kind: en_wit_send_error_kind(error.kind),
         message: en_wit_message(error.message),
         payload: en_wit_payload(error.payload),
     }
 }
 
-pub fn en_wit_network_error_kind(kind: t::NetworkErrorKind) -> wit::NetworkErrorKind {
+pub fn en_wit_send_error_kind(kind: t::SendErrorKind) -> wit::SendErrorKind {
     match kind {
-        t::NetworkErrorKind::Offline => wit::NetworkErrorKind::Offline,
-        t::NetworkErrorKind::Timeout => wit::NetworkErrorKind::Timeout,
+        t::SendErrorKind::Offline => wit::SendErrorKind::Offline,
+        t::SendErrorKind::Timeout => wit::SendErrorKind::Timeout,
     }
 }
 

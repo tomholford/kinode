@@ -1,14 +1,14 @@
 use crate::net::*;
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    XChaCha20Poly1305, XNonce,
+};
 use elliptic_curve::ecdh::SharedSecret;
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite;
-use chacha20poly1305::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
-    XChaCha20Poly1305, XNonce
-};
 
 pub async fn build_connection(
     our: Identity,
@@ -234,10 +234,9 @@ pub async fn maintain_connection(
                             .unwrap();
                         let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
                         // save the handshake to our Keys map
-                        keys.write().await.insert(
-                            peer_id.name.clone(),
-                            (peer_id.clone(), secret.clone()),
-                        );
+                        keys.write()
+                            .await
+                            .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone()));
                         let new_peer = create_new_peer(
                             our.clone(),
                             peer_id.clone(),

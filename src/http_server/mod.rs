@@ -214,12 +214,13 @@ async fn http_handle_messages(
                 serde_json::from_str::<HttpResponse>(&response.ipc.clone().unwrap_or_default());
 
             match json {
-                Ok(mut request) => {
+                Ok(mut response) => {
                     let Some(payload) = payload else {
                         return Err(HttpServerError::NoBytes);
                     };
 
                     let bytes = payload.bytes;
+
                     let _ = print_tx
                         .send(Printout {
                             verbosity: 1,
@@ -243,11 +244,11 @@ async fn http_handle_messages(
                                 .collect();
 
                             // If we're getting back a /login from a proxy (or our own node), then we should generate a jwt from the secret + the name of the ship, and then attach it to a header
-                            if request.status < 400
+                            if response.status < 400
                                 && (segments.len() == 1 || segments.len() == 4)
                                 && matches!(segments.last(), Some(&"login"))
                             {
-                                if let Some(auth_cookie) = request.headers.get("set-cookie") {
+                                if let Some(auth_cookie) = response.headers.get("set-cookie") {
                                     let mut ws_auth_username = our.clone();
                                     if segments.len() == 4
                                         && matches!(segments.get(0), Some(&"http-proxy"))
@@ -267,7 +268,7 @@ async fn http_handle_messages(
                                             ws_auth_username.clone(),
                                             token
                                         );
-                                        request
+                                        response
                                             .headers
                                             .insert("set-cookie".to_string(), auth_cookie_with_ws);
                                         let _ = print_tx
@@ -282,26 +283,25 @@ async fn http_handle_messages(
                                     }
                                 }
                             }
-
                             let _ = channel.send(HttpResponse {
-                                status: request.status,
-                                headers: request.headers,
+                                status: response.status,
+                                headers: response.headers,
                                 body: Some(bytes),
                             });
                         }
                         None => {
-                            panic!(
+                            println!(
                                 "http_server: inconsistent state, no key found for id {}",
                                 id
                             );
                         }
                     }
                 }
-                Err(_e) => {
+                Err(_json_parsing_err) => {
                     let mut error_headers = HashMap::new();
                     error_headers.insert("Content-Type".to_string(), "text/html".to_string());
                     match senders.remove(&id) {
-                        Some((path, channel)) => {
+                        Some((_path, channel)) => {
                             let _ = channel.send(HttpResponse {
                                 status: 503,
                                 headers: error_headers,
@@ -313,12 +313,7 @@ async fn http_handle_messages(
                 }
             }
         }
-        Message::Request(Request {
-            expects_response,
-            ipc,
-            metadata, // we return this to Requester for kernel reasons
-            ..
-        }) => {
+        Message::Request(Request { ipc, .. }) => {
             let Some(json) = ipc else {
                 return Err(HttpServerError::NoJson);
             };
@@ -466,7 +461,7 @@ async fn http_handle_messages(
                             ws_auth_token: _,
                             channel_id,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
@@ -499,7 +494,7 @@ async fn http_handle_messages(
                             target,
                             json,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
@@ -523,7 +518,7 @@ async fn http_handle_messages(
                             encrypted,
                             nonce,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(
@@ -648,7 +643,7 @@ async fn handler(
     our: String,
     http_response_senders: HttpResponseSenders,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let address = match address {
         Some(a) => a.to_string(),

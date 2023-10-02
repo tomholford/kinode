@@ -233,11 +233,3 @@ fn make_error_message(
         signed_capabilities: None,
     }
 }
-
-//  TODO: factor our with microkernel
-fn get_current_unix_time() -> anyhow::Result<u64> {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(t) => Ok(t.as_secs()),
-        Err(e) => Err(e.into()),
-    }
-}

@@ -210,9 +210,8 @@ async fn http_handle_messages(
         Message::Response((ref response, _)) => {
             let mut senders = http_response_senders.lock().await;
 
-            let json = serde_json::from_str::<HttpResponse>(
-                &response.ipc.clone().unwrap_or_default(),
-            );
+            let json =
+                serde_json::from_str::<HttpResponse>(&response.ipc.clone().unwrap_or_default());
 
             match json {
                 Ok(mut request) => {

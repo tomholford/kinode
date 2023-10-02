@@ -76,13 +76,7 @@ pub async fn encryptor(
             payload,
             ..
         } = kernel_message;
-        let Message::Request(Request {
-            expects_response,
-            ipc: Some(ipc),
-            metadata, // we return this to Requester for kernel reasons
-            ..
-        }) = message
-        else {
+        let Message::Request(Request { ipc: Some(ipc), .. }) = message else {
             let _ = print_tx
                 .send(Printout {
                     verbosity: 1,
@@ -120,7 +114,7 @@ pub async fn encryptor(
                                 let signed_public_key =
                                     keypair.sign(&public_key_bytes).as_ref().to_vec();
 
-                                let mut encrypted_secret: Vec<u8> = Vec::new();
+                                let encrypted_secret: Vec<u8>;
                                 if let Some(secret) = secrets.get(&channel_id) {
                                     // Secret already exists
                                     // Encrypt the secret with the public key and return it
@@ -176,7 +170,7 @@ pub async fn encryptor(
                                     payload: Some(Payload {
                                         mime: Some("application/json".to_string()),
                                         bytes: serde_json::json!({
-                                            "encrypted_secret": hex::encode(&encrypted_secret).to_string(),
+                                            "encrypted_secret": hex::encode(encrypted_secret).to_string(),
                                             "signed_public_key": hex::encode(&signed_public_key).to_string(),
                                         }).to_string().as_bytes().to_vec(),
                                     }),

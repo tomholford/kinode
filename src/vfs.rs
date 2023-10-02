@@ -159,62 +159,6 @@ async fn persist_state(our_node: String, send_to_loop: &MessageSender, state: &I
         .await;
 }
 
-fn update_child_paths(
-    parent_full_path: String,
-    parent_new_full_path: String,
-    key_to_entry: &mut KeyToEntry,
-    path_to_key: &mut PathToKey,
-) {
-    let Some(parent_key) = path_to_key.remove(&parent_full_path) else {
-        panic!("");
-    };
-    let Some(mut parent_entry) = key_to_entry.remove(&parent_key) else {
-        panic!("");
-    };
-    let EntryType::Dir {
-        parent: _,
-        ref children,
-    } = parent_entry.entry_type
-    else {
-        panic!("");
-    };
-    for child_key in children {
-        let Some(mut child_entry) = key_to_entry.remove(&child_key) else {
-            panic!("");
-        };
-        if !child_entry.full_path.starts_with(&parent_full_path) {
-            panic!("");
-        }
-        let suffix = &child_entry.full_path[parent_full_path.len()..];
-        let child_new_full_path = format!("{}{}", &parent_new_full_path, suffix);
-        match child_entry.entry_type {
-            EntryType::Dir {
-                parent: _,
-                children: _,
-            } => {
-                update_child_paths(
-                    child_entry.full_path,
-                    child_new_full_path,
-                    key_to_entry,
-                    path_to_key,
-                );
-            }
-            EntryType::File { parent: _ } => {
-                let (child_name, _) = make_file_name(&child_new_full_path);
-                child_entry.name = child_name;
-                child_entry.full_path = child_new_full_path.clone();
-                key_to_entry.insert(child_key.clone(), child_entry);
-                path_to_key.insert(child_new_full_path, child_key.clone());
-            }
-        }
-    }
-    let (parent_name, _) = make_dir_name(&parent_new_full_path);
-    parent_entry.name = parent_name;
-    parent_entry.full_path = parent_new_full_path.clone();
-    key_to_entry.insert(parent_key.clone(), parent_entry);
-    path_to_key.insert(parent_new_full_path, parent_key);
-}
-
 async fn load_state_from_reboot(
     our_node: String,
     send_to_loop: &MessageSender,
@@ -527,7 +471,7 @@ async fn handle_request(
 ) -> Result<(), VfsError> {
     let (send_cap_bool, recv_cap_bool) = tokio::sync::oneshot::channel();
     match &request {
-        VfsRequest::New { identifier } => {}
+        VfsRequest::New { identifier: _ } => {}
         VfsRequest::Add { identifier, .. }
         | VfsRequest::Rename { identifier, .. }
         | VfsRequest::Delete { identifier, .. }
@@ -914,10 +858,7 @@ async fn match_request(
                 panic!("");
             };
             match entry.entry_type {
-                EntryType::Dir {
-                    parent: _,
-                    ref children,
-                } => {
+                EntryType::Dir { .. } => {
                     if vfs.path_to_key.contains_key(&new_full_path) {
                         send_to_terminal
                             .send(Printout {

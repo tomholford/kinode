@@ -1,5 +1,5 @@
 # operationOJ
-
+Last updated: 9/29/23
 ## Setup
 
 ### Building components
@@ -19,7 +19,12 @@ cargo install cargo-wasi
 cargo install --git https://github.com/bytecodealliance/cargo-component --locked cargo-component
 
 # Build the runtime, along with a number of booted-at-startup WASM modules including terminal and key_value
-cargo +nightly build --release
+# OPTIONAL: --release flag
+cargo +nightly build
+
+# To build all of the apps
+# OPTIONAL: --release flag
+./build.sh --all
 
 # Create the home directory for your node
 # If you boot multiple nodes, make sure each has their own home directory.
@@ -28,22 +33,16 @@ mkdir home
 
 ### Boot
 
-Boot takes 2 arguments: the home directory, and the URL of a "blockchain" RPC endpoint. Use the home directory you created previously and select a name for the node. For the second argument, use either a node that you're running locally, or this URL which I (@dr-frmr) will try to keep active 24/7:
+Before booting, compile all the apps with `./build.sh` (this may take some time). Then, booting your node takes one argument: the home directory where all your files will be stored. You can also use your own custom eth-rpc URL using: `--rpc` (NOTE: must begin with wss:// NOT https://). You can also include the `--release` if you want optimized performance.
 ```bash
-cargo +nightly run --release home
+./build --all
+cargo +nightly run home
 ```
-There is also a third optional argument `--bs boot_sequence.bin` if you want to add a custom boot sequence - see [here](./boot_sequence/README.md) for details on how to make a custom one.
 
-Note that the `--release` flag is optional but should normally be included to enable better performance (while only adding a few seconds to build time).
+On boot you will be prompted to navigate to `localhost:8000`. Make sure your eth wallet is connected to the Sepolia test network. Login should be very straightforward, just submit the transactions and follow the flow.
 
-If you want to set up a blockchain node locally, simply set the second argument to anything, as long as you put some string there it will default to the local `blockchain.json` in filesystem. NOTE: this "blockchain" node itself will not network properly yet, because it's not set up to "index" itself. :(
-
-In order to make the "blockchain" node work such as the one I have at the above IP, you need to build `sequencer.wasm` and put it in the node's home directory, as shown in the example with `file-transfer` above. After doing so, use this command to start it up:
-`!message our kernel {"type": "StartProcess", "name": "sequencer", "wasm_bytes_uri": "fs://sequencer.wasm", "on_panic": null}`
-
-You will be prompted to navigate to `localhost:8000/register`. This should appear as a screen to input a username and password. After submitting these and signing the metamask prompt, your node should connect and insert itself to the chain. You can check by going to the URL endpoint served at either that IP or your local "chain" node.
-
-Now that the node has started, look to the example usage section below to see what kind of commands are available.
+### Development
+Running `./build.sh` will automatically build any apps that have changes in git. Developing with `./build.sh && cargo +nightly run home` anytime you make a change to your app should be very fast. You can also manually recompile just your app with `./build-app chess` - if your app was named "chess" for example. Sometimes you may need to run `./build.sh --all` if something got out of whack.
 
 ## Terminal syntax
 

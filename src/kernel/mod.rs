@@ -195,7 +195,7 @@ impl UqProcessImports for ProcessWasi {
     async fn spawn(
         &mut self,
         id: wit::ProcessId,
-        bytes_uri: String,
+        _bytes_uri: String,
         on_panic: wit::OnPanic,
         capabilities: wit::Capabilities,
     ) -> Result<Result<wit::ProcessId, wit::UqbarError>> {

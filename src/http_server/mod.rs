@@ -52,7 +52,6 @@ pub async fn http_server(
                 let KernelMessage {
                     id,
                     source,
-                    rsvp,
                     message,
                     payload,
                     ..
@@ -303,7 +302,7 @@ async fn http_handle_messages(
                         }
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     let _ = print_tx
                         .send(Printout {
                             verbosity: 1,
@@ -313,7 +312,7 @@ async fn http_handle_messages(
                     let mut error_headers = HashMap::new();
                     error_headers.insert("Content-Type".to_string(), "text/html".to_string());
                     match senders.remove(&id) {
-                        Some((path, channel)) => {
+                        Some((_path, channel)) => {
                             let _ = channel.send(HttpResponse {
                                 status: 503,
                                 headers: error_headers,
@@ -330,12 +329,7 @@ async fn http_handle_messages(
                 }
             }
         }
-        Message::Request(Request {
-            expects_response,
-            ipc,
-            metadata, // we return this to Requester for kernel reasons
-            ..
-        }) => {
+        Message::Request(Request { ipc, .. }) => {
             let Some(json) = ipc else {
                 return Err(HttpServerError::NoJson);
             };
@@ -483,7 +477,7 @@ async fn http_handle_messages(
                             ws_auth_token: _,
                             channel_id,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
@@ -516,7 +510,7 @@ async fn http_handle_messages(
                             target,
                             json,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(ws_proxies.clone(), channel_id, source.node.clone())
@@ -540,7 +534,7 @@ async fn http_handle_messages(
                             encrypted,
                             nonce,
                         }) => {
-                            if let Ok(node) =
+                            if let Ok(_node) =
                                 parse_auth_token(auth_token, jwt_secret_bytes.clone().to_vec())
                             {
                                 add_ws_proxy(
@@ -665,7 +659,7 @@ async fn handler(
     our: String,
     http_response_senders: HttpResponseSenders,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let address = match address {
         Some(a) => a.to_string(),

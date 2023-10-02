@@ -87,8 +87,8 @@ pub async fn handle_incoming_ws(
             ws_auth_token,
             auth_token: _,
             target,
-            channel_id,
             json,
+            ..
         }) => {
             let _ = print_tx
                 .send(Printout {
@@ -265,7 +265,7 @@ pub async fn handle_ws_message(
     json: Option<serde_json::Value>,
     our: String,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let id: u64 = rand::random();
     let message = KernelMessage {
@@ -299,7 +299,7 @@ pub async fn handle_encrypted_ws_message(
     encrypted: String,
     nonce: String,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let encrypted_bytes = binary_encoded_string_to_bytes(&encrypted);
     let nonce_bytes = binary_encoded_string_to_bytes(&nonce);
@@ -356,7 +356,7 @@ pub async fn proxy_ws_message(
     parsed_msg: WebSocketClientMessage,
     our: String,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let id: u64 = rand::random();
     let message = KernelMessage {
@@ -404,7 +404,7 @@ pub async fn send_ws_disconnect(
     our: String,
     channel_id: String,
     send_to_loop: MessageSender,
-    print_tx: PrintSender,
+    _print_tx: PrintSender,
 ) {
     let id: u64 = rand::random();
     let message = KernelMessage {

@@ -1,13 +1,14 @@
 use crate::net::*;
-use aes_gcm::aead::Aead;
-use aes_gcm::KeyInit;
-use aes_gcm_siv::{Aes256GcmSiv, Nonce};
 use elliptic_curve::ecdh::SharedSecret;
 use futures::{SinkExt, StreamExt};
 use ring::signature::Ed25519KeyPair;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite;
+use chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    XChaCha20Poly1305, XNonce
+};
 
 pub async fn build_connection(
     our: Identity,
@@ -158,14 +159,13 @@ pub async fn maintain_connection(
                         }
                         // if we don't have the peer, see if we have the keys to create them.
                         // if we don't have their keys, throw a nack.
-                        if let Some((peer_id, secret, nonce)) = keys.read().await.get(from) {
+                        if let Some((peer_id, secret)) = keys.read().await.get(from) {
                             let new_peer = create_new_peer(
                                 our.clone(),
                                 peer_id.clone(),
                                 peers.clone(),
                                 keys.clone(),
                                 secret.clone(),
-                                *nonce,
                                 message_tx.clone(),
                                 kernel_message_tx.clone(),
                                 net_message_tx.clone(),
@@ -223,8 +223,6 @@ pub async fn maintain_connection(
                                 break;
                             }
                         };
-                        // use the nonce from the initiatory handshake, always
-                        let nonce = *Nonce::from_slice(&handshake.nonce);
                         let (secret, handshake) = make_secret_and_handshake(
                             &our,
                             keypair.clone(),
@@ -238,7 +236,7 @@ pub async fn maintain_connection(
                         // save the handshake to our Keys map
                         keys.write().await.insert(
                             peer_id.name.clone(),
-                            (peer_id.clone(), secret.clone(), nonce),
+                            (peer_id.clone(), secret.clone()),
                         );
                         let new_peer = create_new_peer(
                             our.clone(),
@@ -246,7 +244,6 @@ pub async fn maintain_connection(
                             peers.clone(),
                             keys.clone(),
                             secret,
-                            nonce,
                             message_tx.clone(),
                             kernel_message_tx.clone(),
                             net_message_tx.clone(),
@@ -349,18 +346,11 @@ pub fn create_new_peer(
     peers: Peers,
     keys: PeerKeys,
     secret: Arc<SharedSecret<Secp256k1>>,
-    nonce: Nonce,
     conn_sender: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
     kernel_message_tx: MessageSender,
     net_message_tx: MessageSender,
     network_error_tx: NetworkErrorSender,
 ) -> Peer {
-    let mut key = [0u8; 32];
-    secret
-        .extract::<sha2::Sha256>(None)
-        .expand(&[], &mut key)
-        .unwrap();
-    let cipher = Aes256GcmSiv::new(generic_array::GenericArray::from_slice(&key));
     let (message_tx, message_rx) = unbounded_channel::<(PeerMessage, Option<ErrorShuttle>)>();
     let (decrypter_tx, decrypter_rx) = unbounded_channel::<(Vec<u8>, ErrorShuttle)>();
     let peer_id_name = new_peer_id.name.clone();
@@ -369,8 +359,7 @@ pub fn create_new_peer(
         match peer_handler(
             our,
             peer_id_name.clone(),
-            cipher,
-            nonce,
+            secret,
             message_rx,
             decrypter_rx,
             peer_conn_sender,
@@ -405,8 +394,7 @@ pub fn create_new_peer(
 async fn peer_handler(
     our: Identity,
     who: String,
-    cipher: Aes256GcmSiv,
-    nonce: Nonce,
+    secret: Arc<SharedSecret<Secp256k1>>,
     mut message_rx: UnboundedReceiver<(PeerMessage, Option<ErrorShuttle>)>,
     mut decrypter_rx: UnboundedReceiver<(Vec<u8>, ErrorShuttle)>,
     socket_tx: UnboundedSender<(NetworkMessage, Option<ErrorShuttle>)>,
@@ -414,6 +402,12 @@ async fn peer_handler(
     network_error_tx: NetworkErrorSender,
 ) -> Option<KernelMessage> {
     // println!("peer_handler\r");
+    let mut key = [0u8; 32];
+    secret
+        .extract::<sha2::Sha256>(None)
+        .expand(&[], &mut key)
+        .unwrap();
+    let cipher = XChaCha20Poly1305::new(generic_array::GenericArray::from_slice(&key));
 
     let (ack_tx, mut ack_rx) = unbounded_channel::<MessageResult>();
     // TODO use a more efficient data structure
@@ -425,7 +419,8 @@ async fn peer_handler(
         //
         _ = async {
             while let Some((encrypted_bytes, result_tx)) = decrypter_rx.recv().await {
-                if let Ok(decrypted) = cipher.decrypt(&nonce, encrypted_bytes.as_ref()) {
+                let nonce = XNonce::from_slice(&encrypted_bytes[..24]);
+                if let Ok(decrypted) = cipher.decrypt(&nonce, &encrypted_bytes[24..]) {
                     if let Ok(message) = bincode::deserialize::<KernelMessage>(&decrypted) {
                         if message.source.node == who {
                             // println!("net: got peer message {}, acking\r", message.id);
@@ -461,6 +456,7 @@ async fn peer_handler(
                     PeerMessage::Raw(message) => {
                         let id = message.id;
                         if let Ok(bytes) = bincode::serialize::<KernelMessage>(&message) {
+                            let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
                             if let Ok(encrypted) = cipher.encrypt(&nonce, bytes.as_ref()) {
                                 if maybe_result_tx.is_none() {
                                     ack_map.write().await.insert(id, message);
@@ -470,7 +466,7 @@ async fn peer_handler(
                                         from: our.name.clone(),
                                         to: who.clone(),
                                         id: id,
-                                        contents: encrypted,
+                                        contents: [nonce.as_slice().to_vec(), encrypted].concat(),
                                     },
                                     Some(maybe_result_tx.unwrap_or(ack_tx.clone())),
                                 )) {

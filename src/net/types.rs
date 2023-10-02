@@ -1,5 +1,4 @@
 use crate::types::*;
-use aes_gcm_siv::Nonce;
 use anyhow::Result;
 use elliptic_curve::ecdh::SharedSecret;
 use ethers::prelude::k256::Secp256k1;
@@ -9,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-pub type PeerKeys = Arc<RwLock<HashMap<String, (Identity, Arc<SharedSecret<Secp256k1>>, Nonce)>>>;
+pub type PeerKeys = Arc<RwLock<HashMap<String, (Identity, Arc<SharedSecret<Secp256k1>>)>>>;
 pub type Peers = Arc<RwLock<HashMap<String, Peer>>>;
 pub type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub type MessageResult = Result<NetworkMessage, (u64, SendErrorKind)>;
@@ -56,7 +55,6 @@ pub struct Handshake {
     pub id_signature: Vec<u8>,
     pub ephemeral_public_key: Vec<u8>,
     pub ephemeral_public_key_signature: Vec<u8>,
-    pub nonce: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

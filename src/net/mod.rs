@@ -1,7 +1,6 @@
 use crate::net::connections::*;
 use crate::net::types::*;
 use crate::types::*;
-use aes_gcm_siv::Nonce;
 use anyhow::Result;
 use elliptic_curve::ecdh::EphemeralSecret;
 use elliptic_curve::PublicKey;
@@ -108,7 +107,7 @@ pub async fn networking(
             // before, and can try to reuse that shared secret to send a message.
             // first, we'll need to open a websocket and create a Peer struct for them.
             //
-            if let Some((peer_id, secret, nonce)) = keys.read().await.get(target).cloned() {
+            if let Some((peer_id, secret)) = keys.read().await.get(target).cloned() {
                 //
                 // we can establish a connection directly with this peer
                 //
@@ -143,7 +142,6 @@ pub async fn networking(
                         peers.clone(),
                         keys.clone(),
                         secret,
-                        nonce,
                         socket_tx.clone(),
                         kernel_message_tx.clone(),
                         message_tx.clone(),
@@ -228,7 +226,6 @@ pub async fn networking(
                             peers.clone(),
                             keys.clone(),
                             secret.clone(),
-                            nonce,
                             socket_tx.clone(),
                             kernel_message_tx.clone(),
                             message_tx.clone(),
@@ -300,8 +297,6 @@ pub async fn networking(
                 .await;
                 let (secret, handshake) =
                     make_secret_and_handshake(&our, keypair.clone(), target, None);
-                // use the nonce from the initiatory handshake, always
-                let nonce = *Nonce::from_slice(&handshake.nonce);
                 let (handshake_tx, mut handshake_rx) = unbounded_channel::<MessageResult>();
                 socket_tx
                     .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
@@ -323,17 +318,15 @@ pub async fn networking(
                 };
                 let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
                 // save the handshake to our Keys map
-                keys.write().await.insert(
-                    peer_id.name.clone(),
-                    (peer_id.clone(), secret.clone(), nonce),
-                );
+                keys.write()
+                    .await
+                    .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone()));
                 let new_peer = create_new_peer(
                     our.clone(),
                     peer_id.clone(),
                     peers.clone(),
                     keys.clone(),
                     secret,
-                    nonce,
                     socket_tx.clone(),
                     kernel_message_tx.clone(),
                     message_tx.clone(),
@@ -417,8 +410,6 @@ pub async fn networking(
                         };
                     let (secret, handshake) =
                         make_secret_and_handshake(&our, keypair.clone(), target, None);
-                    // use the nonce from the initiatory handshake, always
-                    let nonce = *Nonce::from_slice(&handshake.nonce);
                     let (handshake_tx, mut handshake_rx) = unbounded_channel::<MessageResult>();
                     socket_tx
                         .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
@@ -441,17 +432,15 @@ pub async fn networking(
                     };
                     let secret = Arc::new(secret.diffie_hellman(&their_ephemeral_pk));
                     // save the handshake to our Keys map
-                    keys.write().await.insert(
-                        peer_id.name.clone(),
-                        (peer_id.clone(), secret.clone(), nonce),
-                    );
+                    keys.write()
+                        .await
+                        .insert(peer_id.name.clone(), (peer_id.clone(), secret.clone()));
                     let new_peer = create_new_peer(
                         our.clone(),
                         peer_id.clone(),
                         peers.clone(),
                         keys.clone(),
                         secret,
-                        nonce,
                         socket_tx.clone(),
                         kernel_message_tx.clone(),
                         message_tx.clone(),
@@ -589,8 +578,6 @@ async fn connect_to_routers(
                 .await;
                 let (secret, handshake) =
                     make_secret_and_handshake(&our, keypair.clone(), &router_name, None);
-                // use the nonce from the initiatory handshake, always
-                let nonce = *Nonce::from_slice(&handshake.nonce);
                 let (handshake_tx, mut handshake_rx) = unbounded_channel::<MessageResult>();
                 socket_tx
                     .send((NetworkMessage::Handshake(handshake), Some(handshake_tx)))
@@ -614,7 +601,7 @@ async fn connect_to_routers(
                 // save the handshake to our Keys map
                 keys.write().await.insert(
                     router_id.name.clone(),
-                    (router_id.clone(), secret.clone(), nonce),
+                    (router_id.clone(), secret.clone()),
                 );
                 let new_peer = create_new_peer(
                     our.clone(),
@@ -622,7 +609,6 @@ async fn connect_to_routers(
                     peers.clone(),
                     keys.clone(),
                     secret,
-                    nonce,
                     socket_tx.clone(),
                     kernel_message_tx.clone(),
                     net_message_tx.clone(),
@@ -891,10 +877,6 @@ fn make_secret_and_handshake(
         .as_ref()
         .to_vec();
 
-    let mut iv = [0u8; 12];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut iv);
-    let nonce = iv.to_vec();
-
     let handshake = Handshake {
         id: id.unwrap_or(rand::random()),
         from: our.name.clone(),
@@ -902,7 +884,6 @@ fn make_secret_and_handshake(
         id_signature: signed_id,
         ephemeral_public_key: ephemeral_public_key.to_sec1_bytes().to_vec(),
         ephemeral_public_key_signature: signed_pk,
-        nonce,
     };
 
     (ephemeral_secret, handshake)

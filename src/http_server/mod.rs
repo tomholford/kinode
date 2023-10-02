@@ -207,21 +207,14 @@ async fn http_handle_messages(
     print_tx: PrintSender,
 ) -> Result<(), HttpServerError> {
     match message {
-        Message::Response((response, _context)) => {
+        Message::Response((ref response, _)) => {
             let mut senders = http_response_senders.lock().await;
 
-            let json = serde_json::from_str::<Result<HttpResponse, String>>(
+            let json = serde_json::from_str::<HttpResponse>(
                 &response.ipc.clone().unwrap_or_default(),
             );
 
-            let Ok(res) = json else {
-                return Err(HttpServerError::BadJson {
-                    json: response.ipc.unwrap_or_default(),
-                    error: json.err().unwrap().to_string(),
-                });
-            };
-
-            match res {
+            match json {
                 Ok(mut request) => {
                     let Some(payload) = payload else {
                         return Err(HttpServerError::NoBytes);
@@ -305,13 +298,7 @@ async fn http_handle_messages(
                         }
                     }
                 }
-                Err(e) => {
-                    let _ = print_tx
-                        .send(Printout {
-                            verbosity: 1,
-                            content: format!("GOT HTTP RESPONSE ERROR"),
-                        })
-                        .await;
+                Err(_e) => {
                     let mut error_headers = HashMap::new();
                     error_headers.insert("Content-Type".to_string(), "text/html".to_string());
                     match senders.remove(&id) {
@@ -322,12 +309,7 @@ async fn http_handle_messages(
                                 body: Some(format!("Internal Server Error").as_bytes().to_vec()),
                             });
                         }
-                        None => {
-                            panic!(
-                                "http_server: inconsistent state, no key found for id {}",
-                                id
-                            );
-                        }
+                        None => {}
                     }
                 }
             }

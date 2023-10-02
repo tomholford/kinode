@@ -138,7 +138,7 @@ impl Guest for Component {
             };
             let Message::Request(request) = message else {
                 // Ignore responses for now
-                print_to_terminal(0, "http_bindings: got unexpected message");
+                print_to_terminal(0, "http_bindings: got unexpected Respose, ignoring");
                 continue;
             };
 

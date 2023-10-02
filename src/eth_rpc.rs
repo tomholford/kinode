@@ -233,7 +233,7 @@ pub async fn eth_rpc(
                                             rsvp: None,
                                             message: Message::Request(Request {
                                                 inherit: false, // TODO what
-                                                expects_response: false,
+                                                expects_response: None,
                                                 ipc: Some(json!({
                                                     "EventSubscription": serde_json::to_value(event.clone()).unwrap()
                                                 }).to_string()),
@@ -256,7 +256,6 @@ pub async fn eth_rpc(
                             }
                         };
                     }
-                    Ok(())
                 });
                 subscriptions.lock().await.insert(id, handle);
             }

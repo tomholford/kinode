@@ -70,6 +70,7 @@ dependencies = [
  "base64",
  "bincode",
  "pleco",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "uqbar_process_lib",

@@ -52,7 +52,7 @@ enum ChessResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Game {
     pub id: String, // the node with whom we are playing
-    pub ai_game: bool,
+    pub ai_game: Option<String>, // None = not AI, String is move history for the prompt
     pub turns: u64,
     pub board: String,
     pub white: String,
@@ -268,7 +268,7 @@ fn handle_request(our: &Address, message: &Message, state: &mut ChessState) -> a
                     }
                 }
             }
-            http::HttpServerRequest::WebSocketOpen(channel_id) => {
+            http::HttpServerRequest::WebSocketOpen{ channel_id, path: _ } => {
                 // client frontend opened a websocket
                 state.clients.insert(channel_id);
                 Ok(())
@@ -316,7 +316,7 @@ fn handle_chess_request(
             }
             let game = Game {
                 id: game_id.to_string(),
-                ai_game: false,
+                ai_game: None,
                 turns: 0,
                 board: Board::start_pos().fen(),
                 white: white.to_string(),
@@ -422,7 +422,7 @@ fn handle_local_request(
             // New game with default board.
             let game = Game {
                 id: game_id.to_string(),
-                ai_game: false,
+                ai_game: None,
                 turns: 0,
                 board: Board::start_pos().fen(),
                 white: white.to_string(),
@@ -439,7 +439,7 @@ fn handle_local_request(
             Request::new()
                 .target((&our.node, "main", "llm", "uqbar"))
                 .ipc(
-                    json!({"Allow": {"model": model_name, "process": our.process.to_string()}})
+                    json!({"RequestAccess": {"model": model_name, "process": our.process.to_string()}})
                         .to_string()
                         .into_bytes(),
                 )
@@ -452,7 +452,7 @@ fn handle_local_request(
             };
             let mut game = Game {
                 id: model_name.to_string(),
-                ai_game: true,
+                ai_game: Some(String::new()),
                 turns: 0,
                 board: Board::start_pos().fen(),
                 white: white.to_string(),
@@ -493,7 +493,7 @@ fn handle_local_request(
             }
             // If this is an AI game, we'll send a request to the AI to make a move.
             // Otherwise, we'll send a request to the other player to make a move.
-            if game.ai_game && !game.ended {
+            if game.ai_game.is_some() && !game.ended {
                 request_ai_move(our, &mut game)?;
                 // update the game
                 game.turns += 1;
@@ -600,7 +600,7 @@ fn handle_http_request(
             // create a new game
             let game = Game {
                 id: game_id.to_string(),
-                ai_game: false,
+                ai_game: None,
                 turns: 0,
                 board: Board::start_pos().fen(),
                 white: player_white,
@@ -653,7 +653,7 @@ fn handle_http_request(
             }
             // If this is an AI game, we'll send a request to the AI to make a move.
             // Otherwise, we'll send a request to the other player to make a move.
-            if game.ai_game && !game.ended {
+            if game.ai_game.is_some() && !game.ended {
                 request_ai_move(our, &mut game)?;
                 // update the game
                 game.turns += 1;

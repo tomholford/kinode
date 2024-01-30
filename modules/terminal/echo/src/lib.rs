@@ -16,10 +16,5 @@ fn init(_our: Address) {
         return;
     };
 
-    let _ = Response::new()
-        .body(format!(
-            "{}",
-            String::from_utf8(args).unwrap_or("echo: error".into())
-        ))
-        .send();
+    let _ = Response::new().body(args).send();
 }
